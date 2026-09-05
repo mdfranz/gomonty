@@ -124,6 +124,19 @@ designed and built from scratch — out of scope here.
   instance to be usable as an input (upstream rejects a
   `HostDefined: false`/sandbox-origin instance sent back in), which is now
   called out in the `ClassType` doc comment.
+- Permanent Go coverage for the smoke-tested behavior above landed via
+  `types_test.go`/`wire_test.go` (from a parallel worktree on
+  `codex/upstream-refresh-tests`, cherry-picked in as `2acb291`): JSON and
+  wire round-trips for `ClassInstance`/`Time`/`NotImplemented`/`FileHandle`,
+  `NewClassID` UUIDv4 shape, and `newWireResourceLimits`'s
+  `MaxSuspensions`/`MaxRecursionDepth` mapping. One test's expectation
+  (`wireValueFromPublic` rejecting a `FileHandle` outright) didn't match this
+  codebase's established convention — `Repr`/`Cycle`, the two pre-existing
+  output-only kinds, both encode fine at the Go wire layer and are rejected
+  only by Rust's `into_monty`, which is where `FileHandle` was already
+  rejecting it too (per the `wire_value_rejects_file_handle_inputs` Rust
+  test). Rewrote it as `TestFileHandleRejectedAsRunnerInput`, asserting the
+  actual boundary end to end through a real `Runner.Run` call instead.
 
 ## Not done in this pass
 
