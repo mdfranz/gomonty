@@ -17,12 +17,12 @@ use std::{
     ptr,
 };
 
-use monty::{
-    ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRepl, MontyRun,
-    NameLookupResult, NoLimitTracker, PrintWriter, PrintWriterCallback, ReplProgress,
-    ResourceTracker, RunProgress,
+use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
+use monty_type_checking::{SourceFile, TypeChecker};
+use monty_types::{
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
+    PrintWriter, PrintWriterCallback, ResourceTracker, TypeCheckingConfig, TypeCheckingFormat,
 };
-use monty_type_checking::{SourceFile, TypeCheckingDiagnostics, type_check};
 use wire::{
     WIRE_CALL_RESULT_EXCEPTION, WIRE_CALL_RESULT_PENDING, WIRE_CALL_RESULT_RETURN,
     WIRE_LOOKUP_RESULT_UNDEFINED, WIRE_LOOKUP_RESULT_VALUE, WIRE_PROGRESS_COMPLETE,
@@ -54,10 +54,42 @@ pub struct MontyGoError {
     inner: FfiError,
 }
 
+/// Inputs to a type check, kept around so a typing failure can be re-rendered
+/// on demand in whatever format/color the caller later asks for.
+///
+/// Upstream's `TypeCheckingDiagnostics` borrows the `TypeChecker` that
+/// produced it and is created with a fixed render config, so it cannot be
+/// stored in a long-lived opaque error handle and reformatted later the way
+/// gomonty's `monty_go_error_display` API allows. Re-running the (cheap,
+/// already-known-to-fail) type check on each display call preserves that API
+/// instead of restricting it to the format chosen at check time.
+#[derive(Debug, Clone)]
+struct TypingFailure {
+    source_code: String,
+    script_name: String,
+    stubs: Option<String>,
+}
+
+impl TypingFailure {
+    fn render(&self, config: TypeCheckingConfig) -> Result<String, String> {
+        let mut checker = TypeChecker::default();
+        let source = SourceFile::new(&self.source_code, &self.script_name);
+        let stubs = self
+            .stubs
+            .as_deref()
+            .map(|stubs| SourceFile::new(stubs, "type_stubs.py"));
+        match checker.run(&source, stubs.as_ref(), config) {
+            Ok(Some(diagnostics)) => Ok(diagnostics.to_string()),
+            Ok(None) => Err("type check no longer reports any errors".to_owned()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 #[derive(Debug)]
 enum FfiError {
     Exception(MontyException),
-    Typing(TypeCheckingDiagnostics),
+    Typing(TypingFailure),
     Api(String),
 }
 
@@ -134,27 +166,16 @@ where
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-enum StoredRepl {
-    NoLimit(MontyRepl<NoLimitTracker>),
-    Limited(MontyRepl<LimitedTracker>),
-}
+struct StoredRepl(MontyRepl);
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 enum StoredProgress {
-    RunNoLimit {
-        progress: RunProgress<NoLimitTracker>,
+    Run {
+        progress: RunProgress,
         script_name: String,
     },
-    RunLimited {
-        progress: RunProgress<LimitedTracker>,
-        script_name: String,
-    },
-    ReplNoLimit {
-        progress: ReplProgress<NoLimitTracker>,
-        script_name: String,
-    },
-    ReplLimited {
-        progress: ReplProgress<LimitedTracker>,
+    Repl {
+        progress: ReplProgress,
         script_name: String,
     },
 }
@@ -316,11 +337,13 @@ impl FfiError {
     fn summary(&self) -> WireErrorSummary {
         match self {
             Self::Exception(error) => WireErrorSummary::from_exception(error),
-            Self::Typing(error) => WireErrorSummary {
+            Self::Typing(failure) => WireErrorSummary {
                 version: wire::WIRE_VERSION,
                 kind: "typing".to_owned(),
                 type_name: "TypeError".to_owned(),
-                message: error.to_string(),
+                message: failure
+                    .render(TypeCheckingConfig::default())
+                    .unwrap_or_else(|error| error),
                 traceback: Vec::new(),
             },
             Self::Api(message) => WireErrorSummary {
@@ -343,11 +366,10 @@ impl FfiError {
                     "invalid display format '{format}', expected 'traceback', 'type-msg', or 'msg'"
                 )),
             },
-            Self::Typing(error) => error
-                .clone()
-                .color(color)
-                .format_from_str(format)
-                .map(|failure| failure.to_string()),
+            Self::Typing(failure) => {
+                let format = TypeCheckingFormat::from_name(format)?;
+                failure.render(TypeCheckingConfig { format, color })
+            }
             Self::Api(message) => match format {
                 "msg" | "type-msg" | "traceback" => Ok(message.clone()),
                 _ => Err(format!(
@@ -361,19 +383,11 @@ impl FfiError {
 impl StoredProgress {
     fn describe(&self) -> WireProgressPayload {
         match self {
-            Self::RunNoLimit {
+            Self::Run {
                 progress,
                 script_name,
             } => describe_run_progress(progress, script_name, false),
-            Self::RunLimited {
-                progress,
-                script_name,
-            } => describe_run_progress(progress, script_name, false),
-            Self::ReplNoLimit {
-                progress,
-                script_name,
-            } => describe_repl_progress(progress, script_name, true),
-            Self::ReplLimited {
+            Self::Repl {
                 progress,
                 script_name,
             } => describe_repl_progress(progress, script_name, true),
@@ -382,21 +396,14 @@ impl StoredProgress {
 
     fn into_repl(self) -> Result<MontyGoRepl, FfiError> {
         match self {
-            Self::ReplNoLimit {
+            Self::Repl {
                 progress,
                 script_name,
             } => Ok(MontyGoRepl {
                 script_name,
-                inner: Some(StoredRepl::NoLimit(progress.into_repl())),
+                inner: Some(StoredRepl(progress.into_repl())),
             }),
-            Self::ReplLimited {
-                progress,
-                script_name,
-            } => Ok(MontyGoRepl {
-                script_name,
-                inner: Some(StoredRepl::Limited(progress.into_repl())),
-            }),
-            Self::RunNoLimit { .. } | Self::RunLimited { .. } => Err(FfiError::Api(
+            Self::Run { .. } => Err(FfiError::Api(
                 "progress handle does not own a REPL session".to_owned(),
             )),
         }
@@ -407,8 +414,8 @@ impl StoredProgress {
     }
 }
 
-fn describe_run_progress<T: ResourceTracker>(
-    progress: &RunProgress<T>,
+fn describe_run_progress(
+    progress: &RunProgress,
     script_name: &str,
     is_repl: bool,
 ) -> WireProgressPayload {
@@ -419,7 +426,7 @@ fn describe_run_progress<T: ResourceTracker>(
             script_name: script_name.to_owned(),
             is_repl,
             is_os_function: false,
-            is_method_call: call.method_call,
+            is_method_call: call.object_id.is_some(),
             function_name: call.function_name.clone(),
             args: call.args.iter().map(WireValue::from_monty).collect(),
             kwargs: call
@@ -433,26 +440,12 @@ fn describe_run_progress<T: ResourceTracker>(
             call_id: call.call_id,
             ..WireProgressPayload::default()
         },
-        RunProgress::OsCall(call) => WireProgressPayload {
-            variant: WIRE_PROGRESS_FUNCTION_CALL,
-            version: wire::WIRE_VERSION,
-            script_name: script_name.to_owned(),
+        RunProgress::OsCall(call) => describe_os_call(
+            call.function_call.clone(),
+            call.call_id,
+            script_name,
             is_repl,
-            is_os_function: true,
-            is_method_call: false,
-            function_name: call.function.to_string(),
-            args: call.args.iter().map(WireValue::from_monty).collect(),
-            kwargs: call
-                .kwargs
-                .iter()
-                .map(|(key, value)| wire::WirePair {
-                    key: WireValue::from_monty(key),
-                    value: WireValue::from_monty(value),
-                })
-                .collect(),
-            call_id: call.call_id,
-            ..WireProgressPayload::default()
-        },
+        ),
         RunProgress::NameLookup(lookup) => WireProgressPayload {
             variant: WIRE_PROGRESS_NAME_LOOKUP,
             version: wire::WIRE_VERSION,
@@ -480,8 +473,8 @@ fn describe_run_progress<T: ResourceTracker>(
     }
 }
 
-fn describe_repl_progress<T: ResourceTracker>(
-    progress: &ReplProgress<T>,
+fn describe_repl_progress(
+    progress: &ReplProgress,
     script_name: &str,
     is_repl: bool,
 ) -> WireProgressPayload {
@@ -492,7 +485,7 @@ fn describe_repl_progress<T: ResourceTracker>(
             script_name: script_name.to_owned(),
             is_repl,
             is_os_function: false,
-            is_method_call: call.method_call,
+            is_method_call: call.object_id.is_some(),
             function_name: call.function_name.clone(),
             args: call.args.iter().map(WireValue::from_monty).collect(),
             kwargs: call
@@ -506,26 +499,12 @@ fn describe_repl_progress<T: ResourceTracker>(
             call_id: call.call_id,
             ..WireProgressPayload::default()
         },
-        ReplProgress::OsCall(call) => WireProgressPayload {
-            variant: WIRE_PROGRESS_FUNCTION_CALL,
-            version: wire::WIRE_VERSION,
-            script_name: script_name.to_owned(),
+        ReplProgress::OsCall(call) => describe_os_call(
+            call.function_call.clone(),
+            call.call_id,
+            script_name,
             is_repl,
-            is_os_function: true,
-            is_method_call: false,
-            function_name: call.function.to_string(),
-            args: call.args.iter().map(WireValue::from_monty).collect(),
-            kwargs: call
-                .kwargs
-                .iter()
-                .map(|(key, value)| wire::WirePair {
-                    key: WireValue::from_monty(key),
-                    value: WireValue::from_monty(value),
-                })
-                .collect(),
-            call_id: call.call_id,
-            ..WireProgressPayload::default()
-        },
+        ),
         ReplProgress::NameLookup(lookup) => WireProgressPayload {
             variant: WIRE_PROGRESS_NAME_LOOKUP,
             version: wire::WIRE_VERSION,
@@ -550,6 +529,39 @@ fn describe_repl_progress<T: ResourceTracker>(
             output: Some(WireValue::from_monty(value)),
             ..WireProgressPayload::default()
         },
+    }
+}
+
+/// Shared by [`describe_run_progress`] and [`describe_repl_progress`]: an
+/// `OsCall`'s typed [`OsFunctionCall`] dispatch value projects onto the same
+/// generic `(name, args, kwargs)` shape the Go side already expects for
+/// `FunctionCall`, via [`OsFunctionCall::name`]/[`OsFunctionCall::to_args`].
+fn describe_os_call(
+    function_call: monty_types::OsFunctionCall,
+    call_id: u32,
+    script_name: &str,
+    is_repl: bool,
+) -> WireProgressPayload {
+    let function_name = function_call.name().to_owned();
+    let (args, kwargs) = function_call.to_args();
+    WireProgressPayload {
+        variant: WIRE_PROGRESS_FUNCTION_CALL,
+        version: wire::WIRE_VERSION,
+        script_name: script_name.to_owned(),
+        is_repl,
+        is_os_function: true,
+        is_method_call: false,
+        function_name,
+        args: args.iter().map(WireValue::from_monty).collect(),
+        kwargs: kwargs
+            .iter()
+            .map(|(key, value)| wire::WirePair {
+                key: WireValue::from_monty(key),
+                value: WireValue::from_monty(value),
+            })
+            .collect(),
+        call_id,
+        ..WireProgressPayload::default()
     }
 }
 
@@ -685,30 +697,16 @@ fn start_runner_internal(
     let inputs = extract_inputs(&handle.input_names, options.inputs)
         .map_err(|error| (error, String::new()))?;
     let mut prints = PrintCollector::new();
+    let tracker = ResourceTracker::new(options.limits.map(Into::into).unwrap_or_default());
 
-    let start_result = if let Some(limits) = options.limits {
-        handle
-            .runner
-            .clone()
-            .start(
-                inputs,
-                LimitedTracker::new(limits.into()),
-                PrintWriter::Callback(&mut prints),
-            )
-            .map(|progress| StoredProgress::RunLimited {
-                progress,
-                script_name: handle.script_name.clone(),
-            })
-    } else {
-        handle
-            .runner
-            .clone()
-            .start(inputs, NoLimitTracker, PrintWriter::Callback(&mut prints))
-            .map(|progress| StoredProgress::RunNoLimit {
-                progress,
-                script_name: handle.script_name.clone(),
-            })
-    };
+    let start_result = handle
+        .runner
+        .clone()
+        .start(inputs, tracker, PrintWriter::Callback(&mut prints))
+        .map(|progress| StoredProgress::Run {
+            progress,
+            script_name: handle.script_name.clone(),
+        });
 
     match start_result {
         Ok(progress) => Ok((progress, prints.into_string())),
@@ -757,38 +755,24 @@ fn feed_start_internal(
     let mut prints = PrintCollector::new();
     let script_name = repl_handle.script_name.clone();
 
-    match repl {
-        StoredRepl::NoLimit(repl) => {
-            match repl.feed_start(code, inputs, PrintWriter::Callback(&mut prints)) {
-                Ok(progress) => Ok((
-                    StoredProgress::ReplNoLimit {
-                        progress,
-                        script_name,
-                    },
-                    prints.into_string(),
-                )),
-                Err(error) => Err((
-                    FfiError::Exception(error.error),
-                    wrap_repl_handle(&script_name, StoredRepl::NoLimit(error.repl)),
-                    prints.into_string(),
-                )),
-            }
-        }
-        StoredRepl::Limited(repl) => {
-            match repl.feed_start(code, inputs, PrintWriter::Callback(&mut prints)) {
-                Ok(progress) => Ok((
-                    StoredProgress::ReplLimited {
-                        progress,
-                        script_name,
-                    },
-                    prints.into_string(),
-                )),
-                Err(error) => Err((
-                    FfiError::Exception(error.error),
-                    wrap_repl_handle(&script_name, StoredRepl::Limited(error.repl)),
-                    prints.into_string(),
-                )),
-            }
+    match repl
+        .0
+        .feed_start(code, inputs, PrintWriter::Callback(&mut prints))
+    {
+        Ok(progress) => Ok((
+            StoredProgress::Repl {
+                progress,
+                script_name,
+            },
+            prints.into_string(),
+        )),
+        Err(error) => {
+            let error = *error;
+            Err((
+                FfiError::Exception(error.error),
+                wrap_repl_handle(&script_name, StoredRepl(error.repl)),
+                prints.into_string(),
+            ))
         }
     }
 }
@@ -799,7 +783,7 @@ fn resume_call_internal(
 ) -> Result<(StoredProgress, String), (FfiError, Option<MontyGoRepl>, String)> {
     let mut prints = PrintCollector::new();
     match progress {
-        StoredProgress::RunNoLimit {
+        StoredProgress::Run {
             progress: RunProgress::FunctionCall(call),
             script_name,
         } => {
@@ -809,7 +793,7 @@ fn resume_call_internal(
                 PrintWriter::Callback(&mut prints),
             ) {
                 Ok(progress) => Ok((
-                    StoredProgress::RunNoLimit {
+                    StoredProgress::Run {
                         progress,
                         script_name,
                     },
@@ -818,7 +802,7 @@ fn resume_call_internal(
                 Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
             }
         }
-        StoredProgress::RunNoLimit {
+        StoredProgress::Run {
             progress: RunProgress::OsCall(call),
             script_name,
         } => {
@@ -828,7 +812,7 @@ fn resume_call_internal(
                 PrintWriter::Callback(&mut prints),
             ) {
                 Ok(progress) => Ok((
-                    StoredProgress::RunNoLimit {
+                    StoredProgress::Run {
                         progress,
                         script_name,
                     },
@@ -837,45 +821,7 @@ fn resume_call_internal(
                 Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
             }
         }
-        StoredProgress::RunLimited {
-            progress: RunProgress::FunctionCall(call),
-            script_name,
-        } => {
-            let call_id = call.call_id;
-            match call.resume(
-                adjust_pending_result(ext_result, call_id),
-                PrintWriter::Callback(&mut prints),
-            ) {
-                Ok(progress) => Ok((
-                    StoredProgress::RunLimited {
-                        progress,
-                        script_name,
-                    },
-                    prints.into_string(),
-                )),
-                Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
-            }
-        }
-        StoredProgress::RunLimited {
-            progress: RunProgress::OsCall(call),
-            script_name,
-        } => {
-            let call_id = call.call_id;
-            match call.resume(
-                adjust_pending_result(ext_result, call_id),
-                PrintWriter::Callback(&mut prints),
-            ) {
-                Ok(progress) => Ok((
-                    StoredProgress::RunLimited {
-                        progress,
-                        script_name,
-                    },
-                    prints.into_string(),
-                )),
-                Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
-            }
-        }
-        StoredProgress::ReplNoLimit {
+        StoredProgress::Repl {
             progress: ReplProgress::FunctionCall(call),
             script_name,
         } => {
@@ -885,23 +831,26 @@ fn resume_call_internal(
                 PrintWriter::Callback(&mut prints),
             ) {
                 Ok(progress) => Ok((
-                    StoredProgress::ReplNoLimit {
+                    StoredProgress::Repl {
                         progress,
                         script_name,
                     },
                     prints.into_string(),
                 )),
-                Err(error) => Err((
-                    FfiError::Exception(error.error),
-                    Some(MontyGoRepl {
-                        script_name,
-                        inner: Some(StoredRepl::NoLimit(error.repl)),
-                    }),
-                    prints.into_string(),
-                )),
+                Err(error) => {
+                    let error = *error;
+                    Err((
+                        FfiError::Exception(error.error),
+                        Some(MontyGoRepl {
+                            script_name,
+                            inner: Some(StoredRepl(error.repl)),
+                        }),
+                        prints.into_string(),
+                    ))
+                }
             }
         }
-        StoredProgress::ReplNoLimit {
+        StoredProgress::Repl {
             progress: ReplProgress::OsCall(call),
             script_name,
         } => {
@@ -911,72 +860,23 @@ fn resume_call_internal(
                 PrintWriter::Callback(&mut prints),
             ) {
                 Ok(progress) => Ok((
-                    StoredProgress::ReplNoLimit {
+                    StoredProgress::Repl {
                         progress,
                         script_name,
                     },
                     prints.into_string(),
                 )),
-                Err(error) => Err((
-                    FfiError::Exception(error.error),
-                    Some(MontyGoRepl {
-                        script_name,
-                        inner: Some(StoredRepl::NoLimit(error.repl)),
-                    }),
-                    prints.into_string(),
-                )),
-            }
-        }
-        StoredProgress::ReplLimited {
-            progress: ReplProgress::FunctionCall(call),
-            script_name,
-        } => {
-            let call_id = call.call_id;
-            match call.resume(
-                adjust_pending_result(ext_result, call_id),
-                PrintWriter::Callback(&mut prints),
-            ) {
-                Ok(progress) => Ok((
-                    StoredProgress::ReplLimited {
-                        progress,
-                        script_name,
-                    },
-                    prints.into_string(),
-                )),
-                Err(error) => Err((
-                    FfiError::Exception(error.error),
-                    Some(MontyGoRepl {
-                        script_name,
-                        inner: Some(StoredRepl::Limited(error.repl)),
-                    }),
-                    prints.into_string(),
-                )),
-            }
-        }
-        StoredProgress::ReplLimited {
-            progress: ReplProgress::OsCall(call),
-            script_name,
-        } => {
-            let call_id = call.call_id;
-            match call.resume(
-                adjust_pending_result(ext_result, call_id),
-                PrintWriter::Callback(&mut prints),
-            ) {
-                Ok(progress) => Ok((
-                    StoredProgress::ReplLimited {
-                        progress,
-                        script_name,
-                    },
-                    prints.into_string(),
-                )),
-                Err(error) => Err((
-                    FfiError::Exception(error.error),
-                    Some(MontyGoRepl {
-                        script_name,
-                        inner: Some(StoredRepl::Limited(error.repl)),
-                    }),
-                    prints.into_string(),
-                )),
+                Err(error) => {
+                    let error = *error;
+                    Err((
+                        FfiError::Exception(error.error),
+                        Some(MontyGoRepl {
+                            script_name,
+                            inner: Some(StoredRepl(error.repl)),
+                        }),
+                        prints.into_string(),
+                    ))
+                }
             }
         }
         _ => Err((
@@ -1000,12 +900,12 @@ fn resume_lookup_internal(
 ) -> Result<(StoredProgress, String), (FfiError, Option<MontyGoRepl>, String)> {
     let mut prints = PrintCollector::new();
     match progress {
-        StoredProgress::RunNoLimit {
+        StoredProgress::Run {
             progress: RunProgress::NameLookup(lookup),
             script_name,
         } => match lookup.resume(lookup_result, PrintWriter::Callback(&mut prints)) {
             Ok(progress) => Ok((
-                StoredProgress::RunNoLimit {
+                StoredProgress::Run {
                     progress,
                     script_name,
                 },
@@ -1013,58 +913,28 @@ fn resume_lookup_internal(
             )),
             Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
         },
-        StoredProgress::RunLimited {
-            progress: RunProgress::NameLookup(lookup),
-            script_name,
-        } => match lookup.resume(lookup_result, PrintWriter::Callback(&mut prints)) {
-            Ok(progress) => Ok((
-                StoredProgress::RunLimited {
-                    progress,
-                    script_name,
-                },
-                prints.into_string(),
-            )),
-            Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
-        },
-        StoredProgress::ReplNoLimit {
+        StoredProgress::Repl {
             progress: ReplProgress::NameLookup(lookup),
             script_name,
         } => match lookup.resume(lookup_result, PrintWriter::Callback(&mut prints)) {
             Ok(progress) => Ok((
-                StoredProgress::ReplNoLimit {
+                StoredProgress::Repl {
                     progress,
                     script_name,
                 },
                 prints.into_string(),
             )),
-            Err(error) => Err((
-                FfiError::Exception(error.error),
-                Some(MontyGoRepl {
-                    script_name,
-                    inner: Some(StoredRepl::NoLimit(error.repl)),
-                }),
-                prints.into_string(),
-            )),
-        },
-        StoredProgress::ReplLimited {
-            progress: ReplProgress::NameLookup(lookup),
-            script_name,
-        } => match lookup.resume(lookup_result, PrintWriter::Callback(&mut prints)) {
-            Ok(progress) => Ok((
-                StoredProgress::ReplLimited {
-                    progress,
-                    script_name,
-                },
-                prints.into_string(),
-            )),
-            Err(error) => Err((
-                FfiError::Exception(error.error),
-                Some(MontyGoRepl {
-                    script_name,
-                    inner: Some(StoredRepl::Limited(error.repl)),
-                }),
-                prints.into_string(),
-            )),
+            Err(error) => {
+                let error = *error;
+                Err((
+                    FfiError::Exception(error.error),
+                    Some(MontyGoRepl {
+                        script_name,
+                        inner: Some(StoredRepl(error.repl)),
+                    }),
+                    prints.into_string(),
+                ))
+            }
         },
         _ => Err((
             FfiError::Api("progress is not a name-lookup snapshot".to_owned()),
@@ -1080,12 +950,12 @@ fn resume_futures_internal(
 ) -> Result<(StoredProgress, String), (FfiError, Option<MontyGoRepl>, String)> {
     let mut prints = PrintCollector::new();
     match progress {
-        StoredProgress::RunNoLimit {
+        StoredProgress::Run {
             progress: RunProgress::ResolveFutures(state),
             script_name,
         } => match state.resume(decoded, PrintWriter::Callback(&mut prints)) {
             Ok(progress) => Ok((
-                StoredProgress::RunNoLimit {
+                StoredProgress::Run {
                     progress,
                     script_name,
                 },
@@ -1093,58 +963,28 @@ fn resume_futures_internal(
             )),
             Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
         },
-        StoredProgress::RunLimited {
-            progress: RunProgress::ResolveFutures(state),
-            script_name,
-        } => match state.resume(decoded, PrintWriter::Callback(&mut prints)) {
-            Ok(progress) => Ok((
-                StoredProgress::RunLimited {
-                    progress,
-                    script_name,
-                },
-                prints.into_string(),
-            )),
-            Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
-        },
-        StoredProgress::ReplNoLimit {
+        StoredProgress::Repl {
             progress: ReplProgress::ResolveFutures(state),
             script_name,
         } => match state.resume(decoded, PrintWriter::Callback(&mut prints)) {
             Ok(progress) => Ok((
-                StoredProgress::ReplNoLimit {
+                StoredProgress::Repl {
                     progress,
                     script_name,
                 },
                 prints.into_string(),
             )),
-            Err(error) => Err((
-                FfiError::Exception(error.error),
-                Some(MontyGoRepl {
-                    script_name,
-                    inner: Some(StoredRepl::NoLimit(error.repl)),
-                }),
-                prints.into_string(),
-            )),
-        },
-        StoredProgress::ReplLimited {
-            progress: ReplProgress::ResolveFutures(state),
-            script_name,
-        } => match state.resume(decoded, PrintWriter::Callback(&mut prints)) {
-            Ok(progress) => Ok((
-                StoredProgress::ReplLimited {
-                    progress,
-                    script_name,
-                },
-                prints.into_string(),
-            )),
-            Err(error) => Err((
-                FfiError::Exception(error.error),
-                Some(MontyGoRepl {
-                    script_name,
-                    inner: Some(StoredRepl::Limited(error.repl)),
-                }),
-                prints.into_string(),
-            )),
+            Err(error) => {
+                let error = *error;
+                Err((
+                    FfiError::Exception(error.error),
+                    Some(MontyGoRepl {
+                        script_name,
+                        inner: Some(StoredRepl(error.repl)),
+                    }),
+                    prints.into_string(),
+                ))
+            }
         },
         _ => Err((
             FfiError::Api("progress is not a future snapshot".to_owned()),
@@ -1269,19 +1109,30 @@ pub extern "C" fn monty_go_runner_new(
         let input_names = options.inputs.unwrap_or_default();
 
         if options.type_check {
+            let failure = TypingFailure {
+                source_code: code.clone(),
+                script_name: script_name.clone(),
+                stubs: options.type_check_stubs.clone(),
+            };
+            let mut checker = TypeChecker::default();
             let source = SourceFile::new(&code, &script_name);
-            let prefix = options
-                .type_check_stubs
+            let stubs = failure
+                .stubs
                 .as_deref()
                 .map(|stubs| SourceFile::new(stubs, "type_stubs.py"));
-            match type_check(&source, prefix.as_ref()) {
-                Ok(Some(error)) => return MontyGoRunnerResult::err(FfiError::Typing(error)),
+            match checker.run(&source, stubs.as_ref(), TypeCheckingConfig::default()) {
+                Ok(Some(_)) => return MontyGoRunnerResult::err(FfiError::Typing(failure)),
                 Ok(None) => {}
                 Err(error) => return MontyGoRunnerResult::err(FfiError::Api(error)),
             }
         }
 
-        match MontyRun::new(code, &script_name, input_names.clone()) {
+        match MontyRun::new(
+            code,
+            &script_name,
+            input_names.clone(),
+            CompileOptions::default(),
+        ) {
             Ok(runner) => MontyGoRunnerResult::ok(MontyGoRunner {
                 runner,
                 script_name,
@@ -1409,14 +1260,19 @@ pub extern "C" fn monty_go_runner_type_check(
             }
         };
 
+        let mut checker = TypeChecker::default();
         let source = SourceFile::new(runner.runner.code(), &runner.script_name);
-        let prefix = prefix
+        let stub_source = prefix
             .as_deref()
             .map(|prefix| SourceFile::new(prefix, "type_stubs.py"));
-        match type_check(&source, prefix.as_ref()) {
+        match checker.run(&source, stub_source.as_ref(), TypeCheckingConfig::default()) {
             Ok(None) => ptr::null_mut(),
-            Ok(Some(error)) => Box::into_raw(Box::new(MontyGoError {
-                inner: FfiError::Typing(error),
+            Ok(Some(_)) => Box::into_raw(Box::new(MontyGoError {
+                inner: FfiError::Typing(TypingFailure {
+                    source_code: runner.runner.code().to_owned(),
+                    script_name: runner.script_name.clone(),
+                    stubs: prefix,
+                }),
             })),
             Err(error) => Box::into_raw(Box::new(MontyGoError {
                 inner: FfiError::Api(error),
@@ -1471,14 +1327,12 @@ pub extern "C" fn monty_go_repl_new(
             Err(error) => return MontyGoReplResult::err(error),
         };
         let script_name = options.script_name.unwrap_or_else(|| "main.py".to_owned());
-        let inner = if let Some(limits) = options.limits {
-            StoredRepl::Limited(MontyRepl::new(
-                &script_name,
-                LimitedTracker::new(limits.into()),
-            ))
-        } else {
-            StoredRepl::NoLimit(MontyRepl::new(&script_name, NoLimitTracker))
-        };
+        let tracker = ResourceTracker::new(options.limits.map(Into::into).unwrap_or_default());
+        let inner = StoredRepl(MontyRepl::new(
+            &script_name,
+            tracker,
+            CompileOptions::default(),
+        ));
 
         MontyGoReplResult::ok(MontyGoRepl {
             script_name,
@@ -1743,10 +1597,7 @@ pub extern "C" fn monty_go_progress_take_repl(
                 "progress handle is no longer available".to_owned(),
             ));
         };
-        if !matches!(
-            &inner,
-            StoredProgress::ReplNoLimit { .. } | StoredProgress::ReplLimited { .. }
-        ) {
+        if !matches!(&inner, StoredProgress::Repl { .. }) {
             progress.inner = Some(inner);
             return MontyGoReplResult::err(FfiError::Api(
                 "progress handle does not own a REPL session".to_owned(),
@@ -1791,16 +1642,10 @@ pub extern "C" fn monty_go_progress_resume_call(
         if !matches!(
             progress.inner.as_ref(),
             Some(
-                StoredProgress::RunNoLimit {
+                StoredProgress::Run {
                     progress: RunProgress::FunctionCall(_) | RunProgress::OsCall(_),
                     ..
-                } | StoredProgress::RunLimited {
-                    progress: RunProgress::FunctionCall(_) | RunProgress::OsCall(_),
-                    ..
-                } | StoredProgress::ReplNoLimit {
-                    progress: ReplProgress::FunctionCall(_) | ReplProgress::OsCall(_),
-                    ..
-                } | StoredProgress::ReplLimited {
+                } | StoredProgress::Repl {
                     progress: ReplProgress::FunctionCall(_) | ReplProgress::OsCall(_),
                     ..
                 }
@@ -1858,16 +1703,10 @@ pub extern "C" fn monty_go_progress_resume_lookup(
         if !matches!(
             progress.inner.as_ref(),
             Some(
-                StoredProgress::RunNoLimit {
+                StoredProgress::Run {
                     progress: RunProgress::NameLookup(_),
                     ..
-                } | StoredProgress::RunLimited {
-                    progress: RunProgress::NameLookup(_),
-                    ..
-                } | StoredProgress::ReplNoLimit {
-                    progress: ReplProgress::NameLookup(_),
-                    ..
-                } | StoredProgress::ReplLimited {
+                } | StoredProgress::Repl {
                     progress: ReplProgress::NameLookup(_),
                     ..
                 }
@@ -1925,16 +1764,10 @@ pub extern "C" fn monty_go_progress_resume_futures(
         if !matches!(
             progress.inner.as_ref(),
             Some(
-                StoredProgress::RunNoLimit {
+                StoredProgress::Run {
                     progress: RunProgress::ResolveFutures(_),
                     ..
-                } | StoredProgress::RunLimited {
-                    progress: RunProgress::ResolveFutures(_),
-                    ..
-                } | StoredProgress::ReplNoLimit {
-                    progress: ReplProgress::ResolveFutures(_),
-                    ..
-                } | StoredProgress::ReplLimited {
+                } | StoredProgress::Repl {
                     progress: ReplProgress::ResolveFutures(_),
                     ..
                 }

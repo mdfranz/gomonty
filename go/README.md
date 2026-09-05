@@ -162,7 +162,7 @@ Common constructors:
 - `monty.TupleValue(...)`
 - `monty.DictValue(...)`
 - `monty.PathValue(...)`
-- `monty.DataclassValue(...)`
+- `monty.ClassInstanceValue(...)`
 
 You can also convert ordinary Go values with `monty.ValueOf(...)` or `monty.MustValueOf(...)`.
 
