@@ -3,6 +3,7 @@ package monty
 import (
 	"encoding/json"
 	"math/big"
+	"regexp"
 	"testing"
 )
 
@@ -169,5 +170,80 @@ func TestValueOfStatResult(t *testing.T) {
 
 	if stat != original {
 		t.Fatalf("unexpected stat result: %#v != %#v", stat, original)
+	}
+}
+
+func TestUpstreamRefreshValueJSONRoundTrip(t *testing.T) {
+	offset := int32(3600)
+	timezoneName := "Europe/Paris"
+	class := ClassInstance{
+		ClassType: ClassType{
+			Name:        "Config",
+			ID:          "12345678-9abc-4def-8123-456789abcdef",
+			HostDefined: true,
+			IsDataclass: true,
+			Attrs:       Dict{{Key: String("version"), Value: Int(1)}},
+		},
+		InstanceID: "fedcba98-7654-4321-8fed-cba987654321",
+		Attrs:      Dict{{Key: String("enabled"), Value: Bool(true)}},
+	}
+	values := []Value{
+		NotImplemented(),
+		TimeValue(Time{
+			Hour: 14, Minute: 30, Second: 45, Microsecond: 123456,
+			OffsetSeconds: &offset, TimezoneName: &timezoneName, Fold: 1,
+		}),
+		ClassInstanceValue(class),
+		FileHandleValue(FileHandle{Path: "/tmp/example.txt", Mode: "r", Position: 42}),
+	}
+
+	for _, original := range values {
+		data, err := json.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", original.Kind(), err)
+		}
+		var decoded Value
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal %s: %v", original.Kind(), err)
+		}
+		data2, err := json.Marshal(decoded)
+		if err != nil {
+			t.Fatalf("re-marshal %s: %v", original.Kind(), err)
+		}
+		if string(data) != string(data2) {
+			t.Fatalf("round-trip mismatch for %s:\n%s\n%s", original.Kind(), data, data2)
+		}
+	}
+}
+
+func TestClassInstanceIDsAndAccessors(t *testing.T) {
+	id := NewClassID()
+	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(id) {
+		t.Fatalf("NewClassID() = %q, want UUIDv4", id)
+	}
+
+	value := ClassInstanceValue(ClassInstance{ClassType: ClassType{Name: "Generated"}})
+	instance, ok := value.ClassInstance()
+	if !ok || instance.ClassType.ID == "" || instance.InstanceID == "" {
+		t.Fatalf("ClassInstance() = %#v, %v; want generated IDs", instance, ok)
+	}
+
+	time := Time{Hour: 1, Minute: 2, Second: 3}
+	if got, ok := TimeValue(time).Time(); !ok || got != time {
+		t.Fatalf("Time() = %#v, %v", got, ok)
+	}
+	handle := FileHandle{Path: "/tmp/example.txt", Mode: "rb", Position: 9}
+	if got, ok := FileHandleValue(handle).FileHandle(); !ok || got != handle {
+		t.Fatalf("FileHandle() = %#v, %v", got, ok)
+	}
+
+	if got := NotImplemented().String(); got != "NotImplemented" {
+		t.Fatalf("NotImplemented().String() = %q", got)
+	}
+	if got := TimeValue(Time{Hour: 1, Minute: 2, Second: 3}).String(); got != "01:02:03" {
+		t.Fatalf("TimeValue(...).String() = %q", got)
+	}
+	if got := FileHandleValue(handle).String(); got != `<file name="/tmp/example.txt" mode="rb">` {
+		t.Fatalf("FileHandleValue(...).String() = %q", got)
 	}
 }
