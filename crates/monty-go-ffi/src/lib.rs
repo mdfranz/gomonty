@@ -428,13 +428,13 @@ fn describe_run_progress(
             is_os_function: false,
             is_method_call: call.object_id.is_some(),
             function_name: call.function_name.clone(),
-            args: call.args.iter().map(WireValue::from_monty).collect(),
+            args: call.args.args().map(WireValue::from_object_ref).collect(),
             kwargs: call
-                .kwargs
-                .iter()
+                .args
+                .kwargs()
                 .map(|(key, value)| wire::WirePair {
-                    key: WireValue::from_monty(key),
-                    value: WireValue::from_monty(value),
+                    key: WireValue::from_object_ref(key),
+                    value: WireValue::from_object_ref(value),
                 })
                 .collect(),
             call_id: call.call_id,
@@ -487,13 +487,13 @@ fn describe_repl_progress(
             is_os_function: false,
             is_method_call: call.object_id.is_some(),
             function_name: call.function_name.clone(),
-            args: call.args.iter().map(WireValue::from_monty).collect(),
+            args: call.args.args().map(WireValue::from_object_ref).collect(),
             kwargs: call
-                .kwargs
-                .iter()
+                .args
+                .kwargs()
                 .map(|(key, value)| wire::WirePair {
-                    key: WireValue::from_monty(key),
-                    value: WireValue::from_monty(value),
+                    key: WireValue::from_object_ref(key),
+                    value: WireValue::from_object_ref(value),
                 })
                 .collect(),
             call_id: call.call_id,
@@ -543,7 +543,7 @@ fn describe_os_call(
     is_repl: bool,
 ) -> WireProgressPayload {
     let function_name = function_call.name().to_owned();
-    let (args, kwargs) = function_call.to_args();
+    let call_args = function_call.to_args();
     WireProgressPayload {
         variant: WIRE_PROGRESS_FUNCTION_CALL,
         version: wire::WIRE_VERSION,
@@ -552,12 +552,12 @@ fn describe_os_call(
         is_os_function: true,
         is_method_call: false,
         function_name,
-        args: args.iter().map(WireValue::from_monty).collect(),
-        kwargs: kwargs
-            .iter()
+        args: call_args.args().map(WireValue::from_object_ref).collect(),
+        kwargs: call_args
+            .kwargs()
             .map(|(key, value)| wire::WirePair {
-                key: WireValue::from_monty(key),
-                value: WireValue::from_monty(value),
+                key: WireValue::from_object_ref(key),
+                value: WireValue::from_object_ref(value),
             })
             .collect(),
         call_id,
