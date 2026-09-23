@@ -108,7 +108,7 @@ fi
 mkdir -p "$lib_dir"
 
 echo "Building monty-go-ffi for $target"
-cargo build --manifest-path "$ROOT_DIR/Cargo.toml" -p monty-go-ffi --release --target "$target"
+cargo build --locked --manifest-path "$ROOT_DIR/Cargo.toml" -p monty-go-ffi --release --target "$target"
 
 if [[ "$SKIP_HEADER" != "1" ]]; then
   echo "Refreshing C header"
