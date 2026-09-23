@@ -45,6 +45,12 @@
 
 #define WIRE_VALUE_PATH 15
 
+/**
+ * Removed: upstream replaced `Dataclass` with `ClassInstance`
+ * ([`WIRE_VALUE_CLASS_INSTANCE`]). Kept, unassigned to any `MontyObject`
+ * variant, so wire compatibility numbering never shifts; `into_monty`
+ * reports decoding it explicitly rather than silently misinterpreting it.
+ */
 #define WIRE_VALUE_DATACLASS 16
 
 #define WIRE_VALUE_FUNCTION 17
@@ -60,6 +66,14 @@
 #define WIRE_VALUE_TIMEDELTA 22
 
 #define WIRE_VALUE_TIMEZONE 23
+
+#define WIRE_VALUE_NOT_IMPLEMENTED 24
+
+#define WIRE_VALUE_TIME 25
+
+#define WIRE_VALUE_CLASS_INSTANCE 26
+
+#define WIRE_VALUE_FILE_HANDLE 27
 
 #define WIRE_CALL_RESULT_RETURN 0
 
