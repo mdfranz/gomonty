@@ -103,30 +103,13 @@ func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfi
 		}))
 	}
 
-	if snapshot.IsMethodCall {
-		if len(snapshot.Args) == 0 {
-			message := "method call is missing its receiver"
-			return Raise(Exception{Type: "TypeError", Arg: &message}), nil
-		}
-		selfValue, ok := snapshot.Args[0].Dataclass()
-		if !ok {
-			message := fmt.Sprintf("method call %s expected dataclass self", snapshot.FunctionName)
-			return Raise(Exception{Type: "TypeError", Arg: &message}), nil
-		}
-		handler, ok := selfValue.Methods[snapshot.FunctionName]
-		if !ok {
-			message := fmt.Sprintf("%s has no method %q", selfValue.Name, snapshot.FunctionName)
-			return Raise(Exception{Type: "AttributeError", Arg: &message}), nil
-		}
-		return normalizeCallbackResult(handler(ctx, Call{
-			FunctionName: snapshot.FunctionName,
-			Args:         snapshot.Args,
-			Kwargs:       snapshot.Kwargs,
-			CallID:       snapshot.CallID,
-			IsMethodCall: true,
-		}))
-	}
-
+	// Upstream now routes a method call to a host-object receiver by
+	// identity (a uuid, not carried on Snapshot yet) rather than passing
+	// self as Args[0] — gomonty does not yet track registered class
+	// instances, so a method call is dispatched the same way as a plain
+	// external function, keyed by name only. IsMethodCall stays available
+	// so callers driving the low-level Start/Progress API directly can
+	// tell the two apart.
 	handler, ok := cfg.functions[snapshot.FunctionName]
 	if !ok {
 		message := fmt.Sprintf("unable to find %q in external functions", snapshot.FunctionName)
@@ -137,7 +120,7 @@ func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfi
 		Args:         snapshot.Args,
 		Kwargs:       snapshot.Kwargs,
 		CallID:       snapshot.CallID,
-		IsMethodCall: false,
+		IsMethodCall: snapshot.IsMethodCall,
 	}))
 }
 

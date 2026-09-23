@@ -10,7 +10,6 @@ import (
 const fuzzScriptName = "fuzz.py"
 
 var fuzzRunLimits = &ResourceLimits{
-	MaxAllocations:    1_000_000,
 	MaxDuration:       50 * time.Millisecond,
 	MaxMemory:         8 << 20,
 	MaxRecursionDepth: 128,

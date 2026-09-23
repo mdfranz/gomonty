@@ -7,7 +7,10 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use monty::{ExcType, MontyDate, MontyDateTime, MontyException, MontyObject, MontyTimeDelta, MontyTimeZone, ResourceLimits, StackFrame};
+use monty_types::{
+    ExcType, MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException,
+    MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyUuid, ResourceLimits, StackFrame,
+};
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +33,10 @@ pub const WIRE_VALUE_SET: u8 = 12;
 pub const WIRE_VALUE_FROZEN_SET: u8 = 13;
 pub const WIRE_VALUE_EXCEPTION: u8 = 14;
 pub const WIRE_VALUE_PATH: u8 = 15;
+/// Removed: upstream replaced `Dataclass` with `ClassInstance`
+/// ([`WIRE_VALUE_CLASS_INSTANCE`]). Kept, unassigned to any `MontyObject`
+/// variant, so wire compatibility numbering never shifts; `into_monty`
+/// reports decoding it explicitly rather than silently misinterpreting it.
 pub const WIRE_VALUE_DATACLASS: u8 = 16;
 pub const WIRE_VALUE_FUNCTION: u8 = 17;
 pub const WIRE_VALUE_REPR: u8 = 18;
@@ -38,6 +45,10 @@ pub const WIRE_VALUE_DATE: u8 = 20;
 pub const WIRE_VALUE_DATETIME: u8 = 21;
 pub const WIRE_VALUE_TIMEDELTA: u8 = 22;
 pub const WIRE_VALUE_TIMEZONE: u8 = 23;
+pub const WIRE_VALUE_NOT_IMPLEMENTED: u8 = 24;
+pub const WIRE_VALUE_TIME: u8 = 25;
+pub const WIRE_VALUE_CLASS_INSTANCE: u8 = 26;
+pub const WIRE_VALUE_FILE_HANDLE: u8 = 27;
 
 pub const WIRE_CALL_RESULT_RETURN: u8 = 0;
 pub const WIRE_CALL_RESULT_EXCEPTION: u8 = 1;
@@ -92,12 +103,8 @@ pub struct WireValue {
     pub arg: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
-    #[serde(default, skip_serializing_if = "is_zero_u64", rename = "type_id")]
-    pub type_id: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attrs: Vec<WirePair>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub frozen: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub docstring: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -126,6 +133,22 @@ pub struct WireValue {
     pub seconds: i32,
     #[serde(default, skip_serializing_if = "is_zero_i32")]
     pub microseconds: i32,
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub fold: u8,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub class_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub instance_id: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub host_defined: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_dataclass: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub class_attrs: Vec<WirePair>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub position: u64,
 }
 
 impl WireValue {
@@ -223,25 +246,49 @@ impl WireValue {
                 string_value: value.clone(),
                 ..Self::default()
             },
-            MontyObject::Dataclass {
-                name,
-                type_id,
-                field_names,
-                attrs,
-                frozen,
-            } => Self {
-                kind: WIRE_VALUE_DATACLASS,
-                name: name.clone(),
-                type_id: *type_id,
-                field_names: field_names.clone(),
-                attrs: attrs
+            MontyObject::ClassInstance(instance) => Self {
+                kind: WIRE_VALUE_CLASS_INSTANCE,
+                name: instance.class_type.name.clone(),
+                class_id: instance.class_type.id.to_string(),
+                instance_id: instance.instance_id.to_string(),
+                host_defined: instance.class_type.host_defined,
+                is_dataclass: instance.class_type.is_dataclass,
+                class_attrs: (&instance.class_type.attrs)
                     .into_iter()
                     .map(|(key, value)| WirePair {
                         key: Self::from_monty(key),
                         value: Self::from_monty(value),
                     })
                     .collect(),
-                frozen: *frozen,
+                attrs: (&instance.attrs)
+                    .into_iter()
+                    .map(|(key, value)| WirePair {
+                        key: Self::from_monty(key),
+                        value: Self::from_monty(value),
+                    })
+                    .collect(),
+                ..Self::default()
+            },
+            MontyObject::NotImplemented => Self {
+                kind: WIRE_VALUE_NOT_IMPLEMENTED,
+                ..Self::default()
+            },
+            MontyObject::Time(time) => Self {
+                kind: WIRE_VALUE_TIME,
+                hour: time.hour,
+                minute: time.minute,
+                second: time.second,
+                microsecond: time.microsecond,
+                offset_seconds: time.offset_seconds,
+                timezone_name: time.timezone_name.clone(),
+                fold: time.fold,
+                ..Self::default()
+            },
+            MontyObject::FileHandle(handle) => Self {
+                kind: WIRE_VALUE_FILE_HANDLE,
+                string_value: handle.path.clone(),
+                mode: handle.mode.as_str().to_owned(),
+                position: handle.position,
                 ..Self::default()
             },
             MontyObject::Function { name, docstring } => Self {
@@ -367,18 +414,9 @@ impl WireValue {
                 arg: self.arg,
             }),
             WIRE_VALUE_PATH => Ok(MontyObject::Path(self.string_value)),
-            WIRE_VALUE_DATACLASS => Ok(MontyObject::Dataclass {
-                name: self.name,
-                type_id: self.type_id,
-                field_names: self.field_names,
-                attrs: self
-                    .attrs
-                    .into_iter()
-                    .map(|pair| Ok((pair.key.into_monty()?, pair.value.into_monty()?)))
-                    .collect::<Result<Vec<_>, String>>()?
-                    .into(),
-                frozen: self.frozen,
-            }),
+            WIRE_VALUE_DATACLASS => Err(
+                "dataclass values are no longer supported by this version of monty; use class_instance".to_owned(),
+            ),
             WIRE_VALUE_FUNCTION => Ok(MontyObject::Function {
                 name: self.name,
                 docstring: self.docstring,
@@ -410,6 +448,44 @@ impl WireValue {
                 offset_seconds: self.days,
                 name: self.timezone_name,
             })),
+            WIRE_VALUE_NOT_IMPLEMENTED => Ok(MontyObject::NotImplemented),
+            WIRE_VALUE_TIME => Ok(MontyObject::Time(MontyTime {
+                hour: self.hour,
+                minute: self.minute,
+                second: self.second,
+                microsecond: self.microsecond,
+                offset_seconds: self.offset_seconds,
+                timezone_name: self.timezone_name,
+                fold: self.fold,
+            })),
+            WIRE_VALUE_CLASS_INSTANCE => {
+                let class_id = MontyUuid::parse(&self.class_id)
+                    .ok_or_else(|| format!("invalid class_instance class_id: {}", self.class_id))?;
+                let instance_id = MontyUuid::parse(&self.instance_id)
+                    .ok_or_else(|| format!("invalid class_instance instance_id: {}", self.instance_id))?;
+                let class_attrs = self
+                    .class_attrs
+                    .into_iter()
+                    .map(|pair| Ok((pair.key.into_monty()?, pair.value.into_monty()?)))
+                    .collect::<Result<Vec<_>, String>>()?;
+                let attrs = self
+                    .attrs
+                    .into_iter()
+                    .map(|pair| Ok((pair.key.into_monty()?, pair.value.into_monty()?)))
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(MontyObject::ClassInstance(Box::new(MontyClassInstance {
+                    class_type: MontyClassType {
+                        name: self.name,
+                        id: class_id,
+                        host_defined: self.host_defined,
+                        is_dataclass: self.is_dataclass,
+                        attrs: class_attrs.into(),
+                    },
+                    instance_id,
+                    attrs: attrs.into(),
+                })))
+            }
+            WIRE_VALUE_FILE_HANDLE => Err("file handles cannot be used as Monty inputs".to_owned()),
             other => Err(format!("unknown wire value kind: {other}")),
         }
     }
@@ -434,8 +510,6 @@ pub struct WireResourceLimits {
     #[serde(default = "default_wire_version")]
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_allocations: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_duration_secs: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_memory: Option<usize>,
@@ -443,16 +517,22 @@ pub struct WireResourceLimits {
     pub gc_interval: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_recursion_depth: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_suspensions: Option<usize>,
 }
 
 impl From<WireResourceLimits> for ResourceLimits {
     fn from(value: WireResourceLimits) -> Self {
-        let mut limits = ResourceLimits::new();
-        limits.max_allocations = value.max_allocations;
+        let mut limits = ResourceLimits::default();
         limits.max_duration = value.max_duration_secs.map(Duration::from_secs_f64);
         limits.max_memory = value.max_memory;
         limits.gc_interval = value.gc_interval;
-        limits.max_recursion_depth = value.max_recursion_depth;
+        if let Some(max_recursion_depth) = value.max_recursion_depth {
+            limits.max_recursion_depth = max_recursion_depth;
+        }
+        if let Some(max_suspensions) = value.max_suspensions {
+            limits.max_suspensions = max_suspensions;
+        }
         limits
     }
 }
@@ -560,7 +640,7 @@ impl From<&StackFrame> for WireFrame {
             end_line: u32::from(value.end.line),
             end_column: u32::from(value.end.column),
             function_name: value.frame_name.clone(),
-            source_line: value.preview_line.clone(),
+            source_line: value.preview_line.as_deref().map(str::to_owned),
         }
     }
 }
@@ -632,7 +712,10 @@ mod tests {
     use num_bigint::BigInt;
 
     use super::WireValue;
-    use monty::{ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
+    use monty_types::{
+        ExcType, MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyFileHandle,
+        MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyUuid,
+    };
 
     #[test]
     fn wire_value_round_trips_nested_dicts() {
@@ -657,11 +740,20 @@ mod tests {
     }
 
     #[test]
-    fn wire_value_round_trips_dataclasses() {
-        let original = MontyObject::Dataclass {
-            name: "Config".to_owned(),
-            type_id: 7,
-            field_names: vec!["enabled".to_owned(), "path".to_owned()],
+    fn wire_value_round_trips_class_instances() {
+        let original = MontyObject::ClassInstance(Box::new(MontyClassInstance {
+            class_type: MontyClassType {
+                name: "Config".to_owned(),
+                id: MontyUuid::from_u128(0x1234_5678_9abc_def0_1234_5678_9abc_def0),
+                host_defined: true,
+                is_dataclass: true,
+                attrs: vec![(
+                    MontyObject::String("version".to_owned()),
+                    MontyObject::Int(1),
+                )]
+                .into(),
+            },
+            instance_id: MontyUuid::from_u128(0xfedc_ba98_7654_3210_fedc_ba98_7654_3210),
             attrs: vec![
                 (
                     MontyObject::String("enabled".to_owned()),
@@ -673,13 +765,86 @@ mod tests {
                 ),
             ]
             .into(),
-            frozen: true,
-        };
+        }));
 
         let decoded = WireValue::from_monty(&original)
             .into_monty()
-            .expect("dataclass should round-trip");
+            .expect("class instance should round-trip");
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn wire_value_round_trips_not_implemented() {
+        let original = MontyObject::NotImplemented;
+
+        let decoded = WireValue::from_monty(&original)
+            .into_monty()
+            .expect("NotImplemented should round-trip");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn wire_value_round_trips_time() {
+        let original = MontyObject::Time(MontyTime {
+            hour: 14,
+            minute: 30,
+            second: 45,
+            microsecond: 123_456,
+            offset_seconds: Some(3600),
+            timezone_name: Some("UTC+01:00".to_owned()),
+            fold: 1,
+        });
+
+        let decoded = WireValue::from_monty(&original)
+            .into_monty()
+            .expect("time should round-trip");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn wire_value_round_trips_naive_time() {
+        let original = MontyObject::Time(MontyTime {
+            hour: 0,
+            minute: 0,
+            second: 0,
+            microsecond: 0,
+            offset_seconds: None,
+            timezone_name: None,
+            fold: 0,
+        });
+
+        let decoded = WireValue::from_monty(&original)
+            .into_monty()
+            .expect("naive time should round-trip");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn wire_value_rejects_file_handle_inputs() {
+        let original = MontyObject::FileHandle(MontyFileHandle {
+            path: "/tmp/example.txt".to_owned(),
+            mode: "r".parse().expect("valid mode"),
+            position: 0,
+        });
+
+        let error = WireValue::from_monty(&original)
+            .into_monty()
+            .expect_err("file handles must be rejected as inputs");
+        assert_eq!(error, "file handles cannot be used as Monty inputs");
+    }
+
+    #[test]
+    fn wire_value_rejects_dataclass_inputs() {
+        let error = WireValue {
+            kind: super::WIRE_VALUE_DATACLASS,
+            ..WireValue::default()
+        }
+        .into_monty()
+        .expect_err("dataclass wire values must be rejected");
+        assert_eq!(
+            error,
+            "dataclass values are no longer supported by this version of monty; use class_instance"
+        );
     }
 
     #[test]

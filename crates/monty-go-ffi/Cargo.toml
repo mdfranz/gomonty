@@ -19,6 +19,7 @@ crate-type = ["cdylib"]
 [dependencies]
 monty = { workspace = true }
 monty_type_checking = { workspace = true }
+monty_types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rmp-serde = { workspace = true }

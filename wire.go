@@ -26,6 +26,9 @@ const (
 	wireValueFrozenSet
 	wireValueException
 	wireValuePath
+	// wireValueDataclass is retired: upstream replaced wire `Dataclass` with
+	// `ClassInstance` (wireValueClassInstance). Left as an unused iota slot
+	// so wire compatibility numbering never shifts.
 	wireValueDataclass
 	wireValueFunction
 	wireValueRepr
@@ -34,6 +37,10 @@ const (
 	wireValueDateTime
 	wireValueTimeDelta
 	wireValueTimeZone
+	wireValueNotImplemented
+	wireValueTime
+	wireValueClassInstance
+	wireValueFileHandle
 )
 
 const (
@@ -60,24 +67,22 @@ type wirePair struct {
 }
 
 type wireValue struct {
-	Kind        uint8       `msgpack:"kind"`
-	Bool        bool        `msgpack:"bool,omitempty"`
-	Int         int64       `msgpack:"int,omitempty"`
-	BigInt      string      `msgpack:"big_int,omitempty"`
-	Float       float64     `msgpack:"float,omitempty"`
-	String      string      `msgpack:"string,omitempty"`
-	Bytes       []byte      `msgpack:"bytes,omitempty"`
-	Items       []wireValue `msgpack:"items,omitempty"`
-	TypeName    string      `msgpack:"type_name,omitempty"`
-	FieldNames  []string    `msgpack:"field_names,omitempty"`
-	Values      []wireValue `msgpack:"values,omitempty"`
-	Pairs       []wirePair  `msgpack:"pairs,omitempty"`
-	ExcType     string      `msgpack:"exc_type,omitempty"`
-	Arg         *string     `msgpack:"arg,omitempty"`
-	Name        string      `msgpack:"name,omitempty"`
-	TypeID      uint64      `msgpack:"type_id,omitempty"`
-	Attrs       []wirePair  `msgpack:"attrs,omitempty"`
-	Frozen      bool        `msgpack:"frozen,omitempty"`
+	Kind         uint8       `msgpack:"kind"`
+	Bool         bool        `msgpack:"bool,omitempty"`
+	Int          int64       `msgpack:"int,omitempty"`
+	BigInt       string      `msgpack:"big_int,omitempty"`
+	Float        float64     `msgpack:"float,omitempty"`
+	String       string      `msgpack:"string,omitempty"`
+	Bytes        []byte      `msgpack:"bytes,omitempty"`
+	Items        []wireValue `msgpack:"items,omitempty"`
+	TypeName     string      `msgpack:"type_name,omitempty"`
+	FieldNames   []string    `msgpack:"field_names,omitempty"`
+	Values       []wireValue `msgpack:"values,omitempty"`
+	Pairs        []wirePair  `msgpack:"pairs,omitempty"`
+	ExcType      string      `msgpack:"exc_type,omitempty"`
+	Arg          *string     `msgpack:"arg,omitempty"`
+	Name         string      `msgpack:"name,omitempty"`
+	Attrs        []wirePair  `msgpack:"attrs,omitempty"`
 	Docstring    *string     `msgpack:"docstring,omitempty"`
 	Placeholder  string      `msgpack:"placeholder,omitempty"`
 	Year         int32       `msgpack:"year,omitempty"`
@@ -92,6 +97,14 @@ type wireValue struct {
 	Days         int32       `msgpack:"days,omitempty"`
 	Seconds      int32       `msgpack:"seconds,omitempty"`
 	Microseconds int32       `msgpack:"microseconds,omitempty"`
+	Fold         uint8       `msgpack:"fold,omitempty"`
+	ClassID      string      `msgpack:"class_id,omitempty"`
+	InstanceID   string      `msgpack:"instance_id,omitempty"`
+	HostDefined  bool        `msgpack:"host_defined,omitempty"`
+	IsDataclass  bool        `msgpack:"is_dataclass,omitempty"`
+	ClassAttrs   []wirePair  `msgpack:"class_attrs,omitempty"`
+	Mode         string      `msgpack:"mode,omitempty"`
+	Position     uint64      `msgpack:"position,omitempty"`
 }
 
 type wireCompileOptions struct {
@@ -104,11 +117,11 @@ type wireCompileOptions struct {
 
 type wireResourceLimits struct {
 	Version           uint32   `msgpack:"version"`
-	MaxAllocations    *int     `msgpack:"max_allocations,omitempty"`
 	MaxDurationSecs   *float64 `msgpack:"max_duration_secs,omitempty"`
 	MaxMemory         *int     `msgpack:"max_memory,omitempty"`
 	GCInterval        *int     `msgpack:"gc_interval,omitempty"`
 	MaxRecursionDepth *int     `msgpack:"max_recursion_depth,omitempty"`
+	MaxSuspensions    *int     `msgpack:"max_suspensions,omitempty"`
 }
 
 type wireStartOptions struct {
@@ -312,10 +325,10 @@ func newWireResourceLimits(limits *ResourceLimits) *wireResourceLimits {
 	}
 	payload := &wireResourceLimits{
 		Version:           wireVersion,
-		MaxAllocations:    optionalInt(limits.MaxAllocations),
 		MaxMemory:         optionalInt(limits.MaxMemory),
 		GCInterval:        optionalInt(limits.GCInterval),
 		MaxRecursionDepth: optionalInt(limits.MaxRecursionDepth),
+		MaxSuspensions:    optionalInt(limits.MaxSuspensions),
 	}
 	if limits.MaxDuration > 0 {
 		seconds := limits.MaxDuration.Seconds()
@@ -413,6 +426,8 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 		return wireValue{Kind: wireValueNone}, nil
 	case valueKindEllipsis:
 		return wireValue{Kind: wireValueEllipsis}, nil
+	case valueKindNotImplemented:
+		return wireValue{Kind: wireValueNotImplemented}, nil
 	case valueKindBool:
 		return wireValue{Kind: wireValueBool, Bool: value.data.(bool)}, nil
 	case valueKindInt:
@@ -476,19 +491,33 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 		}, nil
 	case valueKindPath:
 		return wireValue{Kind: wireValuePath, String: string(value.data.(Path))}, nil
-	case valueKindDataclass:
-		dataclass := value.data.(Dataclass)
-		attrs, err := wirePairsFromDict(dataclass.Attrs)
+	case valueKindClassInstance:
+		instance := value.data.(ClassInstance)
+		classAttrs, err := wirePairsFromDict(instance.ClassType.Attrs)
+		if err != nil {
+			return wireValue{}, err
+		}
+		attrs, err := wirePairsFromDict(instance.Attrs)
 		if err != nil {
 			return wireValue{}, err
 		}
 		return wireValue{
-			Kind:       wireValueDataclass,
-			Name:       dataclass.Name,
-			TypeID:     dataclass.TypeID,
-			FieldNames: append([]string(nil), dataclass.FieldNames...),
-			Attrs:      attrs,
-			Frozen:     dataclass.Frozen,
+			Kind:        wireValueClassInstance,
+			Name:        instance.ClassType.Name,
+			ClassID:     instance.ClassType.ID,
+			InstanceID:  instance.InstanceID,
+			HostDefined: instance.ClassType.HostDefined,
+			IsDataclass: instance.ClassType.IsDataclass,
+			ClassAttrs:  classAttrs,
+			Attrs:       attrs,
+		}, nil
+	case valueKindFileHandle:
+		handle := value.data.(FileHandle)
+		return wireValue{
+			Kind:     wireValueFileHandle,
+			String:   handle.Path,
+			Mode:     handle.Mode,
+			Position: handle.Position,
 		}, nil
 	case valueKindFunction:
 		function := value.data.(Function)
@@ -538,6 +567,18 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 			Days:         tz.OffsetSeconds,
 			TimezoneName: tz.Name,
 		}, nil
+	case valueKindTime:
+		t := value.data.(Time)
+		return wireValue{
+			Kind:         wireValueTime,
+			Hour:         t.Hour,
+			Minute:       t.Minute,
+			Second:       t.Second,
+			Microsecond:  t.Microsecond,
+			OffsetSecs:   t.OffsetSeconds,
+			TimezoneName: t.TimezoneName,
+			Fold:         t.Fold,
+		}, nil
 	default:
 		return wireValue{}, fmt.Errorf("unsupported value kind %q", value.Kind())
 	}
@@ -549,6 +590,8 @@ func (value wireValue) toPublic() (Value, error) {
 		return None(), nil
 	case wireValueEllipsis:
 		return Ellipsis(), nil
+	case wireValueNotImplemented:
+		return NotImplemented(), nil
 	case wireValueBool:
 		return Bool(value.Bool), nil
 	case wireValueInt:
@@ -610,16 +653,32 @@ func (value wireValue) toPublic() (Value, error) {
 	case wireValuePath:
 		return PathValue(Path(value.String)), nil
 	case wireValueDataclass:
+		return Value{}, fmt.Errorf("dataclass values are no longer supported by this version of monty; use class_instance")
+	case wireValueClassInstance:
+		classAttrs, err := dictFromWirePairs(value.ClassAttrs)
+		if err != nil {
+			return Value{}, err
+		}
 		attrs, err := dictFromWirePairs(value.Attrs)
 		if err != nil {
 			return Value{}, err
 		}
-		return DataclassValue(Dataclass{
-			Name:       value.Name,
-			TypeID:     value.TypeID,
-			FieldNames: append([]string(nil), value.FieldNames...),
+		return ClassInstanceValue(ClassInstance{
+			ClassType: ClassType{
+				Name:        value.Name,
+				ID:          value.ClassID,
+				HostDefined: value.HostDefined,
+				IsDataclass: value.IsDataclass,
+				Attrs:       classAttrs,
+			},
+			InstanceID: value.InstanceID,
 			Attrs:      attrs,
-			Frozen:     value.Frozen,
+		}), nil
+	case wireValueFileHandle:
+		return FileHandleValue(FileHandle{
+			Path:     value.String,
+			Mode:     value.Mode,
+			Position: value.Position,
 		}), nil
 	case wireValueFunction:
 		return FunctionValue(Function{Name: value.Name, Docstring: value.Docstring}), nil
@@ -655,6 +714,16 @@ func (value wireValue) toPublic() (Value, error) {
 		return TimeZoneValue(TimeZone{
 			OffsetSeconds: value.Days,
 			Name:          value.TimezoneName,
+		}), nil
+	case wireValueTime:
+		return TimeValue(Time{
+			Hour:          value.Hour,
+			Minute:        value.Minute,
+			Second:        value.Second,
+			Microsecond:   value.Microsecond,
+			OffsetSeconds: value.OffsetSecs,
+			TimezoneName:  value.TimezoneName,
+			Fold:          value.Fold,
 		}), nil
 	default:
 		return Value{}, fmt.Errorf("unknown wire value kind %d", value.Kind)
