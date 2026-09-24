@@ -142,7 +142,7 @@ jobs:
               export PYO3_PYTHON="$(command -v python3)"
               export MONTY_GO_FFI_MUSL_NATIVE=1
               MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh x86_64-unknown-linux-musl
-              chmod -R a+rX /usr/local/cargo/registry /usr/local/cargo/git
+              chmod -R a+rwX /usr/local/cargo/registry /usr/local/cargo/git
             '
 
       - name: Build-only verification note
@@ -177,7 +177,7 @@ jobs:
               export PYO3_PYTHON="$(command -v python3)"
               export MONTY_GO_FFI_MUSL_NATIVE=1
               MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh aarch64-unknown-linux-musl
-              chmod -R a+rX /usr/local/cargo/registry /usr/local/cargo/git
+              chmod -R a+rwX /usr/local/cargo/registry /usr/local/cargo/git
             '
 
       - name: Build-only verification note
