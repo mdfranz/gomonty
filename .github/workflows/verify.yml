@@ -61,11 +61,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: linux-amd64
-            runner: ubuntu-latest
-            rust_target: x86_64-unknown-linux-gnu
-            run_go_tests: true
-            build_only_note: ""
           - name: linux-arm64
             runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
@@ -74,11 +69,6 @@ jobs:
           - name: darwin-arm64
             runner: macos-14
             rust_target: aarch64-apple-darwin
-            run_go_tests: true
-            build_only_note: ""
-          - name: windows-amd64
-            runner: windows-latest
-            rust_target: x86_64-pc-windows-msvc
             run_go_tests: true
             build_only_note: ""
 
@@ -129,11 +119,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: musl-amd64
+          cache-on-failure: true
+
       - name: Build native shared library in musl container
         shell: bash
         run: |
+          mkdir -p ~/.cargo/registry ~/.cargo/git
           docker run --rm \
             -v "$PWD:/work" \
+            -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
+            -v "$HOME/.cargo/git:/usr/local/cargo/git" \
             -w /work \
             rust:1.95-alpine3.21 \
             sh -c '
@@ -144,6 +142,7 @@ jobs:
               export PYO3_PYTHON="$(command -v python3)"
               export MONTY_GO_FFI_MUSL_NATIVE=1
               MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh x86_64-unknown-linux-musl
+              chmod -R a+rX /usr/local/cargo/registry /usr/local/cargo/git
             '
 
       - name: Build-only verification note
@@ -155,11 +154,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: musl-arm64
+          cache-on-failure: true
+
       - name: Build native shared library in musl container
         shell: bash
         run: |
+          mkdir -p ~/.cargo/registry ~/.cargo/git
           docker run --rm \
             -v "$PWD:/work" \
+            -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
+            -v "$HOME/.cargo/git:/usr/local/cargo/git" \
             -w /work \
             rust:1.95-alpine3.21 \
             sh -c '
@@ -170,6 +177,7 @@ jobs:
               export PYO3_PYTHON="$(command -v python3)"
               export MONTY_GO_FFI_MUSL_NATIVE=1
               MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh aarch64-unknown-linux-musl
+              chmod -R a+rX /usr/local/cargo/registry /usr/local/cargo/git
             '
 
       - name: Build-only verification note
