@@ -2,7 +2,11 @@ package monty
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // TelemetryHandler receives execution telemetry from [Runner.Run] and
@@ -39,9 +43,15 @@ type TelemetryHandler interface {
 // ExecutionSpan represents the root span started by
 // [TelemetryHandler.StartExecution].
 type ExecutionSpan interface {
-	// End closes the span with the call's final result, error, and timing
-	// breakdown.
-	End(result Value, err error, timing ExecutionTiming)
+	// End closes the span with the call's final result, error, timing
+	// breakdown, and — only when TelemetryOptions.RecordOutputs is true —
+	// a size-limited rendering of the result. output is the zero
+	// TruncatedPayload{} otherwise; result itself is still the real Value
+	// regardless (needed for status/error classification), so a handler
+	// that wants raw content unconditionally can still read result.Raw()
+	// — RecordOutputs governs what gomonty hands you pre-rendered by
+	// default, not a hard technical barrier.
+	End(result Value, err error, timing ExecutionTiming, output TruncatedPayload)
 }
 
 // ExecutionTiming breaks one execution's wall time down into the phases
@@ -70,8 +80,11 @@ func (t ExecutionTiming) Python() time.Duration {
 // CallbackSpan represents a child span started by
 // [TelemetryHandler.StartCallback].
 type CallbackSpan interface {
-	// End closes the span with the callback's result and error.
-	End(result Result, err error)
+	// End closes the span with the callback's result, error, and — only
+	// when TelemetryOptions.RecordOutputs is true — a size-limited
+	// rendering of the result. See ExecutionSpan.End's output doc for the
+	// same caveat: result itself is still the real Result regardless.
+	End(result Result, err error, output TruncatedPayload)
 }
 
 // WaitSpan represents a child span started by
@@ -89,6 +102,10 @@ type ExecutionInfo struct {
 	ScriptName string
 	// IsRepl is true for Repl.FeedRun, false for Runner.Run.
 	IsRepl bool
+	// Inputs is a size-limited rendering of RunOptions.Inputs /
+	// FeedOptions's fed inputs — the zero TruncatedPayload{} unless
+	// TelemetryOptions.RecordArguments is true.
+	Inputs TruncatedPayload
 }
 
 // CallbackInfo describes one external-function or OS-handler invocation,
@@ -109,6 +126,10 @@ type CallbackInfo struct {
 	// CallID is the call's correlation id, matching Call.CallID /
 	// OSCall.CallID.
 	CallID uint32
+	// Arguments is a size-limited Python-call-syntax rendering of the
+	// call's positional and keyword arguments — the zero
+	// TruncatedPayload{} unless TelemetryOptions.RecordArguments is true.
+	Arguments TruncatedPayload
 }
 
 // WaitInfo describes a pending-future resolution wait, passed to
@@ -118,10 +139,7 @@ type WaitInfo struct {
 	PendingCallIDs []uint32
 }
 
-// TelemetryOptions configures a [TelemetryHandler]'s behavior. It is
-// otherwise deliberately minimal for now: payload recording and truncation
-// options (RecordArguments, RecordOutputs, MaxAttributeBytes) land with a
-// later milestone — see gomonty-olly.md and the gomonty issue tracker.
+// TelemetryOptions configures a [TelemetryHandler]'s behavior.
 type TelemetryOptions struct {
 	// PanicHandler, if non-nil, is called with the recovered value whenever
 	// a TelemetryHandler method panics. A panicking handler never disrupts
@@ -129,6 +147,136 @@ type TelemetryOptions struct {
 	// whether this is set — it only controls whether that panic is
 	// observable instead of being silently discarded.
 	PanicHandler func(recovered any)
+
+	// RecordArguments enables ExecutionInfo.Inputs / CallbackInfo.Arguments.
+	// False by default: Python inputs and call arguments can carry
+	// credentials, so no payload content is rendered unless explicitly
+	// opted into.
+	RecordArguments bool
+	// RecordOutputs enables the output TruncatedPayload passed to
+	// ExecutionSpan.End / CallbackSpan.End. False by default, same
+	// rationale as RecordArguments.
+	RecordOutputs bool
+	// MaxAttributeBytes caps every rendered payload at this many bytes,
+	// truncating (at a valid UTF-8 boundary) and setting
+	// TruncatedPayload.Truncated when exceeded. Zero/negative means
+	// DefaultMaxAttributeBytes.
+	MaxAttributeBytes int
+}
+
+// DefaultMaxAttributeBytes is used when TelemetryOptions.MaxAttributeBytes
+// is zero/negative. gomonty-olly.md originally suggested 1024, matching
+// upstream's own cap, but that's arguably aggressive for legitimate
+// structured results (a returned list or dict routinely exceeds 1KB) — this
+// starts more generous and is a reasonable thing to revisit against real
+// gomonty/sparktea usage.
+const DefaultMaxAttributeBytes = 4096
+
+// TruncatedPayload is a size-limited textual rendering of arguments or a
+// result, produced only when TelemetryOptions.RecordArguments/
+// RecordOutputs is true. The zero value (Text == "", Truncated == false)
+// is what every payload-bearing field gets by default — "not recorded",
+// not "recorded as empty".
+type TruncatedPayload struct {
+	Text      string
+	Truncated bool
+}
+
+// truncatedPayload returns the zero TruncatedPayload{} without calling
+// render at all when !enabled — render is a closure, not a precomputed
+// string, specifically so the (potentially non-trivial) rendering work
+// never happens when RecordArguments/RecordOutputs is off, which is the
+// default.
+func truncatedPayload(enabled bool, render func() string, maxBytes int) TruncatedPayload {
+	if !enabled {
+		return TruncatedPayload{}
+	}
+	text := render()
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxAttributeBytes
+	}
+	if len(text) <= maxBytes {
+		return TruncatedPayload{Text: text}
+	}
+	return TruncatedPayload{Text: truncateUTF8(text, maxBytes), Truncated: true}
+}
+
+// truncateUTF8 cuts s to at most maxBytes bytes, trimming back further if
+// necessary so it never splits a multi-byte UTF-8 sequence. At most 3 extra
+// bytes are trimmed (the longest UTF-8 sequence is 4 bytes).
+func truncateUTF8(s string, maxBytes int) string {
+	s = s[:maxBytes]
+	for len(s) > 0 && !utf8.RuneStart(s[len(s)-1]) {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+// renderInputs renders a name->Value map as "name=value, ..." in
+// deterministic (sorted-by-name) order, for ExecutionInfo.Inputs.
+func renderInputs(inputs map[string]Value) string {
+	if len(inputs) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(inputs))
+	for name := range inputs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for i, name := range names {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(name)
+		b.WriteByte('=')
+		b.WriteString(inputs[name].String())
+	}
+	return b.String()
+}
+
+// renderArguments renders positional and keyword arguments in Python
+// call syntax ("1, 2, key=3"), for CallbackInfo.Arguments.
+func renderArguments(args []Value, kwargs Dict) string {
+	parts := make([]string, 0, len(args)+len(kwargs))
+	for _, a := range args {
+		parts = append(parts, a.String())
+	}
+	for _, kv := range kwargs {
+		parts = append(parts, fmt.Sprintf("%s=%s", kv.Key.String(), kv.Value.String()))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// renderResult renders a callback Result for CallbackSpan.End's output
+// payload: an exception result renders as "Type(arg)", otherwise the
+// returned Value's own rendering.
+func renderResult(r Result) string {
+	if exc, ok := r.Raised(); ok && exc != nil {
+		arg := ""
+		if exc.Arg != nil {
+			arg = *exc.Arg
+		}
+		return fmt.Sprintf("%s(%s)", exc.Type, arg)
+	}
+	return r.Value().String()
+}
+
+// printTelemetry bundles what consumeOpResult needs to call RecordPrint
+// alongside the ordinary PrintCallback, without growing every intervening
+// function's parameter list by two.
+type printTelemetry struct {
+	handler TelemetryHandler
+	opts    TelemetryOptions
+}
+
+func recordPrint(ctx context.Context, pt printTelemetry, text string) {
+	if pt.handler == nil {
+		return
+	}
+	safeTelemetryCall(pt.opts.PanicHandler, func() {
+		pt.handler.RecordPrint(ctx, text)
+	})
 }
 
 // The start*Span/end*Span helpers below are nil-safe: with telemetry ==
@@ -167,8 +315,9 @@ func endExecutionSpan(span ExecutionSpan, result Value, err error, timing Execut
 	if span == nil {
 		return
 	}
+	output := truncatedPayload(opts.RecordOutputs, result.String, opts.MaxAttributeBytes)
 	safeTelemetryCall(opts.PanicHandler, func() {
-		span.End(result, err, timing)
+		span.End(result, err, timing, output)
 	})
 }
 
@@ -187,8 +336,9 @@ func endCallbackSpan(span CallbackSpan, result Result, err error, opts Telemetry
 	if span == nil {
 		return
 	}
+	output := truncatedPayload(opts.RecordOutputs, func() string { return renderResult(result) }, opts.MaxAttributeBytes)
 	safeTelemetryCall(opts.PanicHandler, func() {
-		span.End(result, err)
+		span.End(result, err, output)
 	})
 }
 

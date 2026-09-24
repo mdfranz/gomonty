@@ -60,19 +60,19 @@ func dispatchLoop(ctx context.Context, progress Progress, cfg dispatchConfig) (V
 					return Value{}, restoreProgressOwner(current, fmt.Errorf("pending result for call %d is missing a waiter", current.CallID)), timing
 				}
 				waiters[current.CallID] = waiter
-				progress, err = current.progressBase.resumeCall(ctx, mustMarshalCallResult(callResultPayload{Kind: "pending"}), cfg.print)
+				progress, err = current.progressBase.resumeCall(ctx, mustMarshalCallResult(callResultPayload{Kind: "pending"}), cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
 			case result.wireException() != nil:
 				exception := result.wireException()
 				progress, err = current.progressBase.resumeCall(ctx, mustMarshalCallResult(callResultPayload{
 					Kind: "exception",
 					Type: exception.Type,
 					Arg:  exception.Arg,
-				}), cfg.print)
+				}), cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
 			default:
 				progress, err = current.progressBase.resumeCall(ctx, mustMarshalCallResult(callResultPayload{
 					Kind:  "return",
 					Value: result.wireValue(),
-				}), cfg.print)
+				}), cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
 			}
 			if err != nil {
 				return Value{}, err, timing
@@ -90,7 +90,7 @@ func dispatchLoop(ctx context.Context, progress Progress, cfg dispatchConfig) (V
 			if err != nil {
 				return Value{}, restoreProgressOwner(current, err), timing
 			}
-			progress, err = current.progressBase.resumeFutures(ctx, mustMarshalFutureResults(results), cfg.print)
+			progress, err = current.progressBase.resumeFutures(ctx, mustMarshalFutureResults(results), cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
 			if err != nil {
 				return Value{}, err, timing
 			}
@@ -119,6 +119,9 @@ func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfi
 			IsOSFunction: true,
 			IsMethodCall: snapshot.IsMethodCall,
 			CallID:       snapshot.CallID,
+			Arguments: truncatedPayload(cfg.telemetryOptions.RecordArguments, func() string {
+				return renderArguments(snapshot.Args, snapshot.Kwargs)
+			}, cfg.telemetryOptions.MaxAttributeBytes),
 		}, cfg.telemetryOptions)
 		result, err := normalizeCallbackResult(cfg.os(callCtx, OSCall{
 			Function: OSFunction(snapshot.FunctionName),
@@ -149,6 +152,9 @@ func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfi
 		IsOSFunction: false,
 		IsMethodCall: snapshot.IsMethodCall,
 		CallID:       snapshot.CallID,
+		Arguments: truncatedPayload(cfg.telemetryOptions.RecordArguments, func() string {
+			return renderArguments(snapshot.Args, snapshot.Kwargs)
+		}, cfg.telemetryOptions.MaxAttributeBytes),
 	}, cfg.telemetryOptions)
 	result, err := normalizeCallbackResult(handler(callCtx, Call{
 		FunctionName: snapshot.FunctionName,
@@ -167,12 +173,12 @@ func dispatchNameLookup(ctx context.Context, lookup *NameLookupSnapshot, cfg dis
 		return lookup.progressBase.resumeLookup(ctx, mustMarshalLookupResult(lookupResultPayload{
 			Kind:  "value",
 			Value: value,
-		}), cfg.print)
+		}), cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
 	}
 
 	return lookup.progressBase.resumeLookup(ctx, mustMarshalLookupResult(lookupResultPayload{
 		Kind: "undefined",
-	}), cfg.print)
+	}), cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
 }
 
 func waitForFutureResults(ctx context.Context, pending []uint32, waiters map[uint32]Waiter, cfg dispatchConfig) (map[uint32]Result, error) {
