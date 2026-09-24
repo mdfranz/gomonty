@@ -14,7 +14,10 @@
 // Tab completes the path argument to /execute, shell-style: an unambiguous
 // match completes in full, a partial match extends to the longest common
 // prefix, and a second Tab at that prefix lists the candidates. Up/Down
-// recall previous inputs, like a normal shell history.
+// recall previous inputs, like a normal shell history. Ctrl+R rewinds
+// (bpython's term for it): pops the last input back into the prompt for
+// editing and replays everything before it against a fresh interpreter, so
+// a mistyped line can be fixed without restarting the whole session.
 //
 // Run as `shmonty <path>` instead of bare, it skips the REPL entirely: runs
 // the file once — like `python script.py`, not /execute — printing print()
@@ -172,18 +175,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.entries = append(m.entries, m.debugStatusEntry())
 				return m, nil
 			}
-			var e entry
-			if code == executeCmd || strings.HasPrefix(code, executePrefix) {
-				path := strings.TrimSpace(strings.TrimPrefix(code, executeCmd))
-				if path == "" {
-					e = entry{code: code, result: "usage: /execute <path>", isErr: true}
-				} else {
-					e = m.executeFile(code, path)
-				}
-			} else {
-				e = m.run(code)
-			}
-			m.entries = append(m.entries, e)
+			m.entries = append(m.entries, m.runInput(code))
 			if len(m.entries) > maxHistoryEntries {
 				m.entries = m.entries[len(m.entries)-maxHistoryEntries:]
 			}
@@ -200,6 +192,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.navigateHistory(1), nil
 		case tea.KeyTab:
 			return m.completePath(), nil
+		case tea.KeyCtrlR:
+			return m.rewind(), nil
 		}
 	}
 	var cmd tea.Cmd
@@ -415,6 +409,62 @@ func rule(label string, width int) string {
 	return prefix + strings.Repeat("─", width-len(prefix))
 }
 
+// runInput dispatches one line of raw REPL input exactly as KeyEnter and
+// rewind's replay both need: /execute <path> reads and runs a file,
+// anything else runs as Python. It does not handle /debug — that toggles
+// session state directly and is deliberately excluded from history, so it
+// never appears in the input rewind replays.
+func (m model) runInput(code string) entry {
+	if code == executeCmd || strings.HasPrefix(code, executePrefix) {
+		path := strings.TrimSpace(strings.TrimPrefix(code, executeCmd))
+		if path == "" {
+			return entry{code: code, result: "usage: /execute <path>", isErr: true}
+		}
+		return m.executeFile(code, path)
+	}
+	return m.run(code)
+}
+
+// rewind implements bpython's Rewind (Ctrl-R): pops the last input back
+// into the prompt for editing, and replays everything before it against a
+// fresh Repl so accumulated state (variables, imports) actually reflects a
+// session with that line removed, not just a transcript that looks like it.
+func (m model) rewind() model {
+	if len(m.history) == 0 {
+		return m
+	}
+	last := m.history[len(m.history)-1]
+	m.history = m.history[:len(m.history)-1]
+	m.historyIdx = len(m.history)
+	m.pendingInput = ""
+
+	repl, err := monty.NewRepl(monty.ReplOptions{ScriptName: "shmonty.py"})
+	if err != nil {
+		// Extremely unlikely — NewRepl only fails on FFI init issues, and
+		// startup already proved it works. Leave the session untouched
+		// rather than lose it.
+		m.history = append(m.history, last)
+		return m
+	}
+	m.repl = repl
+
+	m.entries = nil
+	for _, code := range m.history {
+		m.entries = append(m.entries, m.runInput(code))
+	}
+	if len(m.entries) > maxHistoryEntries {
+		m.entries = m.entries[len(m.entries)-maxHistoryEntries:]
+	}
+	m.logLines = append(m.logLines, m.logs.drain()...)
+	if len(m.logLines) > maxStoredLogLines {
+		m.logLines = m.logLines[len(m.logLines)-maxStoredLogLines:]
+	}
+
+	m.textInput.SetValue(last)
+	m.textInput.CursorEnd()
+	return m
+}
+
 func (m model) run(code string) entry {
 	return m.runCode(code, code)
 }
@@ -476,7 +526,7 @@ func (m model) runCode(display, code string) entry {
 
 func (m model) View() string {
 	var b strings.Builder
-	b.WriteString("shmonty  (Ctrl+C/Ctrl+D to quit, Up/Down for history, /debug telemetry, /execute <path> [Tab completes])\n")
+	b.WriteString("shmonty  (Ctrl+C/Ctrl+D to quit, Up/Down for history, Ctrl+R rewind, /debug telemetry, /execute <path> [Tab completes])\n")
 	if m.debugEnabled {
 		b.WriteString(m.renderLogPane())
 	}
