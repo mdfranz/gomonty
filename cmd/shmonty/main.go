@@ -139,7 +139,7 @@ func (m model) run(code string) entry {
 	if err != nil {
 		return entry{code: code, output: stdout.String(), result: err.Error(), isErr: true}
 	}
-	return entry{code: code, output: stdout.String(), result: fmt.Sprintf("%v", value.Raw())}
+	return entry{code: code, output: stdout.String(), result: value.String()}
 }
 
 func (m model) View() string {
