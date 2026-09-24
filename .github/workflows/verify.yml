@@ -116,6 +116,11 @@ jobs:
   verify-musl-amd64:
     name: verify linux-musl-amd64
     runs-on: ubuntu-latest
+    # Off by default: gomonty's only known consumer (sparktea) doesn't
+    # target musl/Alpine, and this build-only check (no Go tests) adds
+    # several minutes to every PR. Enable temporarily with:
+    #   gh variable set RUN_MUSL_CI --body true --repo mdfranz/gomonty
+    if: vars.RUN_MUSL_CI == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -142,7 +147,7 @@ jobs:
               export PYO3_PYTHON="$(command -v python3)"
               export MONTY_GO_FFI_MUSL_NATIVE=1
               MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh x86_64-unknown-linux-musl
-              chmod -R a+rX /usr/local/cargo/registry /usr/local/cargo/git
+              chmod -R a+rwX /usr/local/cargo/registry /usr/local/cargo/git
             '
 
       - name: Build-only verification note
@@ -151,6 +156,8 @@ jobs:
   verify-musl-arm64:
     name: verify linux-musl-arm64
     runs-on: ubuntu-24.04-arm
+    # See verify-musl-amd64's comment: off by default, same toggle.
+    if: vars.RUN_MUSL_CI == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -177,7 +184,7 @@ jobs:
               export PYO3_PYTHON="$(command -v python3)"
               export MONTY_GO_FFI_MUSL_NATIVE=1
               MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh aarch64-unknown-linux-musl
-              chmod -R a+rX /usr/local/cargo/registry /usr/local/cargo/git
+              chmod -R a+rwX /usr/local/cargo/registry /usr/local/cargo/git
             '
 
       - name: Build-only verification note
