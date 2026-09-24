@@ -1,8 +1,11 @@
 package monty
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -102,6 +105,78 @@ func TestWaitForFutureResultsRecordsWaitSpanOnCancellation(t *testing.T) {
 	}
 	if !errors.Is(handler.ended[0], context.Canceled) {
 		t.Fatalf("expected End(context.Canceled), got End(%v)", handler.ended[0])
+	}
+}
+
+func TestSlogHandlerLogsWaitSpan(t *testing.T) {
+	var buf bytes.Buffer
+	handler := SlogHandler{Logger: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+	waiters := map[uint32]Waiter{
+		7: fakeWaiter{result: Return(Int(42))},
+	}
+
+	if _, err := waitForFutureResults(context.Background(), []uint32{7}, waiters, dispatchConfig{telemetry: handler}); err != nil {
+		t.Fatalf("waitForFutureResults: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "monty wait started") {
+		t.Errorf("log missing wait-started message:\n%s", out)
+	}
+	if !strings.Contains(out, "monty wait finished") {
+		t.Errorf("log missing wait-finished message:\n%s", out)
+	}
+	if !strings.Contains(out, "pending_call_ids=[7]") {
+		t.Errorf("log missing pending_call_ids attribute:\n%s", out)
+	}
+	if !strings.Contains(out, "duration_ms=") {
+		t.Errorf("log missing duration_ms attribute (DurationUnit's default):\n%s", out)
+	}
+}
+
+func TestSlogHandlerLogsWaitSpanWithNanosecondDuration(t *testing.T) {
+	var buf bytes.Buffer
+	handler := SlogHandler{
+		Logger:       slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		DurationUnit: DurationNanoseconds,
+	}
+	waiters := map[uint32]Waiter{
+		7: fakeWaiter{result: Return(Int(42))},
+	}
+
+	if _, err := waitForFutureResults(context.Background(), []uint32{7}, waiters, dispatchConfig{telemetry: handler}); err != nil {
+		t.Fatalf("waitForFutureResults: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "duration_ns=") {
+		t.Errorf("log missing duration_ns attribute:\n%s", out)
+	}
+	if strings.Contains(out, "duration_ms=") {
+		t.Errorf("log unexpectedly contains a duration_ms attribute:\n%s", out)
+	}
+}
+
+func TestSlogHandlerLogsWaitSpanFailure(t *testing.T) {
+	var buf bytes.Buffer
+	handler := SlogHandler{Logger: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+	waiters := map[uint32]Waiter{
+		9: blockingWaiter{},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := waitForFutureResults(ctx, []uint32{9}, waiters, dispatchConfig{telemetry: handler}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "monty wait failed") {
+		t.Errorf("log missing wait-failed message:\n%s", out)
+	}
+	if !strings.Contains(out, "level=ERROR") {
+		t.Errorf("wait failure was not logged at Error level:\n%s", out)
 	}
 }
 

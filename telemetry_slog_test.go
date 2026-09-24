@@ -105,6 +105,47 @@ func TestSlogHandlerPythonError(t *testing.T) {
 	}
 }
 
+func TestSlogHandlerDurationUnitDefaultsToMilliseconds(t *testing.T) {
+	handler, buf := newTestSlogHandler(t)
+
+	runner, err := monty.New(`40 + 2`, monty.CompileOptions{ScriptName: "slog-duration-ms.py"})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if _, runErr := runner.Run(context.Background(), monty.RunOptions{Telemetry: handler}); runErr != nil {
+		t.Fatalf("run: %v", runErr)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "duration_ms=") {
+		t.Errorf("log missing duration_ms attribute:\n%s", out)
+	}
+	if strings.Contains(out, "duration_ns=") {
+		t.Errorf("log unexpectedly contains a duration_ns attribute:\n%s", out)
+	}
+}
+
+func TestSlogHandlerDurationUnitNanoseconds(t *testing.T) {
+	handler, buf := newTestSlogHandler(t)
+	handler.DurationUnit = monty.DurationNanoseconds
+
+	runner, err := monty.New(`40 + 2`, monty.CompileOptions{ScriptName: "slog-duration-ns.py"})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if _, runErr := runner.Run(context.Background(), monty.RunOptions{Telemetry: handler}); runErr != nil {
+		t.Fatalf("run: %v", runErr)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "duration_ns=") {
+		t.Errorf("log missing duration_ns attribute:\n%s", out)
+	}
+	if strings.Contains(out, "duration_ms=") {
+		t.Errorf("log unexpectedly contains a duration_ms attribute:\n%s", out)
+	}
+}
+
 func TestSlogHandlerRespectsRecordArgumentsOptIn(t *testing.T) {
 	handler, buf := newTestSlogHandler(t)
 
