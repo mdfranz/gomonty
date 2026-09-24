@@ -1,4 +1,4 @@
-module github.com/ewhauser/gomonty/shmonty
+module github.com/ewhauser/gomonty/cmd/shmonty
 
 go 1.25.0
 
@@ -36,4 +36,4 @@ require (
 	golang.org/x/text v0.3.8 // indirect
 )
 
-replace github.com/ewhauser/gomonty => ..
+replace github.com/ewhauser/gomonty => ../..
