@@ -1,6 +1,9 @@
 package monty
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // TelemetryHandler receives execution telemetry from [Runner.Run] and
 // [Repl.FeedRun]. A nil handler — the default via [RunOptions.Telemetry] /
@@ -36,8 +39,32 @@ type TelemetryHandler interface {
 // ExecutionSpan represents the root span started by
 // [TelemetryHandler.StartExecution].
 type ExecutionSpan interface {
-	// End closes the span with the call's final result and error.
-	End(result Value, err error)
+	// End closes the span with the call's final result, error, and timing
+	// breakdown.
+	End(result Value, err error, timing ExecutionTiming)
+}
+
+// ExecutionTiming breaks one execution's wall time down into the phases
+// described in gomonty-olly.md §3: time spent inside the Rust/FFI
+// interpreter, time spent in host callbacks, and time spent blocked
+// waiting for pending futures.
+type ExecutionTiming struct {
+	// Total is the full StartExecution-to-End wall time.
+	Total time.Duration
+	// Callback is cumulative time spent inside external-function/OS-handler
+	// invocations (the sum of every StartCallback...End interval).
+	Callback time.Duration
+	// Wait is cumulative time spent blocked resolving pending futures (the
+	// sum of every StartWait...End interval).
+	Wait time.Duration
+}
+
+// Python returns Total - Callback - Wait: time spent inside the Rust/FFI
+// interpreter itself, excluding host callback and future-wait time. This is
+// gomonty-olly.md's monty.python_duration_ms, computed on demand rather
+// than precomputed.
+func (t ExecutionTiming) Python() time.Duration {
+	return t.Total - t.Callback - t.Wait
 }
 
 // CallbackSpan represents a child span started by
@@ -96,3 +123,52 @@ type WaitInfo struct {
 // (RecordArguments, RecordOutputs, MaxAttributeBytes) land with a later
 // milestone — see gomonty-olly.md and the gomonty issue tracker.
 type TelemetryOptions struct{}
+
+// The start*Span/end*Span helpers below are nil-safe: with telemetry ==
+// nil (the default), they're no-ops that return ctx unchanged and a nil
+// span, so call sites never need their own nil check. They're also the
+// natural choke point for panic recovery (a later milestone — see
+// gomonty-olly.md §7) since every TelemetryHandler invocation already
+// funnels through here.
+
+func startExecutionSpan(ctx context.Context, telemetry TelemetryHandler, info ExecutionInfo) (context.Context, ExecutionSpan) {
+	if telemetry == nil {
+		return ctx, nil
+	}
+	return telemetry.StartExecution(ctx, info)
+}
+
+func endExecutionSpan(span ExecutionSpan, result Value, err error, timing ExecutionTiming) {
+	if span == nil {
+		return
+	}
+	span.End(result, err, timing)
+}
+
+func startCallbackSpan(ctx context.Context, telemetry TelemetryHandler, info CallbackInfo) (context.Context, CallbackSpan) {
+	if telemetry == nil {
+		return ctx, nil
+	}
+	return telemetry.StartCallback(ctx, info)
+}
+
+func endCallbackSpan(span CallbackSpan, result Result, err error) {
+	if span == nil {
+		return
+	}
+	span.End(result, err)
+}
+
+func startWaitSpan(ctx context.Context, telemetry TelemetryHandler, info WaitInfo) (context.Context, WaitSpan) {
+	if telemetry == nil {
+		return ctx, nil
+	}
+	return telemetry.StartWait(ctx, info)
+}
+
+func endWaitSpan(span WaitSpan, err error) {
+	if span == nil {
+		return
+	}
+	span.End(err)
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ewhauser/gomonty/internal/ffi"
 )
@@ -64,12 +65,18 @@ type Complete struct {
 type runnerState struct {
 	mu     sync.Mutex
 	handle *ffi.Runner
+	// scriptName is set once at construction and never mutated, so it's
+	// safe to read without holding mu.
+	scriptName string
 }
 
 type replState struct {
 	mu       sync.Mutex
 	handle   *ffi.Repl
 	inFlight bool
+	// scriptName is set once at construction and never mutated, so it's
+	// safe to read without holding mu.
+	scriptName string
 }
 
 type progressState struct {
@@ -96,7 +103,7 @@ func New(code string, opts CompileOptions) (*Runner, error) {
 		return nil, newError(result.Error)
 	}
 	return &Runner{
-		state: &runnerState{handle: result.Runner},
+		state: &runnerState{handle: result.Runner, scriptName: opts.ScriptName},
 	}, nil
 }
 
@@ -163,7 +170,7 @@ func NewRepl(opts ReplOptions) (*Repl, error) {
 		return nil, newError(result.Error)
 	}
 	return &Repl{
-		state: &replState{handle: result.Repl},
+		state: &replState{handle: result.Repl, scriptName: opts.ScriptName},
 	}, nil
 }
 
@@ -227,20 +234,33 @@ func (r *Runner) start(ctx context.Context, opts StartOptions, print PrintCallba
 
 // Run executes the runner through the high-level host callback loop.
 func (r *Runner) Run(ctx context.Context, opts RunOptions) (Value, error) {
-	progress, err := r.start(ctx, StartOptions{
+	start := time.Now()
+	execCtx, span := startExecutionSpan(ctx, opts.Telemetry, ExecutionInfo{
+		ScriptName: r.state.scriptName,
+		IsRepl:     false,
+	})
+
+	progress, err := r.start(execCtx, StartOptions{
 		Inputs: opts.Inputs,
 		Limits: opts.Limits,
 	}, opts.Print)
 	if err != nil {
+		endExecutionSpan(span, Value{}, err, ExecutionTiming{Total: time.Since(start)})
 		return Value{}, err
 	}
-	return dispatchLoop(ctx, progress, dispatchConfig{
+	value, runErr, timing := dispatchLoop(execCtx, progress, dispatchConfig{
 		functions:        opts.Functions,
 		os:               opts.OS,
 		print:            opts.Print,
 		telemetry:        opts.Telemetry,
 		telemetryOptions: opts.TelemetryOptions,
 	})
+	endExecutionSpan(span, value, runErr, ExecutionTiming{
+		Total:    time.Since(start),
+		Callback: timing.callback,
+		Wait:     timing.wait,
+	})
+	return value, runErr
 }
 
 // Dump serializes the REPL session.
@@ -294,17 +314,30 @@ func (r *Repl) feedStart(ctx context.Context, code string, opts FeedStartOptions
 
 // FeedRun executes a REPL snippet through the high-level host callback loop.
 func (r *Repl) FeedRun(ctx context.Context, code string, opts FeedOptions) (Value, error) {
-	progress, err := r.feedStart(ctx, code, FeedStartOptions{Inputs: opts.Inputs}, opts.Print)
+	start := time.Now()
+	execCtx, span := startExecutionSpan(ctx, opts.Telemetry, ExecutionInfo{
+		ScriptName: r.state.scriptName,
+		IsRepl:     true,
+	})
+
+	progress, err := r.feedStart(execCtx, code, FeedStartOptions{Inputs: opts.Inputs}, opts.Print)
 	if err != nil {
+		endExecutionSpan(span, Value{}, err, ExecutionTiming{Total: time.Since(start)})
 		return Value{}, err
 	}
-	return dispatchLoop(ctx, progress, dispatchConfig{
+	value, runErr, timing := dispatchLoop(execCtx, progress, dispatchConfig{
 		functions:        opts.Functions,
 		os:               opts.OS,
 		print:            opts.Print,
 		telemetry:        opts.Telemetry,
 		telemetryOptions: opts.TelemetryOptions,
 	})
+	endExecutionSpan(span, value, runErr, ExecutionTiming{
+		Total:    time.Since(start),
+		Callback: timing.callback,
+		Wait:     timing.wait,
+	})
+	return value, runErr
 }
 
 // Dump serializes the current snapshot.
