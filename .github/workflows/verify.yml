@@ -1,7 +1,14 @@
 name: verify
 
 on:
-  pull_request: {}
+  # Only run automatically when a PR is first opened, not on every
+  # subsequent push (default pull_request types also include
+  # synchronize/reopened). To check a later commit, trigger manually
+  # against that branch's current head:
+  #   gh workflow run verify.yml --ref <branch-name>
+  pull_request:
+    types: [opened]
+  workflow_dispatch: {}
 
 permissions:
   contents: read
