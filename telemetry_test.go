@@ -289,3 +289,94 @@ func TestTelemetryExecutionSpanReflectsContextCancellation(t *testing.T) {
 		t.Fatalf("execution span ended with %v, want context.Canceled", ev.err)
 	}
 }
+
+// panickingHandler panics in exactly one of its four Run-reachable methods
+// (StartExecution, ExecutionSpan.End, StartCallback, CallbackSpan.End —
+// StartWait/WaitSpan.End are covered directly in dispatch_test.go, since
+// this codebase has no verified live-script trigger for the future-wait
+// path). Every other method behaves normally, so the script still runs to
+// completion around the one deliberately broken call site.
+type panickingHandler struct {
+	panicIn string
+	onPanic func(recovered any)
+}
+
+func (h panickingHandler) StartExecution(ctx context.Context, _ monty.ExecutionInfo) (context.Context, monty.ExecutionSpan) {
+	if h.panicIn == "StartExecution" {
+		panic("boom: StartExecution")
+	}
+	return ctx, panickingExecutionSpan(h)
+}
+
+func (h panickingHandler) StartCallback(ctx context.Context, _ monty.CallbackInfo) (context.Context, monty.CallbackSpan) {
+	if h.panicIn == "StartCallback" {
+		panic("boom: StartCallback")
+	}
+	return ctx, panickingCallbackSpan(h)
+}
+
+func (h panickingHandler) StartWait(ctx context.Context, _ monty.WaitInfo) (context.Context, monty.WaitSpan) {
+	return ctx, nil
+}
+
+func (h panickingHandler) RecordPrint(context.Context, string) {}
+
+type panickingExecutionSpan panickingHandler
+
+func (s panickingExecutionSpan) End(monty.Value, error, monty.ExecutionTiming) {
+	if s.panicIn == "End" {
+		panic("boom: ExecutionSpan.End")
+	}
+}
+
+type panickingCallbackSpan panickingHandler
+
+func (s panickingCallbackSpan) End(monty.Result, error) {
+	if s.panicIn == "CallbackEnd" {
+		panic("boom: CallbackSpan.End")
+	}
+}
+
+func TestTelemetryPanicNeverBreaksScriptExecution(t *testing.T) {
+	for _, panicIn := range []string{"StartExecution", "End", "StartCallback", "CallbackEnd"} {
+		t.Run(panicIn, func(t *testing.T) {
+			runner, err := monty.New(`host_value()`, monty.CompileOptions{ScriptName: "panic.py"})
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+
+			var recovered []any
+			var mu sync.Mutex
+			handler := panickingHandler{
+				panicIn: panicIn,
+				onPanic: func(r any) {
+					mu.Lock()
+					recovered = append(recovered, r)
+					mu.Unlock()
+				},
+			}
+
+			value, runErr := runner.Run(context.Background(), monty.RunOptions{
+				Telemetry:        handler,
+				TelemetryOptions: monty.TelemetryOptions{PanicHandler: handler.onPanic},
+				Functions: map[string]monty.ExternalFunction{
+					"host_value": func(context.Context, monty.Call) (monty.Result, error) {
+						return monty.Return(monty.Int(1)), nil
+					},
+				},
+			})
+			if runErr != nil {
+				t.Fatalf("run: %v (panic in %s must not disrupt execution)", runErr, panicIn)
+			}
+			if got, ok := value.Raw().(int64); !ok || got != 1 {
+				t.Fatalf("unexpected result: %#v", value.Raw())
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if len(recovered) != 1 {
+				t.Fatalf("expected exactly 1 recovered panic routed to PanicHandler, got %d: %v", len(recovered), recovered)
+			}
+		})
+	}
+}

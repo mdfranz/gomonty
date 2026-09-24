@@ -238,14 +238,14 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (Value, error) {
 	execCtx, span := startExecutionSpan(ctx, opts.Telemetry, ExecutionInfo{
 		ScriptName: r.state.scriptName,
 		IsRepl:     false,
-	})
+	}, opts.TelemetryOptions)
 
 	progress, err := r.start(execCtx, StartOptions{
 		Inputs: opts.Inputs,
 		Limits: opts.Limits,
 	}, opts.Print)
 	if err != nil {
-		endExecutionSpan(span, Value{}, err, ExecutionTiming{Total: time.Since(start)})
+		endExecutionSpan(span, Value{}, err, ExecutionTiming{Total: time.Since(start)}, opts.TelemetryOptions)
 		return Value{}, err
 	}
 	value, runErr, timing := dispatchLoop(execCtx, progress, dispatchConfig{
@@ -259,7 +259,7 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (Value, error) {
 		Total:    time.Since(start),
 		Callback: timing.callback,
 		Wait:     timing.wait,
-	})
+	}, opts.TelemetryOptions)
 	return value, runErr
 }
 
@@ -318,11 +318,11 @@ func (r *Repl) FeedRun(ctx context.Context, code string, opts FeedOptions) (Valu
 	execCtx, span := startExecutionSpan(ctx, opts.Telemetry, ExecutionInfo{
 		ScriptName: r.state.scriptName,
 		IsRepl:     true,
-	})
+	}, opts.TelemetryOptions)
 
 	progress, err := r.feedStart(execCtx, code, FeedStartOptions{Inputs: opts.Inputs}, opts.Print)
 	if err != nil {
-		endExecutionSpan(span, Value{}, err, ExecutionTiming{Total: time.Since(start)})
+		endExecutionSpan(span, Value{}, err, ExecutionTiming{Total: time.Since(start)}, opts.TelemetryOptions)
 		return Value{}, err
 	}
 	value, runErr, timing := dispatchLoop(execCtx, progress, dispatchConfig{
@@ -336,7 +336,7 @@ func (r *Repl) FeedRun(ctx context.Context, code string, opts FeedOptions) (Valu
 		Total:    time.Since(start),
 		Callback: timing.callback,
 		Wait:     timing.wait,
-	})
+	}, opts.TelemetryOptions)
 	return value, runErr
 }
 

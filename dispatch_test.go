@@ -114,3 +114,74 @@ func (blockingWaiter) Wait(ctx context.Context) Result {
 	// itself already returned via the ctx.Done() case and won't read it.
 	return Result{}
 }
+
+// panickingWaitHandler panics in exactly one of StartWait/WaitSpan.End,
+// completing the panic-recovery coverage started in telemetry_test.go's
+// TestTelemetryPanicNeverBreaksScriptExecution (which covers the other
+// four TelemetryHandler methods via a live script).
+type panickingWaitHandler struct {
+	panicIn string // "StartWait" or "WaitEnd"
+	onPanic func(recovered any)
+}
+
+func (h panickingWaitHandler) StartExecution(ctx context.Context, _ ExecutionInfo) (context.Context, ExecutionSpan) {
+	return ctx, nil
+}
+
+func (h panickingWaitHandler) StartCallback(ctx context.Context, _ CallbackInfo) (context.Context, CallbackSpan) {
+	return ctx, nil
+}
+
+func (h panickingWaitHandler) StartWait(ctx context.Context, _ WaitInfo) (context.Context, WaitSpan) {
+	if h.panicIn == "StartWait" {
+		panic("boom: StartWait")
+	}
+	return ctx, panickingWaitSpan(h)
+}
+
+func (h panickingWaitHandler) RecordPrint(context.Context, string) {}
+
+type panickingWaitSpan panickingWaitHandler
+
+func (s panickingWaitSpan) End(error) {
+	if s.panicIn == "WaitEnd" {
+		panic("boom: WaitSpan.End")
+	}
+}
+
+func TestWaitForFutureResultsPanicNeverBreaksResolution(t *testing.T) {
+	for _, panicIn := range []string{"StartWait", "WaitEnd"} {
+		t.Run(panicIn, func(t *testing.T) {
+			var mu sync.Mutex
+			var recovered []any
+			handler := panickingWaitHandler{
+				panicIn: panicIn,
+				onPanic: func(r any) {
+					mu.Lock()
+					recovered = append(recovered, r)
+					mu.Unlock()
+				},
+			}
+			waiters := map[uint32]Waiter{
+				7: fakeWaiter{result: Return(Int(42))},
+			}
+
+			results, err := waitForFutureResults(context.Background(), []uint32{7}, waiters, dispatchConfig{
+				telemetry:        handler,
+				telemetryOptions: TelemetryOptions{PanicHandler: handler.onPanic},
+			})
+			if err != nil {
+				t.Fatalf("waitForFutureResults: %v (panic in %s must not disrupt resolution)", err, panicIn)
+			}
+			if len(results) != 1 || results[7].kind != resultKindReturn {
+				t.Fatalf("unexpected results: %#v", results)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if len(recovered) != 1 {
+				t.Fatalf("expected exactly 1 recovered panic routed to PanicHandler, got %d: %v", len(recovered), recovered)
+			}
+		})
+	}
+}

@@ -119,56 +119,95 @@ type WaitInfo struct {
 }
 
 // TelemetryOptions configures a [TelemetryHandler]'s behavior. It is
-// deliberately minimal for now: payload recording and truncation options
-// (RecordArguments, RecordOutputs, MaxAttributeBytes) land with a later
-// milestone — see gomonty-olly.md and the gomonty issue tracker.
-type TelemetryOptions struct{}
+// otherwise deliberately minimal for now: payload recording and truncation
+// options (RecordArguments, RecordOutputs, MaxAttributeBytes) land with a
+// later milestone — see gomonty-olly.md and the gomonty issue tracker.
+type TelemetryOptions struct {
+	// PanicHandler, if non-nil, is called with the recovered value whenever
+	// a TelemetryHandler method panics. A panicking handler never disrupts
+	// script execution or alters a callback's return value regardless of
+	// whether this is set — it only controls whether that panic is
+	// observable instead of being silently discarded.
+	PanicHandler func(recovered any)
+}
 
 // The start*Span/end*Span helpers below are nil-safe: with telemetry ==
 // nil (the default), they're no-ops that return ctx unchanged and a nil
-// span, so call sites never need their own nil check. They're also the
-// natural choke point for panic recovery (a later milestone — see
-// gomonty-olly.md §7) since every TelemetryHandler invocation already
-// funnels through here.
+// span, so call sites never need their own nil check. They also funnel
+// every TelemetryHandler invocation through safeTelemetryCall, so a
+// panicking handler can never disrupt script execution — see
+// gomonty-olly.md §7.
 
-func startExecutionSpan(ctx context.Context, telemetry TelemetryHandler, info ExecutionInfo) (context.Context, ExecutionSpan) {
+// safeTelemetryCall invokes f, recovering any panic so a broken
+// TelemetryHandler can never disrupt script execution. If f panics before
+// assigning its captured return values, those values simply keep their
+// zero value — callers pre-seed them with the "telemetry did nothing"
+// fallback (e.g. the original ctx, a nil span) before calling this.
+func safeTelemetryCall(panicHandler func(recovered any), f func()) {
+	defer func() {
+		if r := recover(); r != nil && panicHandler != nil {
+			panicHandler(r)
+		}
+	}()
+	f()
+}
+
+func startExecutionSpan(ctx context.Context, telemetry TelemetryHandler, info ExecutionInfo, opts TelemetryOptions) (context.Context, ExecutionSpan) {
 	if telemetry == nil {
 		return ctx, nil
 	}
-	return telemetry.StartExecution(ctx, info)
+	resultCtx, span := ctx, ExecutionSpan(nil)
+	safeTelemetryCall(opts.PanicHandler, func() {
+		resultCtx, span = telemetry.StartExecution(ctx, info)
+	})
+	return resultCtx, span
 }
 
-func endExecutionSpan(span ExecutionSpan, result Value, err error, timing ExecutionTiming) {
+func endExecutionSpan(span ExecutionSpan, result Value, err error, timing ExecutionTiming, opts TelemetryOptions) {
 	if span == nil {
 		return
 	}
-	span.End(result, err, timing)
+	safeTelemetryCall(opts.PanicHandler, func() {
+		span.End(result, err, timing)
+	})
 }
 
-func startCallbackSpan(ctx context.Context, telemetry TelemetryHandler, info CallbackInfo) (context.Context, CallbackSpan) {
+func startCallbackSpan(ctx context.Context, telemetry TelemetryHandler, info CallbackInfo, opts TelemetryOptions) (context.Context, CallbackSpan) {
 	if telemetry == nil {
 		return ctx, nil
 	}
-	return telemetry.StartCallback(ctx, info)
+	resultCtx, span := ctx, CallbackSpan(nil)
+	safeTelemetryCall(opts.PanicHandler, func() {
+		resultCtx, span = telemetry.StartCallback(ctx, info)
+	})
+	return resultCtx, span
 }
 
-func endCallbackSpan(span CallbackSpan, result Result, err error) {
+func endCallbackSpan(span CallbackSpan, result Result, err error, opts TelemetryOptions) {
 	if span == nil {
 		return
 	}
-	span.End(result, err)
+	safeTelemetryCall(opts.PanicHandler, func() {
+		span.End(result, err)
+	})
 }
 
-func startWaitSpan(ctx context.Context, telemetry TelemetryHandler, info WaitInfo) (context.Context, WaitSpan) {
+func startWaitSpan(ctx context.Context, telemetry TelemetryHandler, info WaitInfo, opts TelemetryOptions) (context.Context, WaitSpan) {
 	if telemetry == nil {
 		return ctx, nil
 	}
-	return telemetry.StartWait(ctx, info)
+	resultCtx, span := ctx, WaitSpan(nil)
+	safeTelemetryCall(opts.PanicHandler, func() {
+		resultCtx, span = telemetry.StartWait(ctx, info)
+	})
+	return resultCtx, span
 }
 
-func endWaitSpan(span WaitSpan, err error) {
+func endWaitSpan(span WaitSpan, err error, opts TelemetryOptions) {
 	if span == nil {
 		return
 	}
-	span.End(err)
+	safeTelemetryCall(opts.PanicHandler, func() {
+		span.End(err)
+	})
 }

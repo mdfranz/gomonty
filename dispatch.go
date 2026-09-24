@@ -119,14 +119,14 @@ func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfi
 			IsOSFunction: true,
 			IsMethodCall: snapshot.IsMethodCall,
 			CallID:       snapshot.CallID,
-		})
+		}, cfg.telemetryOptions)
 		result, err := normalizeCallbackResult(cfg.os(callCtx, OSCall{
 			Function: OSFunction(snapshot.FunctionName),
 			Args:     snapshot.Args,
 			Kwargs:   snapshot.Kwargs,
 			CallID:   snapshot.CallID,
 		}))
-		endCallbackSpan(span, result, err)
+		endCallbackSpan(span, result, err, cfg.telemetryOptions)
 		return result, err
 	}
 
@@ -149,7 +149,7 @@ func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfi
 		IsOSFunction: false,
 		IsMethodCall: snapshot.IsMethodCall,
 		CallID:       snapshot.CallID,
-	})
+	}, cfg.telemetryOptions)
 	result, err := normalizeCallbackResult(handler(callCtx, Call{
 		FunctionName: snapshot.FunctionName,
 		Args:         snapshot.Args,
@@ -157,7 +157,7 @@ func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfi
 		CallID:       snapshot.CallID,
 		IsMethodCall: snapshot.IsMethodCall,
 	}))
-	endCallbackSpan(span, result, err)
+	endCallbackSpan(span, result, err, cfg.telemetryOptions)
 	return result, err
 }
 
@@ -188,7 +188,7 @@ func waitForFutureResults(ctx context.Context, pending []uint32, waiters map[uin
 		return nil, fmt.Errorf("no waiters registered for pending call IDs %v", pending)
 	}
 
-	waitCtx, span := startWaitSpan(ctx, cfg.telemetry, WaitInfo{PendingCallIDs: pending})
+	waitCtx, span := startWaitSpan(ctx, cfg.telemetry, WaitInfo{PendingCallIDs: pending}, cfg.telemetryOptions)
 
 	outcomes := make(chan waitOutcome, len(currentWaiters))
 	for callID, waiter := range currentWaiters {
@@ -204,7 +204,7 @@ func waitForFutureResults(ctx context.Context, pending []uint32, waiters map[uin
 	select {
 	case <-waitCtx.Done():
 		err := waitCtx.Err()
-		endWaitSpan(span, err)
+		endWaitSpan(span, err, cfg.telemetryOptions)
 		return nil, err
 	case first = <-outcomes:
 	}
@@ -217,7 +217,7 @@ func waitForFutureResults(ctx context.Context, pending []uint32, waiters map[uin
 		case outcome := <-outcomes:
 			results[outcome.callID] = outcome.result
 		default:
-			endWaitSpan(span, nil)
+			endWaitSpan(span, nil, cfg.telemetryOptions)
 			return results, nil
 		}
 	}
