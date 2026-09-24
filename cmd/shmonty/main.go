@@ -71,6 +71,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			m.quitting = true
 			return m, tea.Quit
+		case tea.KeyCtrlD:
+			// Matches real shell/Python REPL behavior: Ctrl-D only exits on
+			// an empty line, so it can't accidentally nuke mid-typed input.
+			if m.textInput.Value() == "" {
+				m.quitting = true
+				return m, tea.Quit
+			}
+			return m, nil
 		case tea.KeyEnter:
 			code := strings.TrimSpace(m.textInput.Value())
 			m.textInput.SetValue("")
@@ -144,7 +152,7 @@ func (m model) run(code string) entry {
 
 func (m model) View() string {
 	var b strings.Builder
-	b.WriteString("shmonty  (Ctrl+C to quit, Up/Down for history)\n")
+	b.WriteString("shmonty  (Ctrl+C/Ctrl+D to quit, Up/Down for history)\n")
 	fmt.Fprintf(&b, "telemetry log: %s\n\n", m.logPath)
 
 	for _, e := range m.entries {
