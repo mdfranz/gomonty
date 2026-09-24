@@ -235,9 +235,11 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (Value, error) {
 		return Value{}, err
 	}
 	return dispatchLoop(ctx, progress, dispatchConfig{
-		functions: opts.Functions,
-		os:        opts.OS,
-		print:     opts.Print,
+		functions:        opts.Functions,
+		os:               opts.OS,
+		print:            opts.Print,
+		telemetry:        opts.Telemetry,
+		telemetryOptions: opts.TelemetryOptions,
 	})
 }
 
@@ -297,9 +299,11 @@ func (r *Repl) FeedRun(ctx context.Context, code string, opts FeedOptions) (Valu
 		return Value{}, err
 	}
 	return dispatchLoop(ctx, progress, dispatchConfig{
-		functions: opts.Functions,
-		os:        opts.OS,
-		print:     opts.Print,
+		functions:        opts.Functions,
+		os:               opts.OS,
+		print:            opts.Print,
+		telemetry:        opts.Telemetry,
+		telemetryOptions: opts.TelemetryOptions,
 	})
 }
 

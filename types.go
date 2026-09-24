@@ -371,6 +371,10 @@ type RunOptions struct {
 	OS        OSHandler
 	Print     PrintCallback
 	Limits    *ResourceLimits
+	// Telemetry is nil by default, which fully disables telemetry: no
+	// spans are created and no telemetry-related code runs.
+	Telemetry        TelemetryHandler
+	TelemetryOptions TelemetryOptions
 }
 
 // FeedOptions configures the high-level REPL helper loop.
@@ -379,6 +383,10 @@ type FeedOptions struct {
 	Functions map[string]ExternalFunction
 	OS        OSHandler
 	Print     PrintCallback
+	// Telemetry is nil by default, which fully disables telemetry: no
+	// spans are created and no telemetry-related code runs.
+	Telemetry        TelemetryHandler
+	TelemetryOptions TelemetryOptions
 }
 
 // None returns the Python None value.

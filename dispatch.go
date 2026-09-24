@@ -10,6 +10,10 @@ type dispatchConfig struct {
 	functions map[string]ExternalFunction
 	os        OSHandler
 	print     PrintCallback
+	// telemetry is nil unless the caller configured RunOptions.Telemetry /
+	// FeedOptions.Telemetry. No call site reads it yet — wiring only.
+	telemetry        TelemetryHandler
+	telemetryOptions TelemetryOptions
 }
 
 type restorableProgress interface {
