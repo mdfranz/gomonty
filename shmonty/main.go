@@ -1,11 +1,12 @@
-// Command replui is a minimal bubbletea REPL for interactively exercising
+// Command shmonty is a minimal bubbletea REPL for interactively exercising
 // gomonty — a lighter way to test scripts and telemetry than wiring
 // through a full host application. State persists across inputs like a
 // real Python REPL (via monty.Repl.FeedRun), one external function
 // (host_time) is registered so callback spans have something to exercise,
 // and every FeedRun call is wired with monty.SlogHandler logging to a file
 // (not stdout, since the TUI owns the terminal) — tail -f it in another
-// pane to watch telemetry live.
+// pane to watch telemetry live. Up/Down recall previous inputs, like a
+// normal shell history.
 package main
 
 import (
@@ -38,7 +39,16 @@ type model struct {
 	logger    *slog.Logger
 	logPath   string
 	entries   []entry
-	quitting  bool
+
+	// history/historyIdx/pendingInput implement Up/Down recall.
+	// historyIdx == len(history) means "not currently navigating" (a fresh
+	// line); pendingInput is what was being typed before the first Up
+	// press, restored when Down navigates back past the end of history.
+	history      []string
+	historyIdx   int
+	pendingInput string
+
+	quitting bool
 }
 
 func newModel(repl *monty.Repl, logger *slog.Logger, logPath string) model {
@@ -64,6 +74,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			code := strings.TrimSpace(m.textInput.Value())
 			m.textInput.SetValue("")
+			m.historyIdx = len(m.history)
+			m.pendingInput = ""
 			if code == "" {
 				return m, nil
 			}
@@ -71,12 +83,46 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.entries) > maxHistoryEntries {
 				m.entries = m.entries[len(m.entries)-maxHistoryEntries:]
 			}
+			m.history = append(m.history, code)
+			m.historyIdx = len(m.history)
 			return m, nil
+		case tea.KeyUp:
+			return m.navigateHistory(-1), nil
+		case tea.KeyDown:
+			return m.navigateHistory(1), nil
 		}
 	}
 	var cmd tea.Cmd
 	m.textInput, cmd = m.textInput.Update(msg)
 	return m, cmd
+}
+
+// navigateHistory moves historyIdx by delta (-1 for Up, +1 for Down),
+// clamped to [0, len(history)], and updates the text input to match.
+// Stepping to len(history) restores whatever was being typed before Up was
+// first pressed.
+func (m model) navigateHistory(delta int) model {
+	if len(m.history) == 0 {
+		return m
+	}
+	if m.historyIdx == len(m.history) && delta < 0 {
+		m.pendingInput = m.textInput.Value()
+	}
+	next := m.historyIdx + delta
+	if next < 0 {
+		next = 0
+	}
+	if next > len(m.history) {
+		next = len(m.history)
+	}
+	m.historyIdx = next
+	if m.historyIdx == len(m.history) {
+		m.textInput.SetValue(m.pendingInput)
+	} else {
+		m.textInput.SetValue(m.history[m.historyIdx])
+	}
+	m.textInput.CursorEnd()
+	return m
 }
 
 func (m model) run(code string) entry {
@@ -98,7 +144,7 @@ func (m model) run(code string) entry {
 
 func (m model) View() string {
 	var b strings.Builder
-	b.WriteString("gomonty repl  (Ctrl+C to quit)\n")
+	b.WriteString("shmonty  (Ctrl+C to quit, Up/Down for history)\n")
 	fmt.Fprintf(&b, "telemetry log: %s\n\n", m.logPath)
 
 	for _, e := range m.entries {
@@ -123,7 +169,7 @@ func (m model) View() string {
 }
 
 func main() {
-	logPath := "replui-telemetry.log"
+	logPath := "shmonty-telemetry.log"
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		log.Fatal(err)
@@ -131,7 +177,7 @@ func main() {
 	defer logFile.Close()
 	logger := slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	repl, err := monty.NewRepl(monty.ReplOptions{ScriptName: "replui.py"})
+	repl, err := monty.NewRepl(monty.ReplOptions{ScriptName: "shmonty.py"})
 	if err != nil {
 		log.Fatal(err)
 	}
