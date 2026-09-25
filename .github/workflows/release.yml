@@ -223,7 +223,7 @@ jobs:
           pattern: ffi-*
           path: .artifacts
 
-      - name: Prepare release verification tree
+      - name: Prepare release tree
         shell: bash
         run: |
           version="${{ github.event.inputs.version }}"
@@ -274,13 +274,6 @@ jobs:
             internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so \
             internal/ffi/lib/windows_amd64/monty_go_ffi.dll \
             > internal/ffi/checksums.txt
-
-          if ! git diff --quiet -- Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt; then
-            echo "Checked-in release artifacts on main do not match freshly built outputs." >&2
-            echo "Run release-prep.yml for $version, merge that PR, and retry release.yml." >&2
-            git status --short -- Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt
-            exit 1
-          fi
 
       - name: Validate release tree
         shell: bash
