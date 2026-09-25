@@ -26,8 +26,8 @@ type SlogHandler struct {
 	// Logger receives every log record. Defaults to slog.Default() if nil.
 	Logger *slog.Logger
 	// DurationUnit selects the unit every duration_* attribute is rendered
-	// in. Defaults to DurationMilliseconds — DurationNanoseconds is useful
-	// for fast local calls that would otherwise round down to 0ms.
+	// in. Defaults to DurationMilliseconds — DurationMicroseconds or
+	// DurationNanoseconds preserve shorter local calls.
 	DurationUnit DurationUnit
 }
 
@@ -39,8 +39,8 @@ func (h SlogHandler) logger() *slog.Logger {
 }
 
 // DurationUnit selects the unit SlogHandler renders duration_* attributes
-// in. The unit is baked into the attribute's key (duration_ms vs
-// duration_ns) so it's unambiguous from the log line alone.
+// in. The unit is baked into the attribute's key (duration_ms,
+// duration_us, or duration_ns) so it's unambiguous from the log line alone.
 type DurationUnit int
 
 const (
@@ -50,15 +50,22 @@ const (
 	// DurationNanoseconds renders durations as whole nanoseconds, e.g.
 	// duration_ns=2041846.
 	DurationNanoseconds
+	// DurationMicroseconds renders durations as whole microseconds, e.g.
+	// duration_us=2041.
+	DurationMicroseconds
 )
 
 // appendDurationAttr appends one duration attribute — key suffixed with
-// _ms or _ns per unit, and the value scaled to match — to attrs.
+// _ms, _us, or _ns per unit, and the value scaled to match — to attrs.
 func appendDurationAttr(attrs []any, unit DurationUnit, key string, d time.Duration) []any {
-	if unit == DurationNanoseconds {
+	switch unit {
+	case DurationNanoseconds:
 		return append(attrs, key+"_ns", d.Nanoseconds())
+	case DurationMicroseconds:
+		return append(attrs, key+"_us", d.Microseconds())
+	default:
+		return append(attrs, key+"_ms", d.Milliseconds())
 	}
-	return append(attrs, key+"_ms", d.Milliseconds())
 }
 
 // StartExecution implements TelemetryHandler.

@@ -146,6 +146,29 @@ func TestSlogHandlerDurationUnitNanoseconds(t *testing.T) {
 	}
 }
 
+func TestSlogHandlerDurationUnitMicroseconds(t *testing.T) {
+	handler, buf := newTestSlogHandler(t)
+	handler.DurationUnit = monty.DurationMicroseconds
+
+	runner, err := monty.New(`40 + 2`, monty.CompileOptions{ScriptName: "slog-duration-us.py"})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if _, runErr := runner.Run(context.Background(), monty.RunOptions{Telemetry: handler}); runErr != nil {
+		t.Fatalf("run: %v", runErr)
+	}
+
+	out := buf.String()
+	for _, key := range []string{"duration_us=", "python_duration_us=", "callback_duration_us=", "wait_duration_us="} {
+		if !strings.Contains(out, key) {
+			t.Errorf("log missing %s attribute:\n%s", key, out)
+		}
+	}
+	if strings.Contains(out, "duration_ns=") || strings.Contains(out, "duration_ms=") {
+		t.Errorf("log contains an unexpected duration unit:\n%s", out)
+	}
+}
+
 func TestSlogHandlerRespectsRecordArgumentsOptIn(t *testing.T) {
 	handler, buf := newTestSlogHandler(t)
 
