@@ -53,7 +53,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	monty "github.com/ewhauser/gomonty"
+	monty "github.com/mdfranz/gomonty"
 )
 
 const (

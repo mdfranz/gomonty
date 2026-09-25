@@ -3,7 +3,7 @@ package otelmonty
 import (
 	"context"
 
-	monty "github.com/ewhauser/gomonty"
+	monty "github.com/mdfranz/gomonty"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -11,7 +11,7 @@ import (
 
 // instrumentationName identifies this package's Tracer/spans to whatever
 // TracerProvider they're registered with.
-const instrumentationName = "github.com/ewhauser/gomonty/otelmonty"
+const instrumentationName = "github.com/mdfranz/gomonty/otelmonty"
 
 // Handler is a monty.TelemetryHandler backed by OpenTelemetry tracing (see
 // gomonty-olly.md §6). It produces a monty.run/monty.feed root span per

@@ -1,9 +1,9 @@
-module github.com/ewhauser/gomonty/otelmonty
+module github.com/mdfranz/gomonty/otelmonty
 
 go 1.25.0
 
 require (
-	github.com/ewhauser/gomonty v0.0.0
+	github.com/mdfranz/gomonty v0.0.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
@@ -33,4 +33,4 @@ require (
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
-replace github.com/ewhauser/gomonty => ..
+replace github.com/mdfranz/gomonty => ..

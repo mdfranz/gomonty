@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ewhauser/gomonty/internal/ffi"
+	"github.com/mdfranz/gomonty/internal/ffi"
 )
 
 var (

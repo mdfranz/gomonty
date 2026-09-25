@@ -1,4 +1,4 @@
-module github.com/ewhauser/gomonty/cmd/shmonty
+module github.com/mdfranz/gomonty/cmd/shmonty
 
 go 1.25.0
 
@@ -6,8 +6,8 @@ require (
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
-	github.com/ewhauser/gomonty v0.0.0
-	github.com/ewhauser/gomonty/otelmonty v0.0.0
+	github.com/mdfranz/gomonty v0.0.0
+	github.com/mdfranz/gomonty/otelmonty v0.0.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
@@ -56,6 +56,6 @@ require (
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
-replace github.com/ewhauser/gomonty => ../..
+replace github.com/mdfranz/gomonty => ../..
 
-replace github.com/ewhauser/gomonty/otelmonty => ../../otelmonty
+replace github.com/mdfranz/gomonty/otelmonty => ../../otelmonty

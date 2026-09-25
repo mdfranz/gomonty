@@ -1,7 +1,7 @@
 package otelmonty
 
 import (
-	monty "github.com/ewhauser/gomonty"
+	monty "github.com/mdfranz/gomonty"
 	"go.opentelemetry.io/otel/attribute"
 )
 

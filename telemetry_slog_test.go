@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	monty "github.com/ewhauser/gomonty"
+	monty "github.com/mdfranz/gomonty"
 )
 
 func newTestSlogHandler(t *testing.T) (monty.SlogHandler, *bytes.Buffer) {

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	monty "github.com/ewhauser/gomonty"
+	monty "github.com/mdfranz/gomonty"
 )
 
 // spanEvent records one Start/End pair observed by recordingHandler.
