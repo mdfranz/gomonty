@@ -247,3 +247,38 @@ func TestClassInstanceIDsAndAccessors(t *testing.T) {
 		t.Fatalf("FileHandleValue(...).String() = %q", got)
 	}
 }
+
+func TestValueStringContainers(t *testing.T) {
+	cases := []struct {
+		name string
+		v    Value
+		want string
+	}{
+		{"empty list", List(), "[]"},
+		{"list", List(Int(1), String("a"), List(Int(2))), `[1, 'a', [2]]`},
+		{"single tuple", TupleValue(Int(1)), "(1,)"},
+		{"tuple", TupleValue(Int(1), Int(2)), "(1, 2)"},
+		{"named tuple", NamedTupleValue(NamedTuple{
+			TypeName:   "Point",
+			FieldNames: []string{"x", "y"},
+			Values:     []Value{Int(1), Int(2)},
+		}), "Point(x=1, y=2)"},
+		{"empty dict", DictValue(nil), "{}"},
+		{"dict", DictValue(Dict{{Key: String("x"), Value: Int(1)}}), `{'x': 1}`},
+		{"empty set", SetValue(nil), "set()"},
+		{"set", SetValue(Set{Int(1)}), "{1}"},
+		{"empty frozenset", FrozenSetValue(nil), "frozenset()"},
+		{"frozenset", FrozenSetValue(FrozenSet{Int(1)}), "frozenset({1})"},
+		{"repr", ReprValue("<class 'list'>"), "<class 'list'>"},
+		{"cycle", CycleValue("[...]"), "[...]"},
+		{"string with single quote", String(`it's`), `it's`},
+		{"list of strings with quote", List(String(`it's`)), `["it's"]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.v.String(); got != tc.want {
+				t.Fatalf("String() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

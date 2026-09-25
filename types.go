@@ -371,6 +371,10 @@ type RunOptions struct {
 	OS        OSHandler
 	Print     PrintCallback
 	Limits    *ResourceLimits
+	// Telemetry is nil by default, which fully disables telemetry: no
+	// spans are created and no telemetry-related code runs.
+	Telemetry        TelemetryHandler
+	TelemetryOptions TelemetryOptions
 }
 
 // FeedOptions configures the high-level REPL helper loop.
@@ -379,6 +383,10 @@ type FeedOptions struct {
 	Functions map[string]ExternalFunction
 	OS        OSHandler
 	Print     PrintCallback
+	// Telemetry is nil by default, which fully disables telemetry: no
+	// spans are created and no telemetry-related code runs.
+	Telemetry        TelemetryHandler
+	TelemetryOptions TelemetryOptions
 }
 
 // None returns the Python None value.
@@ -1363,11 +1371,104 @@ func (v Value) String() string {
 	case valueKindFileHandle:
 		handle := v.data.(FileHandle)
 		return fmt.Sprintf("<file name=%q mode=%q>", handle.Path, handle.Mode)
+	case valueKindRepr, valueKindCycle:
+		return v.data.(string)
+	case valueKindList:
+		return reprJoin("[", "]", v.data.([]Value))
+	case valueKindTuple:
+		items := []Value(v.data.(Tuple))
+		if len(items) == 1 {
+			return "(" + reprElement(items[0]) + ",)"
+		}
+		return reprJoin("(", ")", items)
+	case valueKindNamedTuple:
+		nt := v.data.(NamedTuple)
+		parts := make([]string, len(nt.Values))
+		for i, fv := range nt.Values {
+			name := ""
+			if i < len(nt.FieldNames) {
+				name = nt.FieldNames[i]
+			}
+			parts[i] = fmt.Sprintf("%s=%s", name, reprElement(fv))
+		}
+		return fmt.Sprintf("%s(%s)", nt.TypeName, strings.Join(parts, ", "))
+	case valueKindDict:
+		pairs := v.data.(Dict)
+		parts := make([]string, len(pairs))
+		for i, p := range pairs {
+			parts[i] = fmt.Sprintf("%s: %s", reprElement(p.Key), reprElement(p.Value))
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
+	case valueKindSet:
+		items := []Value(v.data.(Set))
+		if len(items) == 0 {
+			return "set()"
+		}
+		return reprJoin("{", "}", items)
+	case valueKindFrozenSet:
+		items := []Value(v.data.(FrozenSet))
+		if len(items) == 0 {
+			return "frozenset()"
+		}
+		return "frozenset(" + reprJoin("{", "}", items) + ")"
 	default:
 		typeName := string(v.Kind())
 		typeName = strings.ReplaceAll(typeName, "_", " ")
 		return typeName
 	}
+}
+
+// reprElement renders a Value the way Python's repr() would when it appears
+// nested inside a container: strings get quoted (str(['a']) == "['a']", not
+// "[a]"), everything else defers to String(), which already recurses
+// correctly for nested containers.
+func reprElement(v Value) string {
+	if v.Kind() == valueKindString {
+		return quotePythonString(v.data.(string))
+	}
+	return v.String()
+}
+
+// reprJoin renders a bracketed, comma-separated container repr, e.g.
+// reprJoin("[", "]", items) -> "[1, 'a', [2, 3]]".
+func reprJoin(open, close string, items []Value) string {
+	parts := make([]string, len(items))
+	for i, item := range items {
+		parts[i] = reprElement(item)
+	}
+	return open + strings.Join(parts, ", ") + close
+}
+
+// quotePythonString approximates CPython's str.__repr__: prefers single
+// quotes, switches to double quotes when the string contains a single quote
+// but no double quote, and escapes backslashes, the chosen quote character,
+// and common control characters.
+func quotePythonString(s string) string {
+	quote := byte('\'')
+	if strings.ContainsRune(s, '\'') && !strings.ContainsRune(s, '"') {
+		quote = '"'
+	}
+	var b strings.Builder
+	b.WriteByte(quote)
+	for _, r := range s {
+		switch {
+		case byte(r) == quote && r < 128:
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case r == '\\':
+			b.WriteString(`\\`)
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte(quote)
+	return b.String()
 }
 
 func (s StatResult) namedTuple() NamedTuple {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ewhauser/gomonty/internal/ffi"
 )
@@ -64,12 +65,18 @@ type Complete struct {
 type runnerState struct {
 	mu     sync.Mutex
 	handle *ffi.Runner
+	// scriptName is set once at construction and never mutated, so it's
+	// safe to read without holding mu.
+	scriptName string
 }
 
 type replState struct {
 	mu       sync.Mutex
 	handle   *ffi.Repl
 	inFlight bool
+	// scriptName is set once at construction and never mutated, so it's
+	// safe to read without holding mu.
+	scriptName string
 }
 
 type progressState struct {
@@ -96,7 +103,7 @@ func New(code string, opts CompileOptions) (*Runner, error) {
 		return nil, newError(result.Error)
 	}
 	return &Runner{
-		state: &runnerState{handle: result.Runner},
+		state: &runnerState{handle: result.Runner, scriptName: opts.ScriptName},
 	}, nil
 }
 
@@ -163,7 +170,7 @@ func NewRepl(opts ReplOptions) (*Repl, error) {
 		return nil, newError(result.Error)
 	}
 	return &Repl{
-		state: &replState{handle: result.Repl},
+		state: &replState{handle: result.Repl, scriptName: opts.ScriptName},
 	}, nil
 }
 
@@ -198,10 +205,10 @@ func (r *Runner) TypeCheck(prefix string) error {
 
 // Start begins low-level runner execution.
 func (r *Runner) Start(ctx context.Context, opts StartOptions) (Progress, error) {
-	return r.start(ctx, opts, nil)
+	return r.start(ctx, opts, nil, printTelemetry{})
 }
 
-func (r *Runner) start(ctx context.Context, opts StartOptions, print PrintCallback) (Progress, error) {
+func (r *Runner) start(ctx context.Context, opts StartOptions, print PrintCallback, pt printTelemetry) (Progress, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -222,23 +229,41 @@ func (r *Runner) start(ctx context.Context, opts StartOptions, print PrintCallba
 	}
 
 	result := handle.Start(payload)
-	return consumeOpResult(result, nil, print)
+	return consumeOpResult(ctx, result, nil, print, pt)
 }
 
 // Run executes the runner through the high-level host callback loop.
 func (r *Runner) Run(ctx context.Context, opts RunOptions) (Value, error) {
-	progress, err := r.start(ctx, StartOptions{
+	start := time.Now()
+	execCtx, span := startExecutionSpan(ctx, opts.Telemetry, ExecutionInfo{
+		ScriptName: r.state.scriptName,
+		IsRepl:     false,
+		Inputs: truncatedPayload(opts.TelemetryOptions.RecordArguments, func() string {
+			return renderInputs(opts.Inputs)
+		}, opts.TelemetryOptions.MaxAttributeBytes),
+	}, opts.TelemetryOptions)
+
+	progress, err := r.start(execCtx, StartOptions{
 		Inputs: opts.Inputs,
 		Limits: opts.Limits,
-	}, opts.Print)
+	}, opts.Print, printTelemetry{handler: opts.Telemetry, opts: opts.TelemetryOptions})
 	if err != nil {
+		endExecutionSpan(span, Value{}, err, ExecutionTiming{Total: time.Since(start)}, opts.TelemetryOptions)
 		return Value{}, err
 	}
-	return dispatchLoop(ctx, progress, dispatchConfig{
-		functions: opts.Functions,
-		os:        opts.OS,
-		print:     opts.Print,
+	value, runErr, timing := dispatchLoop(execCtx, progress, dispatchConfig{
+		functions:        opts.Functions,
+		os:               opts.OS,
+		print:            opts.Print,
+		telemetry:        opts.Telemetry,
+		telemetryOptions: opts.TelemetryOptions,
 	})
+	endExecutionSpan(span, value, runErr, ExecutionTiming{
+		Total:    time.Since(start),
+		Callback: timing.callback,
+		Wait:     timing.wait,
+	}, opts.TelemetryOptions)
+	return value, runErr
 }
 
 // Dump serializes the REPL session.
@@ -258,10 +283,10 @@ func (r *Repl) Dump() ([]byte, error) {
 
 // FeedStart begins low-level REPL snippet execution.
 func (r *Repl) FeedStart(ctx context.Context, code string, opts FeedStartOptions) (Progress, error) {
-	return r.feedStart(ctx, code, opts, nil)
+	return r.feedStart(ctx, code, opts, nil, printTelemetry{})
 }
 
-func (r *Repl) feedStart(ctx context.Context, code string, opts FeedStartOptions, print PrintCallback) (Progress, error) {
+func (r *Repl) feedStart(ctx context.Context, code string, opts FeedStartOptions, print PrintCallback, pt printTelemetry) (Progress, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -283,7 +308,7 @@ func (r *Repl) feedStart(ctx context.Context, code string, opts FeedStartOptions
 
 	result := handle.FeedStart([]byte(code), payload)
 	handle.Close()
-	progress, consumeErr := consumeOpResult(result, r.state, print)
+	progress, consumeErr := consumeOpResult(ctx, result, r.state, print, pt)
 	if consumeErr != nil {
 		return nil, consumeErr
 	}
@@ -292,15 +317,33 @@ func (r *Repl) feedStart(ctx context.Context, code string, opts FeedStartOptions
 
 // FeedRun executes a REPL snippet through the high-level host callback loop.
 func (r *Repl) FeedRun(ctx context.Context, code string, opts FeedOptions) (Value, error) {
-	progress, err := r.feedStart(ctx, code, FeedStartOptions{Inputs: opts.Inputs}, opts.Print)
+	start := time.Now()
+	execCtx, span := startExecutionSpan(ctx, opts.Telemetry, ExecutionInfo{
+		ScriptName: r.state.scriptName,
+		IsRepl:     true,
+		Inputs: truncatedPayload(opts.TelemetryOptions.RecordArguments, func() string {
+			return renderInputs(opts.Inputs)
+		}, opts.TelemetryOptions.MaxAttributeBytes),
+	}, opts.TelemetryOptions)
+
+	progress, err := r.feedStart(execCtx, code, FeedStartOptions{Inputs: opts.Inputs}, opts.Print, printTelemetry{handler: opts.Telemetry, opts: opts.TelemetryOptions})
 	if err != nil {
+		endExecutionSpan(span, Value{}, err, ExecutionTiming{Total: time.Since(start)}, opts.TelemetryOptions)
 		return Value{}, err
 	}
-	return dispatchLoop(ctx, progress, dispatchConfig{
-		functions: opts.Functions,
-		os:        opts.OS,
-		print:     opts.Print,
+	value, runErr, timing := dispatchLoop(execCtx, progress, dispatchConfig{
+		functions:        opts.Functions,
+		os:               opts.OS,
+		print:            opts.Print,
+		telemetry:        opts.Telemetry,
+		telemetryOptions: opts.TelemetryOptions,
 	})
+	endExecutionSpan(span, value, runErr, ExecutionTiming{
+		Total:    time.Since(start),
+		Callback: timing.callback,
+		Wait:     timing.wait,
+	}, opts.TelemetryOptions)
+	return value, runErr
 }
 
 // Dump serializes the current snapshot.
@@ -329,7 +372,7 @@ func (s *Snapshot) ResumeReturn(ctx context.Context, value Value) (Progress, err
 	if err != nil {
 		return nil, err
 	}
-	return s.progressBase.resumeCall(ctx, payload, nil)
+	return s.progressBase.resumeCall(ctx, payload, nil, printTelemetry{})
 }
 
 // ResumeException resumes a function or OS snapshot by raising an exception.
@@ -343,7 +386,7 @@ func (s *Snapshot) ResumeException(ctx context.Context, exception Exception) (Pr
 	if err != nil {
 		return nil, err
 	}
-	return s.progressBase.resumeCall(ctx, payload, nil)
+	return s.progressBase.resumeCall(ctx, payload, nil, printTelemetry{})
 }
 
 // ResumePending resumes a function or OS snapshot with a pending future.
@@ -352,7 +395,7 @@ func (s *Snapshot) ResumePending(ctx context.Context) (Progress, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.progressBase.resumeCall(ctx, payload, nil)
+	return s.progressBase.resumeCall(ctx, payload, nil, printTelemetry{})
 }
 
 // ResumeValue resumes a name lookup with a resolved value.
@@ -366,7 +409,7 @@ func (s *NameLookupSnapshot) ResumeValue(ctx context.Context, value Value) (Prog
 	if err != nil {
 		return nil, err
 	}
-	return s.progressBase.resumeLookup(ctx, payload, nil)
+	return s.progressBase.resumeLookup(ctx, payload, nil, printTelemetry{})
 }
 
 // ResumeUndefined resumes a name lookup as undefined.
@@ -375,7 +418,7 @@ func (s *NameLookupSnapshot) ResumeUndefined(ctx context.Context) (Progress, err
 	if err != nil {
 		return nil, err
 	}
-	return s.progressBase.resumeLookup(ctx, payload, nil)
+	return s.progressBase.resumeLookup(ctx, payload, nil, printTelemetry{})
 }
 
 // PendingCallIDs returns the unresolved call IDs for the future snapshot.
@@ -394,7 +437,7 @@ func (s *FutureSnapshot) ResumeResults(ctx context.Context, results map[uint32]R
 	if err != nil {
 		return nil, err
 	}
-	return s.progressBase.resumeFutures(ctx, payload, nil)
+	return s.progressBase.resumeFutures(ctx, payload, nil, printTelemetry{})
 }
 
 func (s *Snapshot) isProgress()           {}
@@ -428,7 +471,7 @@ func (b *progressBase) dump() ([]byte, error) {
 	return bytes, nil
 }
 
-func (b *progressBase) resumeCall(ctx context.Context, payload []byte, print PrintCallback) (Progress, error) {
+func (b *progressBase) resumeCall(ctx context.Context, payload []byte, print PrintCallback, pt printTelemetry) (Progress, error) {
 	if err := ctx.Err(); err != nil {
 		if restoreErr := b.restoreOwner(); restoreErr != nil {
 			return nil, errors.Join(err, restoreErr)
@@ -442,10 +485,10 @@ func (b *progressBase) resumeCall(ctx context.Context, payload []byte, print Pri
 	}
 	defer handle.Close()
 
-	return consumeOpResult(handle.ResumeCall(payload), owner, print)
+	return consumeOpResult(ctx, handle.ResumeCall(payload), owner, print, pt)
 }
 
-func (b *progressBase) resumeLookup(ctx context.Context, payload []byte, print PrintCallback) (Progress, error) {
+func (b *progressBase) resumeLookup(ctx context.Context, payload []byte, print PrintCallback, pt printTelemetry) (Progress, error) {
 	if err := ctx.Err(); err != nil {
 		if restoreErr := b.restoreOwner(); restoreErr != nil {
 			return nil, errors.Join(err, restoreErr)
@@ -459,10 +502,10 @@ func (b *progressBase) resumeLookup(ctx context.Context, payload []byte, print P
 	}
 	defer handle.Close()
 
-	return consumeOpResult(handle.ResumeLookup(payload), owner, print)
+	return consumeOpResult(ctx, handle.ResumeLookup(payload), owner, print, pt)
 }
 
-func (b *progressBase) resumeFutures(ctx context.Context, payload []byte, print PrintCallback) (Progress, error) {
+func (b *progressBase) resumeFutures(ctx context.Context, payload []byte, print PrintCallback, pt printTelemetry) (Progress, error) {
 	if err := ctx.Err(); err != nil {
 		if restoreErr := b.restoreOwner(); restoreErr != nil {
 			return nil, errors.Join(err, restoreErr)
@@ -476,7 +519,7 @@ func (b *progressBase) resumeFutures(ctx context.Context, payload []byte, print 
 	}
 	defer handle.Close()
 
-	return consumeOpResult(handle.ResumeFutures(payload), owner, print)
+	return consumeOpResult(ctx, handle.ResumeFutures(payload), owner, print, pt)
 }
 
 func (b *progressBase) restoreOwner() error {
@@ -588,9 +631,12 @@ func (s *progressState) take() (*ffi.Progress, *replState, error) {
 	return handle, s.owner, nil
 }
 
-func consumeOpResult(result ffi.OpResult, owner *replState, print PrintCallback) (Progress, error) {
-	if print != nil && result.Prints != "" {
-		print("stdout", result.Prints)
+func consumeOpResult(ctx context.Context, result ffi.OpResult, owner *replState, print PrintCallback, pt printTelemetry) (Progress, error) {
+	if result.Prints != "" {
+		if print != nil {
+			print("stdout", result.Prints)
+		}
+		recordPrint(ctx, pt, result.Prints)
 	}
 
 	if result.Error != nil {

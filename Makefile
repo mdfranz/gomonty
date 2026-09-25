@@ -1,4 +1,11 @@
-.PHONY: release publish-release
+.PHONY: release publish-release shmonty repl
+
+shmonty:
+	cd cmd/shmonty && CGO_ENABLED=0 go build -o ../../shmonty .
+	@echo "Built ./shmonty — run it with ./shmonty"
+
+repl: shmonty
+	./shmonty
 
 release:
 	@command -v gh >/dev/null 2>&1 || { echo "gh is required"; exit 1; }
