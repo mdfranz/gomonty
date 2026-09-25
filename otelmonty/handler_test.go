@@ -229,3 +229,162 @@ func TestHandlerPayloadOptIn(t *testing.T) {
 		t.Error("expected monty.output to be set with RecordOutputs enabled")
 	}
 }
+
+func TestHandlerCallbackExceptionSetsErrorStatus(t *testing.T) {
+	runner, err := monty.New(`host_raise()`, monty.CompileOptions{ScriptName: "callback-exception.py"})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	handler, recorder := newTestHandler()
+	arg := "bad input"
+	_, runErr := runner.Run(context.Background(), monty.RunOptions{
+		Telemetry: handler,
+		Functions: map[string]monty.ExternalFunction{
+			"host_raise": func(context.Context, monty.Call) (monty.Result, error) {
+				return monty.Raise(monty.Exception{Type: "ValueError", Arg: &arg}), nil
+			},
+		},
+	})
+	if runErr == nil {
+		t.Fatal("expected the raised exception to surface as a run error")
+	}
+
+	call := findSpan(recorder.Ended(), "monty.call")
+	if call == nil {
+		t.Fatal("no monty.call span recorded")
+	}
+	if call.Status().Code.String() != "Error" {
+		t.Errorf("monty.call status = %v, want Error for a raised exception", call.Status())
+	}
+	if excType, ok := attrValue(call, "monty.exception_type"); !ok || excType != "ValueError" {
+		t.Errorf("monty.exception_type = %q, %v, want \"ValueError\", true", excType, ok)
+	}
+}
+
+// StartWait/WaitSpan.End are exercised by calling Handler's exported methods
+// directly rather than through Runner.Run: there's no verified live-script
+// trigger for the future-wait dispatch path from outside the core module
+// (see telemetry_test.go's panickingHandler doc comment in the root
+// package for the same constraint on the in-tree fake handlers), but
+// StartWait/WaitSpan.End are ordinary exported methods, so a black-box
+// unit test can invoke them without going through a real Run call at all.
+func TestHandlerWaitSpanSuccess(t *testing.T) {
+	handler, recorder := newTestHandler()
+	ctx, span := handler.StartWait(context.Background(), monty.WaitInfo{PendingCallIDs: []uint32{7, 9}})
+	span.End(nil)
+	_ = ctx
+
+	wait := findSpan(recorder.Ended(), "monty.wait")
+	if wait == nil {
+		t.Fatal("no monty.wait span recorded")
+	}
+	if wait.Status().Code.String() == "Error" {
+		t.Errorf("successful wait got Error status: %+v", wait.Status())
+	}
+	if ids, ok := attrValue(wait, "monty.pending_call_ids"); !ok || ids != "[7,9]" {
+		t.Errorf("monty.pending_call_ids = %q, %v, want \"[7,9]\", true", ids, ok)
+	}
+}
+
+func TestHandlerWaitSpanFailure(t *testing.T) {
+	handler, recorder := newTestHandler()
+	_, span := handler.StartWait(context.Background(), monty.WaitInfo{PendingCallIDs: []uint32{1}})
+	span.End(context.Canceled)
+
+	wait := findSpan(recorder.Ended(), "monty.wait")
+	if wait == nil {
+		t.Fatal("no monty.wait span recorded")
+	}
+	if wait.Status().Code.String() != "Error" {
+		t.Errorf("wait span status = %v, want Error", wait.Status())
+	}
+	if len(wait.Events()) == 0 {
+		t.Error("expected span.RecordError to add an exception event")
+	}
+}
+
+func TestHandlerRecordPrintAddsEventToActiveSpan(t *testing.T) {
+	handler, recorder := newTestHandler()
+	ctx, span := handler.Tracer.Start(context.Background(), "monty.run")
+	handler.RecordPrint(ctx, "hello from python")
+	span.End()
+
+	root := findSpan(recorder.Ended(), "monty.run")
+	if root == nil {
+		t.Fatal("no monty.run span recorded")
+	}
+	events := root.Events()
+	if len(events) != 1 || events[0].Name != "monty.print" {
+		t.Fatalf("expected one monty.print event, got %+v", events)
+	}
+	found := false
+	for _, a := range events[0].Attributes {
+		if string(a.Key) == "monty.text" && a.Value.Emit() == "hello from python" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("monty.print event missing monty.text attribute, got %+v", events[0].Attributes)
+	}
+}
+
+func TestHandlerRecordPrintNoopWithoutActiveSpan(t *testing.T) {
+	handler, _ := newTestHandler()
+	// No panic, no span to attach to: RecordPrint must be a silent no-op.
+	handler.RecordPrint(context.Background(), "orphaned print")
+}
+
+// TestHandlerCallbackSpanDirectError covers CallbackSpan.End's err != nil
+// branch directly against the exported Handler/CallbackSpan methods. In
+// practice dispatch.go's normalizeCallbackResult (dispatch.go:232-235)
+// converts every error an ExternalFunction/OSHandler returns into a
+// Raise()d Python exception before endCallbackSpan is ever called, so this
+// branch is structurally unreachable through Runner.Run/Repl.FeedRun's
+// public callback contract — the same reason slogCallbackSpan.End's err
+// path is never exercised on the slog side either. TelemetryHandler's
+// CallbackSpan.End still declares err error as part of its contract, so
+// this is testing documented interface behavior, not dead code.
+func TestHandlerCallbackSpanDirectError(t *testing.T) {
+	handler, recorder := newTestHandler()
+	ctx, span := handler.StartCallback(context.Background(), monty.CallbackInfo{FunctionName: "host_thing", CallID: 1})
+	span.End(monty.Result{}, context.Canceled, monty.TruncatedPayload{})
+	_ = ctx
+
+	call := findSpan(recorder.Ended(), "monty.call")
+	if call == nil {
+		t.Fatal("no monty.call span recorded")
+	}
+	if call.Status().Code.String() != "Error" {
+		t.Errorf("callback span status = %v, want Error", call.Status())
+	}
+	if len(call.Events()) == 0 {
+		t.Error("expected span.RecordError to add an exception event")
+	}
+}
+
+func TestHandlerZeroValueUsesDefaultTracer(t *testing.T) {
+	var handler otelmonty.Handler // Tracer left nil: must fall back to otel.Tracer(instrumentationName).
+	ctx, span := handler.StartExecution(context.Background(), monty.ExecutionInfo{ScriptName: "zero-value.py"})
+	if span == nil {
+		t.Fatal("StartExecution returned a nil span even with a zero-value Handler")
+	}
+	span.End(monty.Value{}, nil, monty.ExecutionTiming{}, monty.TruncatedPayload{})
+	_ = ctx
+}
+
+func TestHandlerFeedRunUsesMontyFeedSpanName(t *testing.T) {
+	repl, err := monty.NewRepl(monty.ReplOptions{ScriptName: "feed.py"})
+	if err != nil {
+		t.Fatalf("new repl: %v", err)
+	}
+
+	handler, recorder := newTestHandler()
+	if _, err := repl.FeedRun(context.Background(), `1 + 1`, monty.FeedOptions{Telemetry: handler}); err != nil {
+		t.Fatalf("feed run: %v", err)
+	}
+
+	if findSpan(recorder.Ended(), "monty.feed") == nil {
+		t.Fatal("no monty.feed span recorded for Repl.FeedRun")
+	}
+}
