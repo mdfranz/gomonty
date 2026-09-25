@@ -313,16 +313,22 @@ jobs:
             fi
           } > "$notes_file"
 
+          # GitHub release assets must have unique filenames within a release,
+          # but several platforms share the basename libmonty_go_ffi.so/.dylib.
+          # Stage renamed copies rather than uploading the checked-in paths directly.
+          mkdir -p .release-assets
+          cp internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib .release-assets/libmonty_go_ffi-darwin_arm64.dylib
+          cp internal/ffi/lib/linux_amd64/libmonty_go_ffi.so .release-assets/libmonty_go_ffi-linux_amd64.so
+          cp internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so .release-assets/libmonty_go_ffi-linux_amd64_musl.so
+          cp internal/ffi/lib/linux_arm64/libmonty_go_ffi.so .release-assets/libmonty_go_ffi-linux_arm64.so
+          cp internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so .release-assets/libmonty_go_ffi-linux_arm64_musl.so
+          cp internal/ffi/lib/windows_amd64/monty_go_ffi.dll .release-assets/monty_go_ffi-windows_amd64.dll
+          cp internal/ffi/checksums.txt .release-assets/checksums.txt
+
           gh release create "$version" \
             --title "$version" \
             --notes-file "$notes_file" \
-            internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib \
-            internal/ffi/lib/linux_amd64/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_arm64/libmonty_go_ffi.so \
-            internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so \
-            internal/ffi/lib/windows_amd64/monty_go_ffi.dll \
-            internal/ffi/checksums.txt
+            .release-assets/*
 
       - name: Warm the Go module proxy
         shell: bash
