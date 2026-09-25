@@ -1162,7 +1162,7 @@ dependencies = [
 
 [[package]]
 name = "monty-go-ffi"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "monty",
  "monty-type-checking",
