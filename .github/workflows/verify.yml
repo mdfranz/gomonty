@@ -19,6 +19,7 @@ jobs:
           cache-dependency-path: |
             go.sum
             examples/go.sum
+            otelmonty/go.sum
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -53,6 +54,13 @@ jobs:
         run: |
           cd examples
           CGO_ENABLED=0 go run ./cmd/example
+
+      - name: Test otelmonty submodule
+        shell: bash
+        run: |
+          cd otelmonty
+          CGO_ENABLED=0 go test ./...
+          CGO_ENABLED=0 go build ./cmd/example
 
   platform-verify:
     name: verify ${{ matrix.name }}
