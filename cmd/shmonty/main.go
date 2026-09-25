@@ -7,8 +7,12 @@
 // monty.Repl.FeedRun), one external function (host_time) is registered so
 // callback spans have something to exercise, and typing /debug toggles
 // monty.SlogHandler logging for subsequent FeedRun calls, shown in a
-// dedicated pane along the top of the screen (roughly a quarter of the
-// terminal height). /execute <path> reads a .py file (absolute or relative)
+// dedicated pane along the bottom of the screen (roughly a quarter of the
+// terminal height); PgUp/PgDn (or Ctrl+Up/Ctrl+Down) scroll it back
+// through captured history and forward again, pausing auto-follow of the
+// live tail while scrolled back (like tail -f) rather than yanking the
+// view down as new lines arrive.
+// /execute <path> reads a .py file (absolute or relative)
 // and feeds its contents to the REPL as one call, exactly as if it had been
 // typed in — variables and imports it defines carry over into later input.
 // Tab completes the path argument to /execute, shell-style: an unambiguous
@@ -17,7 +21,9 @@
 // recall previous inputs, like a normal shell history. Ctrl+R rewinds
 // (bpython's term for it): pops the last input back into the prompt for
 // editing and replays everything before it against a fresh interpreter, so
-// a mistyped line can be fixed without restarting the whole session.
+// a mistyped line can be fixed without restarting the whole session. exit
+// and quit (bare, no parens) leave the REPL, matching Python 3.13's own
+// REPL convenience.
 //
 // Run as `shmonty <path>` instead of bare, it skips the REPL entirely: runs
 // the file once — like `python script.py`, not /execute — printing print()
@@ -39,6 +45,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	monty "github.com/ewhauser/gomonty"
 )
@@ -51,6 +58,14 @@ const (
 	minLogPaneHeight  = 3
 	// defaultLogPaneHeight is used until the first tea.WindowSizeMsg arrives.
 	defaultLogPaneHeight = 8
+)
+
+// promptStyle colors both the transcript's ">>> " prompt and the live
+// input's own prompt, echoing Python 3.13's colored REPL prompt.
+// errorStyle colors a failed entry's "error: ..." line.
+var (
+	promptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
+	errorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 )
 
 type entry struct {
@@ -107,9 +122,16 @@ type model struct {
 	// and whether the log pane is shown. Off by default — toggled with
 	// /debug.
 	debugEnabled bool
-	// logLines holds captured telemetry output, most recent last; only the
-	// tail of it (sized by logPaneHeight) is ever rendered at once.
+	// logLines holds captured telemetry output, most recent last; only a
+	// window of it (sized by logPaneHeight, positioned by logScrollOffset)
+	// is ever rendered at once.
 	logLines []string
+	// logScrollOffset is how many lines back from the live tail the log
+	// pane is showing (0 = the newest lines). logFollowing is false once
+	// it's nonzero, and PgUp/PgDn (or Ctrl+Up/Ctrl+Down) adjust both — see scrollLog and
+	// appendLogLines.
+	logScrollOffset int
+	logFollowing    bool
 
 	// width/height track the terminal size (via tea.WindowSizeMsg), used to
 	// size the log pane to roughly a quarter of the screen.
@@ -124,7 +146,8 @@ func newModel(repl *monty.Repl, logger *slog.Logger, logs *logBuffer) model {
 	ti.Focus()
 	ti.CharLimit = 2000
 	ti.Width = 70
-	return model{textInput: ti, repl: repl, logger: logger, logs: logs}
+	ti.PromptStyle = promptStyle
+	return model{textInput: ti, repl: repl, logger: logger, logs: logs, logFollowing: true}
 }
 
 // debugStatusEntry reports the new /debug state as a pseudo-entry so it
@@ -168,6 +191,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if code == "" {
 				return m, nil
 			}
+			if code == "exit" || code == "quit" {
+				// Matches Python 3.13's REPL: bare exit/quit (no parens)
+				// leaves, same as Ctrl-C/Ctrl-D.
+				m.quitting = true
+				return m, tea.Quit
+			}
 			if code == "/debug" {
 				// Not Python code and not added to history — a slash
 				// command toggling this session's own state.
@@ -179,10 +208,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.entries) > maxHistoryEntries {
 				m.entries = m.entries[len(m.entries)-maxHistoryEntries:]
 			}
-			m.logLines = append(m.logLines, m.logs.drain()...)
-			if len(m.logLines) > maxStoredLogLines {
-				m.logLines = m.logLines[len(m.logLines)-maxStoredLogLines:]
-			}
+			m = m.appendLogLines(m.logs.drain())
 			m.history = append(m.history, code)
 			m.historyIdx = len(m.history)
 			return m, nil
@@ -194,6 +220,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.completePath(), nil
 		case tea.KeyCtrlR:
 			return m.rewind(), nil
+		case tea.KeyPgUp, tea.KeyCtrlUp:
+			if m.debugEnabled {
+				return m.scrollLog(m.logPaneHeight()), nil
+			}
+		case tea.KeyPgDown, tea.KeyCtrlDown:
+			if m.debugEnabled {
+				return m.scrollLog(-m.logPaneHeight()), nil
+			}
 		}
 	}
 	var cmd tea.Cmd
@@ -327,12 +361,49 @@ func (m model) logPaneHeight() int {
 	return h
 }
 
-// renderLogPane renders a fixed-height pane showing the most recent
-// telemetry lines, padded with blank lines so the pane's height (and thus
-// everything below it) stays stable as lines accumulate. Lines longer than
-// the terminal width are wrapped, not cut off — the row budget (height) is
-// what gets rationed across entries, newest first, not individual lines'
-// content.
+// scrollLog moves the log pane's view by delta raw lines: positive scrolls
+// back toward older telemetry, negative scrolls forward toward the live
+// tail. Reaching the tail (offset 0) turns logFollowing back on; leaving
+// it turns logFollowing off, so appendLogLines knows to keep the view
+// stable instead of auto-scrolling while newly captured lines arrive.
+func (m model) scrollLog(delta int) model {
+	m.logScrollOffset += delta
+	if m.logScrollOffset < 0 {
+		m.logScrollOffset = 0
+	}
+	if max := len(m.logLines); m.logScrollOffset > max {
+		m.logScrollOffset = max
+	}
+	m.logFollowing = m.logScrollOffset == 0
+	return m
+}
+
+// appendLogLines adds newly captured telemetry lines to logLines (capped
+// at maxStoredLogLines). If the pane isn't following the live tail
+// (logFollowing == false, i.e. the user has scrolled back with PgUp), it
+// advances logScrollOffset by the same amount so the pane keeps showing
+// the same lines rather than sliding forward as the tail grows past them.
+func (m model) appendLogLines(lines []string) model {
+	if len(lines) == 0 {
+		return m
+	}
+	if !m.logFollowing {
+		m.logScrollOffset += len(lines)
+	}
+	m.logLines = append(m.logLines, lines...)
+	if len(m.logLines) > maxStoredLogLines {
+		m.logLines = m.logLines[len(m.logLines)-maxStoredLogLines:]
+	}
+	return m
+}
+
+// renderLogPane renders a fixed-height pane showing telemetry lines from
+// around the current scroll position (logScrollOffset lines back from the
+// live tail, or the tail itself when logFollowing), padded with blank
+// lines so the pane's height (and thus everything below it) stays stable
+// as lines accumulate. Lines longer than the terminal width are wrapped,
+// not cut off — the row budget (height) is what gets rationed across
+// entries, newest-in-view first, not individual lines' content.
 func (m model) renderLogPane() string {
 	width := m.width
 	if width <= 0 {
@@ -340,13 +411,21 @@ func (m model) renderLogPane() string {
 	}
 	height := m.logPaneHeight()
 
-	// Walk from newest to oldest, wrapping each entry and spending the row
+	end := len(m.logLines) - m.logScrollOffset
+	if end > len(m.logLines) {
+		end = len(m.logLines)
+	}
+	if end < 0 {
+		end = 0
+	}
+
+	// Walk from end-1 backward, wrapping each entry and spending the row
 	// budget on it; an entry that would blow the remaining budget gets
 	// wrapped up to what's left with a trailing "…" marker rather than
 	// silently dropping the rest, and older entries are skipped once the
 	// budget is exhausted.
 	var rows []string
-	for i := len(m.logLines) - 1; i >= 0 && len(rows) < height; i-- {
+	for i := end - 1; i >= 0 && len(rows) < height; i-- {
 		wrapped := wrapLine(m.logLines[i], width)
 		remaining := height - len(rows)
 		if len(wrapped) > remaining {
@@ -356,8 +435,12 @@ func (m model) renderLogPane() string {
 		rows = append(wrapped, rows...)
 	}
 
+	label := "telemetry"
+	if !m.logFollowing {
+		label = "telemetry (scrolled — PgDn to follow)"
+	}
 	var b strings.Builder
-	b.WriteString(rule("telemetry", width))
+	b.WriteString(rule(label, width))
 	b.WriteString("\n")
 	for _, line := range rows {
 		b.WriteString(line)
@@ -409,6 +492,16 @@ func rule(label string, width int) string {
 	return prefix + strings.Repeat("─", width-len(prefix))
 }
 
+// countRows returns how many terminal rows s occupies. bubbletea's own
+// renderer (standard_renderer.go's flush) truncates any line wider than
+// the terminal width rather than letting it wrap — "Truncate lines wider
+// than the width of the window to avoid wrapping, which will mess up
+// rendering" — so a too-long line (e.g. shmonty's header) still costs
+// exactly one row, same as counting "\n" characters directly.
+func countRows(s string) int {
+	return strings.Count(s, "\n")
+}
+
 // runInput dispatches one line of raw REPL input exactly as KeyEnter and
 // rewind's replay both need: /execute <path> reads and runs a file,
 // anything else runs as Python. It does not handle /debug — that toggles
@@ -455,10 +548,7 @@ func (m model) rewind() model {
 	if len(m.entries) > maxHistoryEntries {
 		m.entries = m.entries[len(m.entries)-maxHistoryEntries:]
 	}
-	m.logLines = append(m.logLines, m.logs.drain()...)
-	if len(m.logLines) > maxStoredLogLines {
-		m.logLines = m.logLines[len(m.logLines)-maxStoredLogLines:]
-	}
+	m = m.appendLogLines(m.logs.drain())
 
 	m.textInput.SetValue(last)
 	m.textInput.CursorEnd()
@@ -526,14 +616,11 @@ func (m model) runCode(display, code string) entry {
 
 func (m model) View() string {
 	var b strings.Builder
-	b.WriteString("shmonty  (Ctrl+C/Ctrl+D to quit, Up/Down for history, Ctrl+R rewind, /debug telemetry, /execute <path> [Tab completes])\n")
-	if m.debugEnabled {
-		b.WriteString(m.renderLogPane())
-	}
-	b.WriteString("\n")
+	b.WriteString("shmonty  (Ctrl+C/Ctrl+D/exit to quit, Up/Down history, Ctrl+R rewind, /debug telemetry [PgUp/PgDn scroll], /execute <path> [Tab completes])\n\n")
 
 	for _, e := range m.entries {
-		fmt.Fprintf(&b, ">>> %s\n", e.code)
+		b.WriteString(promptStyle.Render(">>>"))
+		fmt.Fprintf(&b, " %s\n", e.code)
 		if e.output != "" {
 			b.WriteString(e.output)
 			if !strings.HasSuffix(e.output, "\n") {
@@ -541,7 +628,8 @@ func (m model) View() string {
 			}
 		}
 		if e.isErr {
-			fmt.Fprintf(&b, "error: %s\n", e.result)
+			b.WriteString(errorStyle.Render(fmt.Sprintf("error: %s", e.result)))
+			b.WriteString("\n")
 		} else {
 			fmt.Fprintf(&b, "%s\n", e.result)
 		}
@@ -550,7 +638,32 @@ func (m model) View() string {
 
 	b.WriteString(m.textInput.View())
 	b.WriteString("\n")
-	return b.String()
+
+	out := b.String()
+	if m.debugEnabled {
+		logBlock := m.renderLogPane()
+		// Pad with blank lines so the log pane's bottom edge lands on the
+		// terminal's actual last row, not just wherever the transcript
+		// happens to end. Skipped until the first tea.WindowSizeMsg arrives
+		// (m.height == 0) or if the transcript already fills (or overflows)
+		// the screen, in which case there's no room to pin it and it just
+		// follows the input as before.
+		if m.height > 0 {
+			if padding := m.height - countRows(out) - countRows(logBlock); padding > 0 {
+				out += strings.Repeat("\n", padding)
+			}
+		}
+		out += logBlock
+	}
+
+	// bubbletea's renderer drops lines from the TOP of the frame whenever
+	// strings.Split(out, "\n") yields more segments than the terminal
+	// height — and every "\n" we write, including this trailing one,
+	// counts as one more segment (a final "a\n" splits into ["a", ""], not
+	// just ["a"]). Left in place, that phantom empty segment silently
+	// eats one row of budget and — once the frame is padded to exactly
+	// fill the screen, as above — pushes the header off the top instead.
+	return strings.TrimSuffix(out, "\n")
 }
 
 func main() {
