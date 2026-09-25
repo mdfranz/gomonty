@@ -155,7 +155,6 @@ type model struct {
 
 func newModel(repl *monty.Repl, logger *slog.Logger, logs *logBuffer) model {
 	ti := textinput.New()
-	ti.Placeholder = "40 + 2"
 	ti.Focus()
 	ti.CharLimit = 2000
 	ti.Width = 70
@@ -637,10 +636,9 @@ func (m model) runCode(display, code string) entry {
 		// (gomonty-olly.md §4) — nothing opts a live export target into
 		// seeing them.
 	case m.debugEnabled:
-		// DurationUnit: DurationNanoseconds — shmonty's own operations are
-		// sub-millisecond, so the library's ms default would round every
-		// duration down to 0.
-		opts.Telemetry = monty.SlogHandler{Logger: m.logger, DurationUnit: monty.DurationNanoseconds}
+		// Shmonty's own operations are often sub-millisecond, so keep
+		// microsecond precision in the local telemetry pane.
+		opts.Telemetry = monty.SlogHandler{Logger: m.logger, DurationUnit: monty.DurationMicroseconds}
 		// RecordArguments/RecordOutputs default to false so a production
 		// host doesn't leak call payloads that might carry credentials —
 		// shmonty is a local debug REPL with nothing to protect, so seeing
@@ -702,6 +700,13 @@ func (m model) View() string {
 			}
 		}
 		out += logBlock
+	} else if m.height > 0 {
+		// Keep the frame as tall as the terminal even without telemetry.
+		// Otherwise redraws only cover the header and input, leaving old
+		// prompt rows visible below them in some terminals.
+		if padding := m.height - countRows(out); padding > 0 {
+			out += strings.Repeat("\n", padding)
+		}
 	}
 
 	// bubbletea's renderer drops lines from the TOP of the frame whenever
@@ -777,7 +782,7 @@ func runScript(path string) {
 		// stay off, unlike the local-only SlogHandler case below.
 		opts.Telemetry = otelHandler
 	} else {
-		opts.Telemetry = monty.SlogHandler{Logger: logger, DurationUnit: monty.DurationNanoseconds}
+		opts.Telemetry = monty.SlogHandler{Logger: logger, DurationUnit: monty.DurationMicroseconds}
 		opts.TelemetryOptions = monty.TelemetryOptions{
 			RecordArguments: true,
 			RecordOutputs:   true,
