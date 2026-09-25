@@ -23,6 +23,12 @@
 // the file once — like `python script.py`, not /execute — printing print()
 // output followed by the script's final value, then exits (non-zero on a
 // read or execution error).
+//
+// If OTEL_EXPORTER_OTLP_ENDPOINT is set, telemetry exports via
+// otelmonty.Handler to any standard OTLP backend (Logfire included) for
+// every FeedRun/Run call instead of monty.SlogHandler — /debug becomes
+// unavailable in that mode, since there's no local slog output to show.
+// See telemetry_otel.go.
 package main
 
 import (
@@ -105,8 +111,15 @@ type model struct {
 
 	// debugEnabled gates whether FeedRun gets a Telemetry handler at all,
 	// and whether the log pane is shown. Off by default — toggled with
-	// /debug.
+	// /debug. Meaningless once otelHandler is set: see otelHandler's doc.
 	debugEnabled bool
+	// otelHandler, when non-nil, replaces SlogHandler for every FeedRun
+	// call unconditionally, ignoring debugEnabled entirely — set once at
+	// startup from initOTelTelemetry (telemetry_otel.go) when
+	// OTEL_EXPORTER_OTLP_ENDPOINT is configured. An OTel-exporting session
+	// has nothing local to show, so there's no local pane for /debug to
+	// toggle; /debug reports that instead of flipping debugEnabled.
+	otelHandler monty.TelemetryHandler
 	// logLines holds captured telemetry output, most recent last; only the
 	// tail of it (sized by logPaneHeight) is ever rendered at once.
 	logLines []string
@@ -171,6 +184,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if code == "/debug" {
 				// Not Python code and not added to history — a slash
 				// command toggling this session's own state.
+				if m.otelHandler != nil {
+					m.entries = append(m.entries, entry{
+						code:   "/debug",
+						result: "telemetry is exporting via OpenTelemetry (OTEL_EXPORTER_OTLP_ENDPOINT set); local /debug pane is unavailable in this mode",
+					})
+					return m, nil
+				}
 				m.debugEnabled = !m.debugEnabled
 				m.entries = append(m.entries, m.debugStatusEntry())
 				return m, nil
@@ -503,7 +523,15 @@ func (m model) runCode(display, code string) entry {
 		Print:     monty.WriterPrintCallback(&stdout),
 		Functions: hostFunctions(),
 	}
-	if m.debugEnabled {
+	switch {
+	case m.otelHandler != nil:
+		opts.Telemetry = m.otelHandler
+		// RecordArguments/RecordOutputs stay at their false default here,
+		// unlike the /debug branch below: this leaves the process for an
+		// external OTel backend, and call payloads can carry credentials
+		// (gomonty-olly.md §4) — nothing opts a live export target into
+		// seeing them.
+	case m.debugEnabled:
 		// DurationUnit: DurationNanoseconds — shmonty's own operations are
 		// sub-millisecond, so the library's ms default would round every
 		// duration down to 0.
@@ -526,7 +554,12 @@ func (m model) runCode(display, code string) entry {
 
 func (m model) View() string {
 	var b strings.Builder
-	b.WriteString("shmonty  (Ctrl+C/Ctrl+D to quit, Up/Down for history, Ctrl+R rewind, /debug telemetry, /execute <path> [Tab completes])\n")
+	header := "shmonty  (Ctrl+C/Ctrl+D to quit, Up/Down for history, Ctrl+R rewind, /debug telemetry, /execute <path> [Tab completes])"
+	if m.otelHandler != nil {
+		header += "  [otel export active]"
+	}
+	b.WriteString(header)
+	b.WriteString("\n")
 	if m.debugEnabled {
 		b.WriteString(m.renderLogPane())
 	}
@@ -559,6 +592,10 @@ func main() {
 		return
 	}
 
+	ctx := context.Background()
+	otelHandler, otelShutdown := initOTelTelemetry(ctx)
+	defer otelShutdown(ctx)
+
 	logs := &logBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
@@ -567,7 +604,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if _, err := tea.NewProgram(newModel(repl, logger, logs), tea.WithAltScreen()).Run(); err != nil {
+	m := newModel(repl, logger, logs)
+	m.otelHandler = otelHandler
+
+	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -587,6 +627,10 @@ func runScript(path string) {
 		os.Exit(1)
 	}
 
+	ctx := context.Background()
+	otelHandler, otelShutdown := initOTelTelemetry(ctx)
+	defer otelShutdown(ctx)
+
 	logs := &logBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
@@ -596,15 +640,23 @@ func runScript(path string) {
 		os.Exit(1)
 	}
 
-	value, runErr := runner.Run(context.Background(), monty.RunOptions{
+	opts := monty.RunOptions{
 		Print:     monty.WriterPrintCallback(os.Stdout),
 		Functions: hostFunctions(),
-		Telemetry: monty.SlogHandler{Logger: logger, DurationUnit: monty.DurationNanoseconds},
-		TelemetryOptions: monty.TelemetryOptions{
+	}
+	if otelHandler != nil {
+		// See runCode's otelHandler branch: RecordArguments/RecordOutputs
+		// stay off, unlike the local-only SlogHandler case below.
+		opts.Telemetry = otelHandler
+	} else {
+		opts.Telemetry = monty.SlogHandler{Logger: logger, DurationUnit: monty.DurationNanoseconds}
+		opts.TelemetryOptions = monty.TelemetryOptions{
 			RecordArguments: true,
 			RecordOutputs:   true,
-		},
-	})
+		}
+	}
+
+	value, runErr := runner.Run(ctx, opts)
 
 	if runErr != nil {
 		fmt.Fprintln(os.Stderr, "error:", runErr)
