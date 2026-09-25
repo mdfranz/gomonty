@@ -1,11 +1,11 @@
 # Monty Go Bindings
 
-`github.com/ewhauser/gomonty` exposes Monty as a Go package with:
+`github.com/mdfranz/gomonty` exposes Monty as a Go package with:
 
 - runner and REPL APIs
 - high-level host callback dispatch for external functions
 - low-level pause/resume snapshots
-- a typed OS/filesystem callback surface in `github.com/ewhauser/gomonty/vfs`
+- a typed OS/filesystem callback surface in `github.com/mdfranz/gomonty/vfs`
 
 ## Status
 
@@ -34,13 +34,13 @@ If the shared library for your target is missing from the source tree, builds fo
 ## Install
 
 ```bash
-go get github.com/ewhauser/gomonty@latest
+go get github.com/mdfranz/gomonty@latest
 ```
 
 Or in `go.mod`:
 
 ```go
-require github.com/ewhauser/gomonty vX.Y.Z
+require github.com/mdfranz/gomonty vX.Y.Z
 ```
 
 ## Quick Start
@@ -61,8 +61,8 @@ import (
 	"log"
 	"os"
 
-	monty "github.com/ewhauser/gomonty"
-	"github.com/ewhauser/gomonty/vfs"
+	monty "github.com/mdfranz/gomonty"
+	"github.com/mdfranz/gomonty/vfs"
 )
 
 func main() {

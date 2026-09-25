@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	monty "github.com/ewhauser/gomonty"
-	"github.com/ewhauser/gomonty/otelmonty"
+	monty "github.com/mdfranz/gomonty"
+	"github.com/mdfranz/gomonty/otelmonty"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )

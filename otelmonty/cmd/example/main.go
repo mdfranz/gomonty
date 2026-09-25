@@ -14,8 +14,8 @@ import (
 	"fmt"
 	"log"
 
-	monty "github.com/ewhauser/gomonty"
-	"github.com/ewhauser/gomonty/otelmonty"
+	monty "github.com/mdfranz/gomonty"
+	"github.com/mdfranz/gomonty/otelmonty"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
