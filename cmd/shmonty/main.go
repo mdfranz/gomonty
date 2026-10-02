@@ -469,12 +469,8 @@ func (m model) renderLogPane() string {
 		rows = append(wrapped, rows...)
 	}
 
-	label := "telemetry"
-	if !m.logFollowing {
-		label = "telemetry (scrolled — PgDn to follow)"
-	}
 	var b strings.Builder
-	b.WriteString(rule(label, width))
+	b.WriteString(rule("telemetry", width))
 	b.WriteString("\n")
 	for _, line := range rows {
 		b.WriteString(line)
@@ -655,12 +651,41 @@ func (m model) runCode(display, code string) entry {
 	return entry{code: display, output: stdout.String(), result: value.String()}
 }
 
+// renderStatusLine renders a persistent one-line status bar shown just
+// above the input, so session state (telemetry mode, history depth, and —
+// once /debug is on — the log pane's scroll state) stays visible without
+// needing to reason about the transcript above it.
+func (m model) renderStatusLine() string {
+	width := m.width
+	if width <= 0 {
+		width = 70
+	}
+
+	var mode string
+	switch {
+	case m.otelHandler != nil:
+		mode = "otel:active"
+	case m.debugEnabled:
+		mode = "debug:on"
+	default:
+		mode = "debug:off"
+	}
+
+	parts := []string{mode, fmt.Sprintf("history:%d", len(m.history))}
+	if m.debugEnabled && m.otelHandler == nil {
+		follow := "following"
+		if !m.logFollowing {
+			follow = "scrolled"
+		}
+		parts = append(parts, fmt.Sprintf("log:%d %s", len(m.logLines), follow))
+	}
+
+	return rule(strings.Join(parts, "  "), width)
+}
+
 func (m model) View() string {
 	var b strings.Builder
 	header := "shmonty  (Ctrl+C/Ctrl+D/exit to quit, Up/Down history, Ctrl+R rewind, /debug telemetry [PgUp/PgDn scroll], /execute <path> [Tab completes])"
-	if m.otelHandler != nil {
-		header += "  [otel export active]"
-	}
 	b.WriteString(header)
 	b.WriteString("\n\n")
 
@@ -682,6 +707,8 @@ func (m model) View() string {
 		b.WriteString("\n")
 	}
 
+	b.WriteString(m.renderStatusLine())
+	b.WriteString("\n")
 	b.WriteString(m.textInput.View())
 	b.WriteString("\n")
 
