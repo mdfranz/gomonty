@@ -27,6 +27,7 @@ jobs:
             go.sum
             examples/go.sum
             otelmonty/go.sum
+            cmd/shmonty/go.sum
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -37,16 +38,34 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu
+          components: rustfmt
 
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+          cargo fmt --all --check
 
       - name: Build native shared library
         shell: bash
         run: |
           export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
           MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh x86_64-unknown-linux-gnu
+
+      - name: Run Rust tests
+        shell: bash
+        run: |
+          export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+          cargo test -p monty-go-ffi --locked
 
       - name: Run CGO-disabled tests
         env:
@@ -68,6 +87,13 @@ jobs:
           cd otelmonty
           CGO_ENABLED=0 go test ./...
           CGO_ENABLED=0 go build ./cmd/example
+
+      - name: Test shmonty module
+        shell: bash
+        run: |
+          cd cmd/shmonty
+          CGO_ENABLED=0 go vet ./...
+          CGO_ENABLED=0 go test ./...
 
   platform-verify:
     name: verify ${{ matrix.name }}

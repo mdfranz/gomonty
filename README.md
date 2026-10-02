@@ -33,7 +33,7 @@ On first use, the loader extracts the embedded shared library to `os.UserCacheDi
 
 Default Linux builds target the GNU/glibc shared libraries. Alpine and other musl-based Linux builds must opt into the musl family with the `musl` Go build tag.
 
-The `verify` workflow runs `CGO_ENABLED=0` Go tests on native Linux, macOS, and Windows runners. Musl shared libraries are build-verified rather than executed in CI.
+The `verify` workflow runs `CGO_ENABLED=0` Go tests on native Linux (amd64, arm64) and macOS (arm64) runners, plus the Rust FFI crate's unit tests and `gofmt`/`cargo fmt` checks. Windows shared libraries are only built during `release-prep`, and the musl build checks in `verify` are off unless the `RUN_MUSL_CI` repository variable is set.
 
 To build or refresh the shared library for the current host:
 
