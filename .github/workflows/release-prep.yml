@@ -191,10 +191,11 @@ jobs:
       - musl-shared-library-amd64
       - musl-shared-library-arm64
     steps:
+      # No explicit ref: use the same commit the build jobs compiled, not
+      # whatever main points at by the time the builds finish.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: main
 
       - name: Setup Go
         uses: actions/setup-go@v5

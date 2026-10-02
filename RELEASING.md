@@ -67,18 +67,26 @@ make publish-release VERSION=vX.Y.Z
 ```
 
 That target dispatches the `release` GitHub Actions workflow on `main`. The
+workflow does **not** rebuild anything. Rust FFI builds aren't reproducible, so a
+rebuild would produce binaries that differ from the committed ones that `go get`
+users receive. Instead, it publishes exactly what release-prep committed. The
 workflow:
 
 - validates the requested version and ensures the tag does not already exist
-- rebuilds the release assets and verifies the checked-in release tree on `main`
-  already matches the fresh build outputs
-- reruns release validation on the assembled tree:
+- checks that `Cargo.toml`'s version matches the requested version
+- runs `sha256sum --check` against `internal/ffi/checksums.txt`, which covers
+  `Cargo.lock`, the header and all six shared libraries. This fails if anything
+  release-prep produced has changed since, for example an upstream pin bump
+  merged after the release-prep PR. In that case, re-run release-prep.
+- runs release validation against the committed libraries:
   - `CGO_ENABLED=0 go test ./...`
   - `go vet ./...`
   - `cd examples && CGO_ENABLED=0 go run ./cmd/example`
-- tags the merged `main` commit
-- creates the GitHub release with attached shared libraries and checksums, and
-  generates release notes from the exact git range since the previous tag
+- tags the exact commit the workflow was dispatched on, so a merge to `main`
+  during the run can't change what gets tagged
+- creates the GitHub release with the committed shared libraries and
+  `checksums.txt` attached, and generates release notes from the exact git range
+  since the previous tag
 - warms the Go module proxy with `go list -m`, which is the trigger `pkg.go.dev`
   and the module mirror need
 
