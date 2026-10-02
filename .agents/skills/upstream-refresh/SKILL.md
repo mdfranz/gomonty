@@ -30,21 +30,27 @@ Changes flow top-down. Never skip a layer — if upstream adds a variant, all fo
 
 ## Step 1: Discover upstream changes
 
-Find the currently pinned revision in `Cargo.toml` (the `rev` field on the `monty` dependency), then compare it against upstream `main`:
+Find the currently pinned revision in `Cargo.toml` (the `rev` field on the `monty` dependency). Target the latest upstream **release tag** by default; only target `main` when you specifically need unreleased changes.
 
 ```bash
 # Get the pinned rev
 grep 'rev = ' Cargo.toml
 
-# List commits since the pin
-gh api 'repos/pydantic/monty/compare/<pinned-rev>...main' \
+# Find the latest release
+gh release list -R pydantic/monty --limit 5
+
+# List commits since the pin (use the tag, or main)
+gh api 'repos/pydantic/monty/compare/<pinned-rev>...<tag>' \
   --jq '.commits[] | "\(.sha[0:12]) \(.commit.message | split("\n")[0])"'
+
+# Read the release notes for the range
+gh release view <tag> -R pydantic/monty
 ```
 
-Use the GitHub API (via `gh`) to get the full SHA of the target commit — short SHAs from the commits list are truncated and will fail Cargo resolution:
+Get the full 40-character SHA of the target; Cargo can't resolve truncated SHAs:
 
 ```bash
-gh api 'repos/pydantic/monty/commits?per_page=1' --jq '.[0].sha'
+gh api 'repos/pydantic/monty/commits/<tag>' --jq .sha
 ```
 
 ## Step 2: Classify changes by FFI impact
@@ -79,14 +85,21 @@ gh api 'repos/pydantic/monty/contents/crates/monty/src/object.rs?ref=main' \
 
 ## Step 3: Bump the upstream pin
 
-Update both `rev` values in `Cargo.toml` (they must stay aligned):
+Update all three `rev` values in `Cargo.toml` (they must stay aligned):
 
 ```toml
 monty = { git = "https://github.com/pydantic/monty.git", rev = "<full-sha>" }
-monty_type_checking = { git = "https://github.com/pydantic/monty.git", package = "monty_type_checking", rev = "<full-sha>" }
+monty_type_checking = { git = "https://github.com/pydantic/monty.git", package = "monty-type-checking", rev = "<full-sha>" }
+monty_types = { git = "https://github.com/pydantic/monty.git", package = "monty-types", rev = "<full-sha>" }
 ```
 
-Use the **full 40-character SHA** — Cargo will fail to resolve truncated SHAs.
+Use the **full 40-character SHA**; Cargo won't resolve truncated SHAs. Then refresh the lockfile. `cargo update` takes the hyphenated **package** names, not the dependency keys:
+
+```bash
+cargo update -p monty -p monty-type-checking -p monty-types
+```
+
+Read the `cargo update` output: new crates appearing (for example `minicbor` when upstream changed its dump encoding) hint at serialization changes to check in Step 7.
 
 ## Step 4: Update the Rust wire format
 
@@ -249,75 +262,53 @@ Add a case in the `String()` method. Format should match Python's representation
 
 ## Step 7: Verify
 
-### Rust
+Build the shared library for your host first; the Go tests load it. The first build compiles all of upstream and takes several minutes, so run it in the background:
 
 ```bash
-cargo test -p monty-go-ffi
+MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh <host-target-triple>   # e.g. aarch64-apple-darwin, aarch64-unknown-linux-gnu
 ```
 
-All existing and new wire round-trip tests must pass.
-
-### Go
+Then run every check. Each Go module needs its own run:
 
 ```bash
+cargo test -p monty-go-ffi --locked                # wire round-trip tests
 CGO_ENABLED=0 go vet ./...
 CGO_ENABLED=0 go test ./...
+(cd examples && CGO_ENABLED=0 go run ./cmd/example) # prints 42
+(cd otelmonty && CGO_ENABLED=0 go test ./...)
+(cd cmd/shmonty && CGO_ENABLED=0 go test -buildvcs=false ./...)  # -buildvcs=false only needed in a git worktree
+CGO_ENABLED=0 go test -run '^$' -fuzz FuzzLoadRunner -fuzztime 20s .
 ```
 
-### Local native build
+### Dump/load compatibility
 
-Build the FFI for the local platform to verify the full stack:
+`crates/monty-go-ffi/src/lib.rs` wraps upstream's own types (`StoredRunner`, `StoredLoadedRepl`, `StoredProgress`) and encodes them with `postcard`. Upstream changes to the serde layout of those types (renamed fields, `#[serde(rename)]`, flattened layouts) change gomonty's dump format even when no binding code changes. When the upstream range touches serialization:
 
-```bash
-MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh aarch64-apple-darwin
-CGO_ENABLED=0 go test ./...
-```
+- run the `FuzzLoadRunner` pass above, and make sure its seed corpus in `testdata/fuzz/FuzzLoadRunner` still loads
+- say in the PR whether runners, REPLs and progress handles dumped by the previous release still load. If they don't, call it out as a breaking change
 
 ## Step 8: Branch, commit, push, and create PR
 
-Create a feature branch, commit all changes (including `Cargo.lock` and the locally-rebuilt shared library), push, and open a PR:
+Commit **source and lockfile only**. Don't commit the shared library you built locally, the header, or `checksums.txt`: CI rebuilds the libraries for each platform, and only the `release-prep` workflow commits them.
 
 ```bash
-git checkout -b ewhauser/<descriptive-branch-name>
-git add Cargo.lock Cargo.toml crates/monty-go-ffi/src/wire.rs \
-  internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib \
-  types.go types_test.go wire.go
-git commit -m "Support upstream <feature> types ..."
-git push -u origin ewhauser/<branch-name>
-gh pr create --title "..." --body "..."
+git checkout -b <type>/<descriptive-branch-name>     # e.g. chore/bump-monty-pin-v1.0.1
+git add Cargo.toml Cargo.lock crates/monty-go-ffi/src/wire.rs wire.go types.go types_test.go   # whatever you changed
+git commit -m "Bump upstream Monty pin to <tag>"
+git push -u origin <branch>
+gh pr create --title "..." --body "..."   # include the Step 7 results and the dump/load note
 ```
 
-## Step 9: Merge PR and trigger the release workflow
+`verify.yml` runs only when the PR is opened. After later pushes, recheck with `gh workflow run verify.yml --ref <branch>`.
 
-After the PR is reviewed and merged:
+## Step 9: Release
 
-1. Trigger the single release entrypoint from a local checkout:
+Follow `RELEASING.md` after the PR merges. It has two steps:
 
-```bash
-make release
-```
+1. `make release` dispatches `release-prep.yml`, which rebuilds the shared libraries for every platform, regenerates the header and checksums, and opens a `release-prep/vX.Y.Z` PR. Pass `VERSION=vX.Y.Z` for a non-patch bump.
+2. After that PR merges, `make publish-release VERSION=vX.Y.Z` tags `main`, creates the GitHub release, and warms the Go module proxy.
 
-2. The Make target fetches tags from `origin`, computes the next patch semver
-   tag, and dispatches the `release.yml` GitHub Actions workflow on `main`. If
-   a non-patch version is required, pass `VERSION=vX.Y.Z`.
-
-3. The workflow builds for: darwin-arm64, linux-amd64, linux-arm64, linux-amd64-musl, linux-arm64-musl, windows-amd64.
-
-4. It updates the tracked release files on `main`, tags the release, creates the
-   GitHub release with a commit-by-commit changelog since the previous tag, and
-   warms the Go proxy so `pkg.go.dev` can discover the new version.
-
-**Important**: The code changes PR must be merged to `main` before triggering the
-release workflow, because the workflow runs from `main` and publishes directly
-from that branch.
-
-## Step 10: Tag and release
-
-The workflow handles the version bump in `Cargo.toml`, shared-library refresh,
-tag creation, GitHub release creation, and Go proxy warm-up. The shared
-libraries still must be committed in the tagged tree because Go module
-consumers fetch the tagged source via `go get` — they don't download GitHub
-release assets. The release assets remain optional convenience copies.
+The shared libraries must be committed in the tagged tree, because `go get` fetches the tagged source and not GitHub release assets.
 
 ## Common pitfalls
 
