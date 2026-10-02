@@ -29,3 +29,28 @@ func TestViewClearsUnusedTerminalRows(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderStatusLine(t *testing.T) {
+	m := newModel(nil, nil, &logBuffer{})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
+	m = updated.(model)
+	m.history = []string{"1 + 1", "2 + 2"}
+
+	if got := m.renderStatusLine(); !strings.Contains(got, "debug:off") || !strings.Contains(got, "history:2") {
+		t.Fatalf("status line %q missing debug:off/history:2", got)
+	}
+	if strings.Contains(m.renderStatusLine(), "log:") {
+		t.Fatal("status line shows log state while debug is off")
+	}
+
+	m.debugEnabled = true
+	m.logLines = []string{"a", "b", "c"}
+	if got := m.renderStatusLine(); !strings.Contains(got, "debug:on") || !strings.Contains(got, "log:3 following") {
+		t.Fatalf("status line %q missing debug:on/log:3 following", got)
+	}
+
+	m.logFollowing = false
+	if got := m.renderStatusLine(); !strings.Contains(got, "log:3 scrolled") {
+		t.Fatalf("status line %q missing log:3 scrolled", got)
+	}
+}
