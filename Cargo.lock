@@ -1190,6 +1190,7 @@ dependencies = [
  "pretty_assertions",
  "rmp-serde",
  "serde",
+ "serde_bytes",
  "serde_json",
 ]
 
