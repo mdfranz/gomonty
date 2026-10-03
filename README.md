@@ -98,6 +98,7 @@ Upstream Monty is a Rust library. gomonty is the Go layer around it:
 - [docs/learning-path.md](./docs/learning-path.md): staged exercises for building Go tools around Monty
 - [docs/case-study-sparktea.md](./docs/case-study-sparktea.md): a real consumer
 - [`go/README.md`](./go/README.md): detailed API guide (values, errors, async, pause/resume)
+- [docs/ci.md](./docs/ci.md): CI and release workflows
 - [docs/contributing.md](./docs/contributing.md): building, testing, benchmarks, fuzzing, upstream overrides
 - [docs/UPSTREAM-REFRESH-PLAN.md](./docs/UPSTREAM-REFRESH-PLAN.md): record of a completed upstream bump
 - [`RELEASING.md`](./RELEASING.md): release flow and bumping the upstream pin
