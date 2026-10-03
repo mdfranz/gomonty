@@ -104,6 +104,25 @@ fn ffi_panic_error(payload: Box<dyn Any + Send>) -> FfiError {
     FfiError::Api(format!("monty-go ffi panicked: {message}"))
 }
 
+/// Runs `f`, returning `fallback()` if it panics.
+///
+/// For exports that write their result through an out pointer and cannot hand
+/// back an error handle. A panic must never unwind out of an `extern "C"`
+/// function: that aborts the whole host process.
+fn catch_or<T>(fallback: impl FnOnce() -> T, f: impl FnOnce() -> T) -> T {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| fallback())
+}
+
+/// Runs a destructor, swallowing a panic from a `Drop` impl.
+///
+/// The value being dropped may leak if its destructor panics partway through,
+/// which is preferable to aborting the host process.
+fn catch_drop(f: impl FnOnce()) {
+    let _ = catch_unwind(AssertUnwindSafe(f));
+}
+
+const PANIC_RENDERING_ERROR: &str = "monty-go ffi panicked while rendering an error";
+
 fn catch_runner_result<F>(f: F) -> MontyGoRunnerResult
 where
     F: FnOnce() -> MontyGoRunnerResult,
@@ -330,6 +349,17 @@ impl PrintWriterCallback for PrintCollector {
     fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
         self.buffer.push(end);
         Ok(())
+    }
+}
+
+/// Summary returned by `monty_go_error_json` when building the real one panics.
+fn panic_summary() -> WireErrorSummary {
+    WireErrorSummary {
+        version: wire::WIRE_VERSION,
+        kind: "api".to_owned(),
+        type_name: "RuntimeError".to_owned(),
+        message: PANIC_RENDERING_ERROR.to_owned(),
+        traceback: Vec::new(),
     }
 }
 
@@ -998,9 +1028,9 @@ fn resume_futures_internal(
 pub extern "C" fn monty_go_bytes_free(ptr: *mut u8, len: usize) {
     if !ptr.is_null() && len > 0 {
         // SAFETY: ptr/len were allocated by `MontyGoBytes::from_vec`
-        unsafe {
+        catch_drop(|| unsafe {
             let _ = Vec::from_raw_parts(ptr, len, len);
-        }
+        });
     }
 }
 
@@ -1008,7 +1038,7 @@ pub extern "C" fn monty_go_bytes_free(ptr: *mut u8, len: usize) {
 pub extern "C" fn monty_go_runner_free(runner: *mut MontyGoRunner) {
     if !runner.is_null() {
         // SAFETY: pointer was created by `Box::into_raw`
-        unsafe { drop(Box::from_raw(runner)) };
+        catch_drop(|| unsafe { drop(Box::from_raw(runner)) });
     }
 }
 
@@ -1016,7 +1046,7 @@ pub extern "C" fn monty_go_runner_free(runner: *mut MontyGoRunner) {
 pub extern "C" fn monty_go_repl_free(repl: *mut MontyGoRepl) {
     if !repl.is_null() {
         // SAFETY: pointer was created by `Box::into_raw`
-        unsafe { drop(Box::from_raw(repl)) };
+        catch_drop(|| unsafe { drop(Box::from_raw(repl)) });
     }
 }
 
@@ -1024,7 +1054,7 @@ pub extern "C" fn monty_go_repl_free(repl: *mut MontyGoRepl) {
 pub extern "C" fn monty_go_progress_free(progress: *mut MontyGoProgress) {
     if !progress.is_null() {
         // SAFETY: pointer was created by `Box::into_raw`
-        unsafe { drop(Box::from_raw(progress)) };
+        catch_drop(|| unsafe { drop(Box::from_raw(progress)) });
     }
 }
 
@@ -1032,7 +1062,7 @@ pub extern "C" fn monty_go_progress_free(progress: *mut MontyGoProgress) {
 pub extern "C" fn monty_go_error_free(error: *mut MontyGoError) {
     if !error.is_null() {
         // SAFETY: pointer was created by `Box::into_raw`
-        unsafe { drop(Box::from_raw(error)) };
+        catch_drop(|| unsafe { drop(Box::from_raw(error)) });
     }
 }
 
@@ -1043,9 +1073,14 @@ pub extern "C" fn monty_go_error_json(error: *const MontyGoError, out: *mut Mont
     } else {
         // SAFETY: caller passes a valid handle pointer
         let error = unsafe { &*error };
-        serde_json::to_vec(&error.inner.summary())
-            .map(MontyGoBytes::from_vec)
-            .unwrap_or_else(|_| MontyGoBytes::empty())
+        catch_or(
+            || MontyGoBytes::from_vec(serde_json::to_vec(&panic_summary()).unwrap_or_default()),
+            || {
+                serde_json::to_vec(&error.inner.summary())
+                    .map(MontyGoBytes::from_vec)
+                    .unwrap_or_else(|_| MontyGoBytes::empty())
+            },
+        )
     };
     if !out.is_null() {
         // SAFETY: caller owns the out pointer
@@ -1066,12 +1101,17 @@ pub extern "C" fn monty_go_error_display(
         // SAFETY: caller passes a valid handle pointer
         let error = unsafe { &*error };
         let format = unsafe { string_from_cstr(format) }.unwrap_or("traceback");
-        MontyGoBytes::from_vec(
-            error
-                .inner
-                .display(format, color)
-                .unwrap_or_else(|display_error| display_error)
-                .into_bytes(),
+        catch_or(
+            || MontyGoBytes::from_vec(PANIC_RENDERING_ERROR.as_bytes().to_vec()),
+            || {
+                MontyGoBytes::from_vec(
+                    error
+                        .inner
+                        .display(format, color)
+                        .unwrap_or_else(|display_error| display_error)
+                        .into_bytes(),
+                )
+            },
         )
     };
     if !out.is_null() {
@@ -1794,5 +1834,80 @@ pub extern "C" fn monty_go_progress_resume_futures(
     if !out.is_null() {
         // SAFETY: caller owns the out pointer
         unsafe { *out = result };
+    }
+}
+
+#[cfg(test)]
+mod panic_guard_tests {
+    use super::*;
+
+    fn bytes_to_string(bytes: MontyGoBytes) -> String {
+        let text = if bytes.ptr.is_null() {
+            String::new()
+        } else {
+            // SAFETY: ptr/len came from `MontyGoBytes::from_vec`
+            String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len) })
+                .into_owned()
+        };
+        monty_go_bytes_free(bytes.ptr, bytes.len);
+        text
+    }
+
+    #[test]
+    fn catch_or_returns_fallback_on_panic() {
+        assert_eq!(catch_or(|| 7, || panic!("boom")), 7);
+        assert_eq!(catch_or(|| 7, || 3), 3);
+    }
+
+    #[test]
+    fn catch_drop_swallows_a_panicking_destructor() {
+        struct PanicsOnDrop;
+        impl Drop for PanicsOnDrop {
+            fn drop(&mut self) {
+                panic!("drop panicked");
+            }
+        }
+        let value = PanicsOnDrop;
+        catch_drop(move || drop(value));
+    }
+
+    #[test]
+    fn free_functions_accept_null() {
+        monty_go_bytes_free(ptr::null_mut(), 0);
+        monty_go_runner_free(ptr::null_mut());
+        monty_go_repl_free(ptr::null_mut());
+        monty_go_progress_free(ptr::null_mut());
+        monty_go_error_free(ptr::null_mut());
+    }
+
+    #[test]
+    fn free_functions_release_handles() {
+        let error = Box::into_raw(Box::new(MontyGoError {
+            inner: FfiError::Api("x".to_owned()),
+        }));
+        monty_go_error_free(error);
+        let bytes = MontyGoBytes::from_vec(vec![1, 2, 3]);
+        monty_go_bytes_free(bytes.ptr, bytes.len);
+    }
+
+    #[test]
+    fn error_json_and_display_work_for_a_normal_error() {
+        let error = Box::into_raw(Box::new(MontyGoError {
+            inner: FfiError::Api("hello".to_owned()),
+        }));
+        let mut json = MontyGoBytes::empty();
+        monty_go_error_json(error, &raw mut json);
+        assert!(bytes_to_string(json).contains("hello"));
+
+        let mut shown = MontyGoBytes::empty();
+        monty_go_error_display(error, c"msg".as_ptr(), false, &raw mut shown);
+        assert_eq!(bytes_to_string(shown), "hello");
+        monty_go_error_free(error);
+    }
+
+    #[test]
+    fn panic_summary_is_valid_json() {
+        let json = serde_json::to_string(&panic_summary()).expect("serializes");
+        assert!(json.contains(PANIC_RENDERING_ERROR));
     }
 }
