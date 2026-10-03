@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # Workflow actions are pinned by commit hash; Dependabot bumps the hash and
+  # the version comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"

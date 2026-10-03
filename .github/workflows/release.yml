@@ -30,7 +30,7 @@ jobs:
     steps:
       # Defaults to github.sha, the commit this run was dispatched on, so a
       # merge to main mid-run cannot change what gets validated and tagged.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4  # zizmor: ignore[artipacked] -- this job pushes with the checkout credentials
         with:
           fetch-depth: 0
 
@@ -79,7 +79,7 @@ jobs:
           fi
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache-dependency-path: |
