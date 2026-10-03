@@ -6,6 +6,21 @@ import (
 	"testing"
 )
 
+func TestWireBytesMessagePackRoundTrip(t *testing.T) {
+	original := wireValue{Kind: wireValueBytes, Bytes: []byte("hello")}
+	encoded, err := marshalWire(original)
+	if err != nil {
+		t.Fatalf("marshalWire: %v", err)
+	}
+	var decoded wireValue
+	if err := unmarshalWire(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshalWire: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, original) {
+		t.Fatalf("wire round-trip = %#v, want %#v", decoded, original)
+	}
+}
+
 func TestUpstreamRefreshWireValuesRoundTrip(t *testing.T) {
 	offset := int32(-18000)
 	timezoneName := "EST"

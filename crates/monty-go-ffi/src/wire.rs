@@ -82,7 +82,7 @@ pub struct WireValue {
     pub float_value: f64,
     #[serde(default, skip_serializing_if = "String::is_empty", rename = "string")]
     pub string_value: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "serde_bytes")]
     pub bytes: Vec<u8>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<WireValue>,
@@ -760,6 +760,30 @@ mod tests {
         ExcType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta,
         MontyTimeZone, MontyUuid,
     };
+
+    #[test]
+    fn wire_value_encodes_bytes_as_msgpack_binary() {
+        let original = WireValue {
+            kind: super::WIRE_VALUE_BYTES,
+            bytes: b"hello".to_vec(),
+            ..WireValue::default()
+        };
+
+        let encoded = rmp_serde::to_vec_named(&original).expect("wire value should encode");
+        let bytes_key = encoded
+            .windows(b"bytes".len())
+            .position(|window| window == b"bytes")
+            .expect("named MessagePack payload should contain the bytes field");
+        assert_eq!(
+            encoded[bytes_key + b"bytes".len()],
+            0xc4,
+            "bytes field should use bin8"
+        );
+
+        let decoded: WireValue =
+            rmp_serde::from_slice(&encoded).expect("binary bytes should decode");
+        assert_eq!(decoded.bytes, b"hello");
+    }
 
     #[test]
     fn wire_value_round_trips_nested_dicts() {

@@ -1,4 +1,4 @@
-.PHONY: release publish-release shmonty repl
+.PHONY: release publish-release shmonty repl shmonty-examples
 
 shmonty:
 	cd cmd/shmonty && CGO_ENABLED=0 go build -o ../../shmonty .
@@ -6,6 +6,12 @@ shmonty:
 
 repl: shmonty
 	./shmonty
+
+shmonty-examples: shmonty
+	@set -e; for script in python-scripts/*.py; do \
+		echo "=== $$script ==="; \
+		./shmonty "$$script"; \
+	done
 
 release:
 	@command -v gh >/dev/null 2>&1 || { echo "gh is required"; exit 1; }

@@ -4,9 +4,67 @@ package monty
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestBytesCrossFFIBoundary(t *testing.T) {
+	t.Run("result", func(t *testing.T) {
+		runner, err := New(`b"hello"`, CompileOptions{ScriptName: "bytes.py"})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		t.Cleanup(func() { closeTestRunner(runner) })
+
+		value, err := runner.Run(context.Background(), RunOptions{})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got := value.Raw(); !reflect.DeepEqual(got, []byte("hello")) {
+			t.Fatalf("result = %#v, want []byte(%q)", got, "hello")
+		}
+	})
+
+	t.Run("input", func(t *testing.T) {
+		runner, err := New(`len(data)`, CompileOptions{ScriptName: "bytes.py", Inputs: []string{"data"}})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		t.Cleanup(func() { closeTestRunner(runner) })
+
+		value, err := runner.Run(context.Background(), RunOptions{Inputs: map[string]Value{"data": Bytes([]byte("hello"))}})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got := value.Raw(); got != int64(5) {
+			t.Fatalf("result = %#v, want 5", got)
+		}
+	})
+
+	t.Run("callback argument", func(t *testing.T) {
+		runner, err := New(`consume(b"hello")`, CompileOptions{ScriptName: "bytes.py"})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		t.Cleanup(func() { closeTestRunner(runner) })
+
+		value, err := runner.Run(context.Background(), RunOptions{Functions: map[string]ExternalFunction{
+			"consume": func(_ context.Context, call Call) (Result, error) {
+				if len(call.Args) != 1 || !reflect.DeepEqual(call.Args[0].Raw(), []byte("hello")) {
+					t.Errorf("callback args = %#v, want one []byte(%q)", call.Args, "hello")
+				}
+				return Return(Bytes([]byte("world"))), nil
+			},
+		}})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got := value.Raw(); !reflect.DeepEqual(got, []byte("world")) {
+			t.Fatalf("callback result = %#v, want []byte(%q)", got, "world")
+		}
+	})
+}
 
 func TestRunnerRunCapturesInitialPrint(t *testing.T) {
 	runner, err := New("print('hello')", CompileOptions{ScriptName: "probe.py"})
