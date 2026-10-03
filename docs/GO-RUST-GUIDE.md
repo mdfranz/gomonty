@@ -292,6 +292,13 @@ match catch_unwind(AssertUnwindSafe(f)) {
 
 so a panic becomes an ordinary `FfiError::Api("monty-go ffi panicked: …")` that Go receives as an error handle.
 
+Two kinds of export cannot return an error handle, so they use different guards:
+
+- `monty_go_error_json` and `monty_go_error_display` write into an out pointer. They use `catch_or(fallback, body)`, which returns a fixed fallback message if rendering panics (type-check diagnostics come from an external renderer, the most plausible panic source).
+- The `*_free` functions use `catch_drop`, which swallows a panic from an upstream `Drop` impl. The object may leak, which is preferable to aborting the host process.
+
+Every exported function is guarded this way. When you add one, add its guard too (the `review-ffi` skill checks this).
+
 **Across the boundary**, errors are handles too. Go asks for a JSON summary (`monty_go_error_json`) or rendered text (`monty_go_error_display`), then maps it to Go error types (`SyntaxError`, `RuntimeError`, `TypingError` in `errors.go`). Go callers use the normal `error` interface and `errors.As`.
 
 Idiom comparison: Rust returns `Result<T, E>` and uses `?`; Go returns `(T, error)` and checks `err != nil`. The FFI layer flattens both into "value or error handle" structs (`MontyGoOpResult` has both `progress` and `error` fields, one of them null).
