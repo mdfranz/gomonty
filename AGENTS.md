@@ -15,6 +15,7 @@ There are four Go modules, connected with `replace` directives. Run `go test` in
 | OpenTelemetry bridge | `otelmonty/` |
 | REPL (`shmonty`) | `cmd/shmonty/` |
 
+- Architecture, upstream context and a learning path are in `docs/` (start with `docs/architecture.md`).
 - Values cross the boundary as MessagePack. Changes flow top-down: upstream `MontyObject` → `crates/monty-go-ffi/src/wire.rs` → `wire.go` → `types.go`. The `upstream-refresh` skill covers this in detail.
 - The design of the telemetry API and `otelmonty` is in `gomonty-olly.md`.
 
