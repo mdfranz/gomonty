@@ -6,6 +6,28 @@ A cgo-free Go binding for [Monty](https://github.com/pydantic/monty), the sandbo
 - API docs: https://pkg.go.dev/github.com/mdfranz/gomonty
 - Status: experimental
 
+## Origin and maintenance
+
+gomonty was created by Eric Hauser as [ewhauser/gomonty](https://github.com/ewhauser/gomonty); all work through `v0.0.14` (March 2026) is theirs, including the purego loading, the Rust C ABI crate and the original Go API. The upstream repository's last commit is dated 2026-03-29.
+
+I forked it on 2026-09-05 and have maintained this fork since. The motive was practical: [sparktea](./docs/case-study-sparktea.md), my Go chat TUI, wanted Monty-backed code mode on a current Monty release, and a fork gave me somewhere to carry fixes without waiting on upstream. Releases `v0.0.15` onward come from here, and the module path is now `github.com/mdfranz/gomonty`. As of 2026-10-03 this fork is 64 commits ahead of `ewhauser/gomonty` and has not merged anything back, so treat it as a divergent fork rather than a mirror.
+
+Changes since the fork (releases `v0.0.15` to `v0.0.17`, plus the docs on the unreleased `docs/update-documentation` branch):
+
+- **Newer Monty.** Refreshed the pinned upstream Monty several times, most recently to v1.0.1, and updated the wire format and Go types for the upstream changes (see [docs/UPSTREAM-REFRESH-PLAN.md](./docs/UPSTREAM-REFRESH-PLAN.md) and the `upstream-refresh` skill).
+- **Telemetry.** An opt-in `TelemetryHandler` API with a `log/slog` adapter, plus `otelmonty`, a separate module that exports OpenTelemetry traces.
+- **`shmonty`.** An interactive REPL and script runner, with history, rewind, a telemetry pane and OTLP export.
+- **Fixes.** `Value.String()` now renders containers, and `print()` results show `None` correctly.
+- **CI and release.** `--locked` Rust builds, a faster `verify` workflow that runs when a PR is opened, optional musl CI, and a release flow that publishes the committed release tree.
+- **Docs.** Architecture, Monty context, a Go + Rust implementation guide and a learning path under [`docs/`](./docs).
+
+**Breaking changes from `v0.0.14`**, both driven by upstream Monty:
+
+- `Dataclass`, `DataclassValue` and `Value.Dataclass()` were replaced by `ClassInstance` and its constructors.
+- `ResourceLimits.MaxAllocations` was removed, and `MaxRecursionDepth` and `MaxSuspensions` were added.
+
+I know of no other breaking changes. The module path differs from the original (`github.com/ewhauser/gomonty`), so switching between the two means changing import paths.
+
 ## Install
 
 ```bash
