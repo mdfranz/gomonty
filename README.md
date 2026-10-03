@@ -71,6 +71,7 @@ Upstream Monty is a Rust library. gomonty is the Go layer around it:
 ## Learn more
 
 - [docs/architecture.md](./docs/architecture.md): how the Go, wire, FFI and Rust layers fit together
+- [docs/GO-RUST-GUIDE.md](./docs/GO-RUST-GUIDE.md): the Go and Rust sides of the implementation, concept by concept
 - [docs/monty-context.md](./docs/monty-context.md): what Monty is and how gomonty relates to it
 - [docs/learning-path.md](./docs/learning-path.md): staged exercises for building Go tools around Monty
 - [docs/case-study-sparktea.md](./docs/case-study-sparktea.md): a real consumer

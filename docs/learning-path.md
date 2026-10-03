@@ -39,6 +39,7 @@ Put it together: a Go program that exposes several tools, lets a model write one
 The pattern comes from "code mode" agents such as those in Pydantic AI's ecosystem; see [monty-context.md](./monty-context.md). [case-study-sparktea.md](./case-study-sparktea.md) describes one Go consumer.
 
 ## Going deeper
+- Read [GO-RUST-GUIDE.md](./GO-RUST-GUIDE.md) for how the Go and Rust halves fit together.
 - Read the Rust side: `crates/monty-go-ffi/src/lib.rs`, then the upstream `monty` crate it wraps.
 - Add a benchmark or fuzz target ([contributing.md](./contributing.md)).
 - Follow an upstream bump end to end with the `upstream-refresh` skill.
