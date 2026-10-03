@@ -7,10 +7,11 @@ dependencies in the root `Cargo.toml`:
 
 - `monty`
 - `monty_type_checking`
+- `monty_types`
 
 To bump the upstream dependency:
 
-1. Update the `rev` for both dependencies in `Cargo.toml`.
+1. Update the `rev` for all three dependencies in `Cargo.toml` (they must use the same full 40-character commit hash).
 2. Refresh `Cargo.lock` with `cargo update`.
 3. Rebuild the host shared library and run local verification:
 

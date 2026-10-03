@@ -1,6 +1,6 @@
 # Continuous integration and release workflows
 
-gomonty has three GitHub Actions workflows in [`.github/workflows/`](../.github/workflows). `verify` checks changes, `release-prep` builds the native libraries and opens a release PR, and `release` tags and publishes what `release-prep` committed. For the step-by-step release procedure see [`RELEASING.md`](../RELEASING.md).
+gomonty has four GitHub Actions workflows (`verify`, `release-prep`, `release` and a `zizmor` lint) in [`.github/workflows/`](../.github/workflows). `verify` checks changes, `release-prep` builds the native libraries and opens a release PR, and `release` tags and publishes what `release-prep` committed. For the step-by-step release procedure see [`RELEASING.md`](../RELEASING.md).
 
 ```mermaid
 flowchart LR
@@ -28,7 +28,7 @@ Permissions are read-only (`contents: read`).
 
 | Job | Runner | What it does |
 | --- | --- | --- |
-| `go-pure` | ubuntu (amd64) | `gofmt -l .` and `cargo fmt --all --check`; builds the native library; `cargo test -p monty-go-ffi --locked`; `CGO_ENABLED=0 go test ./...` and `go vet ./...` on the root module; runs `examples/cmd/example`; tests `otelmonty` and builds its example; vets and tests `cmd/shmonty`. |
+| `go-pure` | ubuntu (amd64) | `gofmt -l .` and `cargo fmt --all --check`; builds the native library; `cargo test -p monty-go-ffi --locked`; `CGO_ENABLED=0 go test ./...` and `go vet ./...` on the root module; runs `examples/cmd/example`; tests `otelmonty` and builds its example; vets and tests `cmd/shmonty`; fuzzes `FuzzLoadRunner` for 30 seconds. |
 | `platform-verify` (linux-arm64) | `ubuntu-24.04-arm` | Builds the library for `aarch64-unknown-linux-gnu`, then runs the root module's Go tests. |
 | `platform-verify` (darwin-arm64) | `macos-14` | Same for `aarch64-apple-darwin`. |
 | `verify-musl-amd64`, `verify-musl-arm64` | ubuntu (amd64, arm64) | Builds the musl library inside a `rust:1.96-alpine3.21` container. **Build only**: no Go tests. **Off by default**; see below. |
@@ -37,7 +37,7 @@ Notes:
 
 - Windows is not verified here. The Windows library is built only during `release-prep`.
 - The `platform-verify` jobs run only the root module's tests. The `examples`, `otelmonty` and `cmd/shmonty` modules are tested only in `go-pure` on linux/amd64.
-- Fuzz targets, benchmarks and clippy are not run in CI.
+- Only `FuzzLoadRunner` is fuzzed in CI, and only briefly. Benchmarks and clippy are not run in CI.
 - Every job builds the Rust crate from scratch or from the `Swatinem/rust-cache` cache, so the first run after a dependency change is slow (upstream Monty is compiled).
 
 ### Enabling the musl checks
@@ -87,6 +87,17 @@ The commit that was dispatched (`GITHUB_SHA`) is the one validated and tagged, s
 
 GitHub release assets are a convenience: Go users get the libraries from the tagged source tree, not from the release page.
 
+## `zizmor` and workflow hardening
+
+The `zizmor` workflow lints the workflow files for security problems (template injection, over-broad permissions, unpinned actions, credential persistence). It runs on any PR that touches `.github/**`, including later pushes, because it takes seconds. Run it locally with `uvx zizmor@1.30.1 .github/workflows`.
+
+The workflows follow these rules:
+
+- **Actions are pinned by commit hash** with a version comment. Dependabot (`.github/dependabot.yml`, `github-actions` ecosystem, weekly) bumps the hash and comment together.
+- **Least privilege.** Each workflow sets `permissions: {}` or read-only at the top and grants write access only to the job that needs it: `open-pr` in `release-prep` (to push the branch and open the PR) and `publish` in `release` (to tag and create the release).
+- **`persist-credentials: false`** on every checkout except the two jobs that push. Those two carry an inline `# zizmor: ignore[artipacked]` explaining why.
+- **No `${{ ... }}` of user input inside `run:` scripts.** `release-prep` passes the version through the `VERSION` environment variable instead of interpolating it into shell source.
+
 ## Common situations
 
 | Situation | What to do |
@@ -100,4 +111,4 @@ GitHub release assets are a convenience: Go users get the libraries from the tag
 
 ## Known gaps
 
-Open issues: [#32](https://github.com/mdfranz/gomonty/issues/32) (CI: run missing Rust/shmonty/format/fuzz checks and harden workflows; some of its checks may already be in `verify`, so re-read it against the table above), [#33](https://github.com/mdfranz/gomonty/issues/33) (panic guards and clippy), and [#23](https://github.com/mdfranz/gomonty/issues/23) (release builds are not reproducible across runs).
+Open issues: [#32](https://github.com/mdfranz/gomonty/issues/32) (what remains is running `verify` again on later pushes with cancellation of superseded runs, and a single required status check), [#33](https://github.com/mdfranz/gomonty/issues/33) (panic guards and clippy), and [#23](https://github.com/mdfranz/gomonty/issues/23) (release builds are not reproducible across runs).

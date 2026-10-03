@@ -8,9 +8,12 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
+
+# Passed through the environment, never interpolated into shell source,
+# so a crafted version input cannot inject commands (zizmor: template-injection).
+env:
+  VERSION: ${{ github.event.inputs.version }}
 
 concurrency:
   group: release-prep-${{ github.event.inputs.version }}
@@ -19,27 +22,31 @@ concurrency:
 jobs:
   header-and-linux-amd64:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Validate release inputs
         shell: bash
         run: |
           test "${GITHUB_REF_NAME}" = "main"
-          version="${{ github.event.inputs.version }}"
+          version="$VERSION"
           [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           targets: x86_64-unknown-linux-gnu
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
 
@@ -53,19 +60,19 @@ jobs:
           scripts/build-go-ffi.sh x86_64-unknown-linux-gnu
 
       - name: Upload generated header
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ffi-header
           path: internal/ffi/include/monty_go_ffi.h
 
       - name: Upload linux/amd64 shared library
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ffi-linux-amd64
           path: internal/ffi/lib/linux_amd64/libmonty_go_ffi.so
 
       - name: Upload Cargo.lock
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: cargo-lock
           path: Cargo.lock
@@ -74,6 +81,8 @@ jobs:
     name: build ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     needs: header-and-linux-amd64
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -95,19 +104,21 @@ jobs:
             artifact_path: internal/ffi/lib/windows_amd64/monty_go_ffi.dll
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           targets: ${{ matrix.rust_target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
 
@@ -118,7 +129,7 @@ jobs:
           MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
 
       - name: Upload shared library
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_path }}
@@ -127,8 +138,12 @@ jobs:
     name: build linux-amd64-musl
     runs-on: ubuntu-latest
     needs: header-and-linux-amd64
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Build shared library in musl container
         shell: bash
@@ -148,7 +163,7 @@ jobs:
             '
 
       - name: Upload shared library
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ffi-linux-amd64-musl
           path: internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so
@@ -157,8 +172,12 @@ jobs:
     name: build linux-arm64-musl
     runs-on: ubuntu-24.04-arm
     needs: header-and-linux-amd64
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Build shared library in musl container
         shell: bash
@@ -178,13 +197,16 @@ jobs:
             '
 
       - name: Upload shared library
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ffi-linux-arm64-musl
           path: internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so
 
   open-pr:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     needs:
       - header-and-linux-amd64
       - shared-libraries
@@ -193,12 +215,12 @@ jobs:
     steps:
       # No explicit ref: use the same commit the build jobs compiled, not
       # whatever main points at by the time the builds finish.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4  # zizmor: ignore[artipacked] -- this job pushes with the checkout credentials
         with:
           fetch-depth: 0
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache-dependency-path: |
@@ -206,19 +228,19 @@ jobs:
             examples/go.sum
 
       - name: Download header
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ffi-header
           path: .artifacts/ffi-header
 
       - name: Download Cargo.lock
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: cargo-lock
           path: .artifacts/cargo-lock
 
       - name: Download shared library artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: ffi-*
           path: .artifacts
@@ -226,7 +248,7 @@ jobs:
       - name: Prepare release tree
         shell: bash
         run: |
-          version="${{ github.event.inputs.version }}"
+          version="$VERSION"
           version_no_v="${version#v}"
 
           git fetch --tags origin
@@ -291,7 +313,7 @@ jobs:
       - name: Prepare branch metadata
         shell: bash
         run: |
-          version="${{ github.event.inputs.version }}"
+          version="$VERSION"
           branch="release-prep/$version"
           echo "BRANCH_NAME=$branch" >> "$GITHUB_ENV"
           echo "PR_TITLE=Release $version" >> "$GITHUB_ENV"
@@ -309,12 +331,12 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$BRANCH_NAME"
           git add Cargo.toml Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt
-          git commit -m "Release ${{ github.event.inputs.version }}"
+          git commit -m "Release $VERSION"
           git push --set-upstream origin "$BRANCH_NAME"
 
       - name: Open release-prep PR
         if: env.SKIP_PR != '1'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const owner = context.repo.owner;
