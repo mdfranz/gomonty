@@ -23,7 +23,9 @@ All three crates the FFI uses are pinned to one full commit hash in the root [`C
 | --- | --- |
 | `MontyObject` (a Python value crossing the boundary) | `monty.Value`, with constructors such as `Int`, `String`, `List`, `DictValue` and `Value.Raw()` |
 | External function (a name the guest calls that the host implements) | `RunOptions.Functions` / `ExternalFunction` |
-| OS call (`Path.read_text`, `os.getenv`, ...) | `RunOptions.OS` / `OSHandler`, usually `vfs.Handler` |
+| OS call (`Path.read_text`, `os.getenv`, `Path.scan`, ...) | `RunOptions.OS` / `OSHandler`, usually `vfs.Handler` |
+| Host module (`import` of a module the host defines) | `RunOptions.Modules` / `Module`, delivered to the host as an `OSImport` call |
+| `complex` | `monty.Complex` / `complex128` |
 | Paused execution state | `Snapshot`, `NameLookupSnapshot`, `FutureSnapshot` |
 | Serialized snapshot | `Dump()` and `LoadSnapshot` / `LoadRunner` |
 | Resource tracker limits | `ResourceLimits` |

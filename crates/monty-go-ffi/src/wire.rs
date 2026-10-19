@@ -50,6 +50,8 @@ pub const WIRE_VALUE_NOT_IMPLEMENTED: u8 = 24;
 pub const WIRE_VALUE_TIME: u8 = 25;
 pub const WIRE_VALUE_CLASS_INSTANCE: u8 = 26;
 pub const WIRE_VALUE_FILE_HANDLE: u8 = 27;
+pub const WIRE_VALUE_COMPLEX: u8 = 28;
+pub const WIRE_VALUE_MODULE: u8 = 29;
 
 pub const WIRE_CALL_RESULT_RETURN: u8 = 0;
 pub const WIRE_CALL_RESULT_EXCEPTION: u8 = 1;
@@ -150,6 +152,11 @@ pub struct WireValue {
     pub mode: String,
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub position: u64,
+    /// `Option` rather than a zero-skipped `f64` so `-0.0` survives the trip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub real: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imag: Option<f64>,
 }
 
 impl WireValue {
@@ -197,6 +204,25 @@ impl WireValue {
             MontyNode::Float(v) => Self {
                 kind: WIRE_VALUE_FLOAT,
                 float_value: *v,
+                ..Self::default()
+            },
+            MontyNode::Complex(v) => Self {
+                kind: WIRE_VALUE_COMPLEX,
+                real: Some(v.real),
+                imag: Some(v.imag),
+                ..Self::default()
+            },
+            MontyNode::Module { name, id, attrs } => Self {
+                kind: WIRE_VALUE_MODULE,
+                name: name.clone(),
+                instance_id: id.to_string(),
+                attrs: attrs
+                    .iter()
+                    .map(|(key, val)| WirePair {
+                        key: Self::from_object_ref(unstable::child(value, *key)),
+                        value: Self::from_object_ref(unstable::child(value, *val)),
+                    })
+                    .collect(),
                 ..Self::default()
             },
             MontyNode::String(v) => Self {
@@ -524,6 +550,20 @@ impl WireValue {
                 Ok(MontyObject::class_instance(class_type, instance_id, attrs))
             }
             WIRE_VALUE_FILE_HANDLE => Err("file handles cannot be used as Monty inputs".to_owned()),
+            WIRE_VALUE_COMPLEX => Ok(MontyObject::complex(
+                self.real.unwrap_or(0.0),
+                self.imag.unwrap_or(0.0),
+            )),
+            WIRE_VALUE_MODULE => {
+                let id = MontyUuid::parse(&self.instance_id)
+                    .ok_or_else(|| format!("invalid module id: {}", self.instance_id))?;
+                let attrs = self
+                    .attrs
+                    .into_iter()
+                    .map(|pair| Ok((pair.key.into_monty()?, pair.value.into_monty()?)))
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(MontyObject::module(self.name, id, attrs))
+            }
             other => Err(format!("unknown wire value kind: {other}")),
         }
     }
@@ -1009,6 +1049,55 @@ mod tests {
             .into_monty()
             .expect("timezone should round-trip");
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn wire_value_round_trips_complex() {
+        for (real, imag) in [(1.5, -2.0), (0.0, 0.0), (-0.0, 0.0), (0.0, -0.0), (f64::INFINITY, 3.0)] {
+            let original = MontyObject::complex(real, imag);
+            let decoded = WireValue::from_monty(&original)
+                .into_monty()
+                .expect("complex should round-trip");
+            // `MontyObject` equality is bit-for-bit, so this also pins `-0.0`.
+            assert_eq!(decoded, original, "complex({real}, {imag})");
+        }
+    }
+
+    #[test]
+    fn wire_value_round_trips_nan_complex() {
+        let original = MontyObject::complex(f64::NAN, f64::NAN);
+        let encoded = rmp_serde::to_vec_named(&WireValue::from_monty(&original))
+            .expect("complex should encode");
+        let decoded: WireValue = rmp_serde::from_slice(&encoded).expect("complex should decode");
+        assert_eq!(decoded.into_monty().expect("complex should convert"), original);
+    }
+
+    #[test]
+    fn wire_value_round_trips_modules() {
+        let original = MontyObject::module(
+            "pkg.sub",
+            MontyUuid::from_u128(0x1234_5678_9abc_def0_1234_5678_9abc_def0),
+            vec![
+                (MontyObject::string("answer"), MontyObject::int(42)),
+                (MontyObject::string("pi"), MontyObject::float(3.14)),
+            ],
+        );
+
+        let decoded = WireValue::from_monty(&original)
+            .into_monty()
+            .expect("module should round-trip");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn wire_value_rejects_module_with_invalid_id() {
+        let wire = WireValue {
+            kind: super::WIRE_VALUE_MODULE,
+            name: "pkg".to_owned(),
+            instance_id: "not-a-uuid".to_owned(),
+            ..WireValue::default()
+        };
+        assert!(wire.into_monty().is_err());
     }
 
     #[test]

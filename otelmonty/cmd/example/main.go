@@ -38,9 +38,11 @@ func main() {
 	otel.SetTracerProvider(tp)
 
 	runner, err := monty.New(`
+import hostmod
 print("starting work")
 result = host_double(21)
-print("done")
+z = complex(result, 1) * 2
+print("done", z, hostmod.answer)
 result
 `, monty.CompileOptions{ScriptName: "otel-example.py"})
 	if err != nil {
@@ -60,6 +62,14 @@ result
 			// can carry secrets — opt in deliberately.
 			RecordArguments: true,
 			RecordOutputs:   true,
+		},
+		// A host module resolved through the import OS call; its span nests
+		// under monty.run like any other host callback.
+		Modules: map[string]monty.Module{
+			"hostmod": {
+				Name:  "hostmod",
+				Attrs: monty.Dict{{Key: monty.String("answer"), Value: monty.Int(42)}},
+			},
 		},
 		Functions: map[string]monty.ExternalFunction{
 			"host_double": func(ctx context.Context, call monty.Call) (monty.Result, error) {

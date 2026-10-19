@@ -41,6 +41,8 @@ const (
 	wireValueTime
 	wireValueClassInstance
 	wireValueFileHandle
+	wireValueComplex
+	wireValueModule
 )
 
 const (
@@ -105,6 +107,9 @@ type wireValue struct {
 	ClassAttrs   []wirePair  `msgpack:"class_attrs,omitempty"`
 	Mode         string      `msgpack:"mode,omitempty"`
 	Position     uint64      `msgpack:"position,omitempty"`
+	// Real and Imag are pointers so a -0.0 part is not dropped as a zero value.
+	Real *float64 `msgpack:"real,omitempty"`
+	Imag *float64 `msgpack:"imag,omitempty"`
 }
 
 type wireCompileOptions struct {
@@ -436,6 +441,22 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 		return wireValue{Kind: wireValueBigInt, BigInt: value.data.(*big.Int).String()}, nil
 	case valueKindFloat:
 		return wireValue{Kind: wireValueFloat, Float: value.data.(float64)}, nil
+	case valueKindComplex:
+		c := value.data.(complex128)
+		re, im := real(c), imag(c)
+		return wireValue{Kind: wireValueComplex, Real: &re, Imag: &im}, nil
+	case valueKindModule:
+		module := value.data.(Module)
+		attrs, err := wirePairsFromDict(module.Attrs)
+		if err != nil {
+			return wireValue{}, err
+		}
+		return wireValue{
+			Kind:       wireValueModule,
+			Name:       module.Name,
+			InstanceID: module.ID,
+			Attrs:      attrs,
+		}, nil
 	case valueKindString:
 		return wireValue{Kind: wireValueString, String: value.data.(string)}, nil
 	case valueKindBytes:
@@ -604,6 +625,25 @@ func (value wireValue) toPublic() (Value, error) {
 		return BigInt(bigValue), nil
 	case wireValueFloat:
 		return Float(value.Float), nil
+	case wireValueComplex:
+		var re, im float64
+		if value.Real != nil {
+			re = *value.Real
+		}
+		if value.Imag != nil {
+			im = *value.Imag
+		}
+		return Complex(complex(re, im)), nil
+	case wireValueModule:
+		attrs, err := dictFromWirePairs(value.Attrs)
+		if err != nil {
+			return Value{}, err
+		}
+		return ModuleValue(Module{
+			Name:  value.Name,
+			ID:    value.InstanceID,
+			Attrs: attrs,
+		}), nil
 	case wireValueString:
 		return String(value.String), nil
 	case wireValueBytes:

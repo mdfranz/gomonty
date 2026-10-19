@@ -254,6 +254,7 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (Value, error) {
 	value, runErr, timing := dispatchLoop(execCtx, progress, dispatchConfig{
 		functions:        opts.Functions,
 		os:               opts.OS,
+		modules:          opts.Modules,
 		print:            opts.Print,
 		telemetry:        opts.Telemetry,
 		telemetryOptions: opts.TelemetryOptions,
@@ -334,6 +335,7 @@ func (r *Repl) FeedRun(ctx context.Context, code string, opts FeedOptions) (Valu
 	value, runErr, timing := dispatchLoop(execCtx, progress, dispatchConfig{
 		functions:        opts.Functions,
 		os:               opts.OS,
+		modules:          opts.Modules,
 		print:            opts.Print,
 		telemetry:        opts.Telemetry,
 		telemetryOptions: opts.TelemetryOptions,
