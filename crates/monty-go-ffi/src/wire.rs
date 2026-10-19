@@ -1053,7 +1053,13 @@ mod tests {
 
     #[test]
     fn wire_value_round_trips_complex() {
-        for (real, imag) in [(1.5, -2.0), (0.0, 0.0), (-0.0, 0.0), (0.0, -0.0), (f64::INFINITY, 3.0)] {
+        for (real, imag) in [
+            (1.5, -2.0),
+            (0.0, 0.0),
+            (-0.0, 0.0),
+            (0.0, -0.0),
+            (f64::INFINITY, 3.0),
+        ] {
             let original = MontyObject::complex(real, imag);
             let decoded = WireValue::from_monty(&original)
                 .into_monty()
@@ -1069,7 +1075,10 @@ mod tests {
         let encoded = rmp_serde::to_vec_named(&WireValue::from_monty(&original))
             .expect("complex should encode");
         let decoded: WireValue = rmp_serde::from_slice(&encoded).expect("complex should decode");
-        assert_eq!(decoded.into_monty().expect("complex should convert"), original);
+        assert_eq!(
+            decoded.into_monty().expect("complex should convert"),
+            original
+        );
     }
 
     #[test]
