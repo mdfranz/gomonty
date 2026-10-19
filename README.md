@@ -29,6 +29,8 @@ Changes since the fork (releases `v0.0.15` to `v0.0.17`, plus the docs on the un
 
 Since v1.2.0, a Python `import` of a name Monty does not provide reaches your `OS` handler as an `OSImport` call. `RunOptions.Modules` and `vfs.Handler` answer it (with `ModuleNotFoundError` when nothing matches), but a custom `OSHandler` that raises on unknown functions will now break `try: import x` code. Return `ModuleNotFoundError` for `OSImport` and an empty dict for `OSImportStubs`.
 
+Dumps are not portable across releases that change the pinned Monty. They are raw `postcard` encodings of upstream's types, with no version header. Moving from v0.0.18 to the v1.2.0 pin, `Runner.Dump` and plain call snapshots still load, but name-lookup, future and REPL snapshots do not (they fail with a `postcard` decode error). Load a dump with the same release that wrote it, and re-create a runner from source after upgrading.
+
 I know of no other breaking changes. The module path differs from the original (`github.com/ewhauser/gomonty`), so switching between the two means changing import paths.
 
 ## Install
