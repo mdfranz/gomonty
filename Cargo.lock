@@ -1218,7 +1218,7 @@ dependencies = [
 
 [[package]]
 name = "monty-go-ffi"
-version = "0.0.18"
+version = "0.1.0"
 dependencies = [
  "monty",
  "monty-type-checking",
