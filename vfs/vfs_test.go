@@ -89,3 +89,53 @@ func TestHandlerEnvironmentAndErrorMapping(t *testing.T) {
 		t.Fatalf("unexpected exception type %q", exception.Type)
 	}
 }
+
+func TestScanListsSubtree(t *testing.T) {
+	fs := NewMemoryFS()
+	if err := fs.Mkdir("/data/sub", true, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteText("/data/a.txt", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteText("/data/sub/b.txt", "b"); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler(fs, nil)
+	run := func(code string) monty.Value {
+		t.Helper()
+		runner, err := monty.New(code, monty.CompileOptions{ScriptName: "scan.py"})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		got, err := runner.Run(context.Background(), monty.RunOptions{OS: handler})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return got
+	}
+
+	got := run(`
+import os
+sorted(entry.name for entry in os.scandir('/data'))
+`)
+	if got.String() != "['a.txt', 'sub']" {
+		t.Fatalf("scandir = %s", got)
+	}
+
+	got = run(`
+import os
+sorted((root, sorted(files)) for root, _dirs, files in os.walk('/data'))
+`)
+	if got.String() != "[('/data', ['a.txt']), ('/data/sub', ['b.txt'])]" {
+		t.Fatalf("walk = %s", got)
+	}
+
+	got = run(`
+from pathlib import Path
+sorted(str(p) for p in Path('/data').rglob('*.txt'))
+`)
+	if got.String() != "['/data/a.txt', '/data/sub/b.txt']" {
+		t.Fatalf("rglob = %s", got)
+	}
+}

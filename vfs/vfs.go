@@ -279,6 +279,15 @@ func Handler(fileSystem FileSystem, environment Environment) monty.OSHandler {
 				}
 			}
 			return monty.Return(monty.DictValue(items)), nil
+		case monty.OSPathScan:
+			return scanTree(fileSystem, call), nil
+		case monty.OSImport:
+			// No host modules here; the sandbox treats this as an unknown module.
+			name, _ := stringArg(call.Args, 0)
+			message := "No module named '" + name + "'"
+			return monty.Raise(monty.Exception{Type: "ModuleNotFoundError", Arg: &message}), nil
+		case monty.OSImportStubs:
+			return monty.Return(monty.DictValue(nil)), nil
 		default:
 			message := "unsupported OS function"
 			return monty.Raise(monty.Exception{Type: "NotImplementedError", Arg: &message}), nil
@@ -799,4 +808,79 @@ func mapError(err error) monty.Exception {
 		message := err.Error()
 		return monty.Exception{Type: "OSError", Arg: &message}
 	}
+}
+
+// scanTree answers a Path.scan call by listing the subtree under the root to
+// max_depth. It ignores the glob pattern, which is a pruning hint only: the
+// sandbox re-selects from whatever tree it gets back.
+func scanTree(fileSystem FileSystem, call monty.OSCall) monty.Result {
+	rootPath, err := pathArg(call.Args, 0)
+	if err != nil {
+		return monty.Raise(mapError(err))
+	}
+	maxDepth := -1
+	if value, ok := kwarg(call.Kwargs, "max_depth"); ok && value.Kind() == "int" {
+		maxDepth = int(value.Raw().(int64))
+	}
+	followSymlinks := false
+	if value, ok := kwarg(call.Kwargs, "follow_symlinks"); ok {
+		followSymlinks, _ = value.Raw().(bool)
+	}
+
+	type node struct {
+		full  string
+		rel   string
+		depth int
+	}
+	var out []monty.Value
+	visited := map[string]bool{}
+	queue := []node{{full: rootPath}}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		isDir, err := fileSystem.IsDir(current.full)
+		if err != nil {
+			return monty.Raise(mapError(err))
+		}
+		isFile, err := fileSystem.IsFile(current.full)
+		if err != nil {
+			return monty.Raise(mapError(err))
+		}
+		isSymlink, err := fileSystem.IsSymlink(current.full)
+		if err != nil {
+			return monty.Raise(mapError(err))
+		}
+		out = append(out, monty.TupleValue(
+			monty.String(current.rel), monty.Bool(isDir), monty.Bool(isFile), monty.Bool(isSymlink),
+		))
+		if !isDir || (isSymlink && !followSymlinks) || (maxDepth >= 0 && current.depth >= maxDepth) || visited[current.full] {
+			continue
+		}
+		visited[current.full] = true
+		children, err := fileSystem.Iterdir(current.full)
+		if err != nil {
+			if current.depth == 0 {
+				return monty.Raise(mapError(err))
+			}
+			continue // an unreadable subdirectory is skipped, as os.walk does
+		}
+		for _, child := range children {
+			name := path.Base(child)
+			rel := name
+			if current.rel != "" {
+				rel = current.rel + "/" + name
+			}
+			queue = append(queue, node{full: child, rel: rel, depth: current.depth + 1})
+		}
+	}
+	return monty.Return(monty.List(out...))
+}
+
+func kwarg(kwargs monty.Dict, name string) (monty.Value, bool) {
+	for _, pair := range kwargs {
+		if key, ok := pair.Key.Raw().(string); ok && key == name {
+			return pair.Value, true
+		}
+	}
+	return monty.Value{}, false
 }

@@ -14,7 +14,8 @@ I forked it on 2026-09-05 and have maintained this fork since. The motive was pr
 
 Changes since the fork (releases `v0.0.15` to `v0.0.17`, plus the docs on the unreleased `docs/update-documentation` branch):
 
-- **Newer Monty.** Refreshed the pinned upstream Monty several times, most recently to v1.0.1, and updated the wire format and Go types for the upstream changes (see [docs/UPSTREAM-REFRESH-PLAN.md](./docs/UPSTREAM-REFRESH-PLAN.md) and the `upstream-refresh` skill).
+- **Newer Monty.** Refreshed the pinned upstream Monty several times, most recently to v1.2.0, and updated the wire format and Go types for the upstream changes (see [docs/UPSTREAM-REFRESH-PLAN.md](./docs/UPSTREAM-REFRESH-PLAN.md) and the `upstream-refresh` skill).
+- **Complex numbers and host modules.** `Complex` carries Python `complex` values as `complex128`. `RunOptions.Modules` and `FeedOptions.Modules` let sandbox code `import` a module you define in Go, and `vfs.Handler` now serves `os.scandir`, `os.walk` and `Path.glob`.
 - **Telemetry.** An opt-in `TelemetryHandler` API with a `log/slog` adapter, plus `otelmonty`, a separate module that exports OpenTelemetry traces.
 - **`shmonty`.** An interactive REPL and script runner, with history, rewind, a telemetry pane and OTLP export.
 - **Fixes.** `Value.String()` now renders containers, and `print()` results show `None` correctly.
@@ -25,6 +26,10 @@ Changes since the fork (releases `v0.0.15` to `v0.0.17`, plus the docs on the un
 
 - `Dataclass`, `DataclassValue` and `Value.Dataclass()` were replaced by `ClassInstance` and its constructors.
 - `ResourceLimits.MaxAllocations` was removed, and `MaxRecursionDepth` and `MaxSuspensions` were added.
+
+Since v1.2.0, a Python `import` of a name Monty does not provide reaches your `OS` handler as an `OSImport` call. `RunOptions.Modules` and `vfs.Handler` answer it (with `ModuleNotFoundError` when nothing matches), but a custom `OSHandler` that raises on unknown functions will now break `try: import x` code. Return `ModuleNotFoundError` for `OSImport` and an empty dict for `OSImportStubs`.
+
+Dumps are not portable across releases that change the pinned Monty. They are raw `postcard` encodings of upstream's types, with no version header. Moving from v0.0.18 to the v1.2.0 pin, `Runner.Dump` and plain call snapshots still load, but name-lookup, future and REPL snapshots do not (they fail with a `postcard` decode error). Load a dump with the same release that wrote it, and re-create a runner from source after upgrading.
 
 I know of no other breaking changes. The module path differs from the original (`github.com/ewhauser/gomonty`), so switching between the two means changing import paths.
 
@@ -71,6 +76,7 @@ Run it from a checkout with `cd examples && CGO_ENABLED=0 go run ./cmd/example`.
 | Feature | What it gives you | Where to look |
 | --- | --- | --- |
 | External functions | Python code calls Go functions you register; execution pauses while Go runs. | `RunOptions.Functions`, [`go/README.md`](./go/README.md) |
+| Host modules | `import name` in the sandbox resolves to a Go-defined `Module`; unknown imports still raise `ModuleNotFoundError`. | `RunOptions.Modules`, `Module` |
 | Virtual filesystem | `pathlib` and `os.getenv` calls are served by a Go-owned filesystem and environment, never the host disk. | [`vfs/`](./vfs) |
 | Async results | Host calls can return `Pending(waiter)` and resolve later. | `Pending`, `FutureSnapshot` |
 | Pause/resume | Step through execution with `Start`, and serialize snapshots with `Dump`/`Load*`. | `Runner.Start`, `Snapshot` |

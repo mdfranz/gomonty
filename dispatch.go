@@ -10,6 +10,7 @@ import (
 type dispatchConfig struct {
 	functions        map[string]ExternalFunction
 	os               OSHandler
+	modules          map[string]Module
 	print            PrintCallback
 	telemetry        TelemetryHandler
 	telemetryOptions TelemetryOptions
@@ -108,7 +109,11 @@ func dispatchLoop(ctx context.Context, progress Progress, cfg dispatchConfig) (V
 
 func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfig) (Result, error) {
 	if snapshot.IsOSFunction {
-		if cfg.os == nil {
+		osHandler := cfg.os
+		if snapshot.FunctionName == string(OSImport) || snapshot.FunctionName == string(OSImportStubs) {
+			osHandler = importHandler(cfg.modules, cfg.os)
+		}
+		if osHandler == nil {
 			// No call was actually attempted (no OS handler configured at
 			// all), so there's nothing to instrument here.
 			message := fmt.Sprintf("OS function %s called but no OS handler was provided", snapshot.FunctionName)
@@ -123,7 +128,7 @@ func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfi
 				return renderArguments(snapshot.Args, snapshot.Kwargs)
 			}, cfg.telemetryOptions.MaxAttributeBytes),
 		}, cfg.telemetryOptions)
-		result, err := normalizeCallbackResult(cfg.os(callCtx, OSCall{
+		result, err := normalizeCallbackResult(osHandler(callCtx, OSCall{
 			Function: OSFunction(snapshot.FunctionName),
 			Args:     snapshot.Args,
 			Kwargs:   snapshot.Kwargs,
@@ -290,4 +295,59 @@ func mustMarshalFutureResults(results map[uint32]Result) []byte {
 		panic(err)
 	}
 	return bytes
+}
+
+// importHandler answers the OS calls the sandbox makes for host modules:
+// OSImport asks for a module by top-level name and OSImportStubs for the type
+// stubs of names about to be type-checked. modules is consulted first, then
+// fallback (which may be nil). An import neither resolves raises
+// ModuleNotFoundError, as the sandbox does for any unknown module, and with
+// no stubs known OSImportStubs answers an empty dict.
+func importHandler(modules map[string]Module, fallback OSHandler) OSHandler {
+	return func(ctx context.Context, call OSCall) (Result, error) {
+		switch call.Function {
+		case OSImport:
+			name, _ := stringArg(call.Args, 0)
+			if module, ok := modules[name]; ok {
+				return Return(ModuleValue(module)), nil
+			}
+			if fallback != nil {
+				return fallback(ctx, call)
+			}
+			message := fmt.Sprintf("No module named '%s'", name)
+			return Raise(Exception{Type: "ModuleNotFoundError", Arg: &message}), nil
+		case OSImportStubs:
+			var names []Value
+			if len(call.Args) > 0 {
+				names, _ = call.Args[0].Raw().([]Value)
+			}
+			stubs := make(Dict, 0, len(names))
+			complete := true
+			for _, name := range names {
+				text, _ := name.Raw().(string)
+				module, ok := modules[text]
+				if !ok {
+					complete = false
+					continue
+				}
+				if module.Stub != "" {
+					stubs = append(stubs, Pair{Key: String(text), Value: String(module.Stub)})
+				}
+			}
+			if !complete && fallback != nil {
+				return fallback(ctx, call)
+			}
+			return Return(DictValue(stubs)), nil
+		default:
+			return Result{}, fmt.Errorf("importHandler: unexpected OS function %q", call.Function)
+		}
+	}
+}
+
+func stringArg(args []Value, index int) (string, bool) {
+	if index >= len(args) {
+		return "", false
+	}
+	text, ok := args[index].Raw().(string)
+	return text, ok
 }
