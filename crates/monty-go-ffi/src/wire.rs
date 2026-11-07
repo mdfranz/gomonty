@@ -52,6 +52,7 @@ pub const WIRE_VALUE_CLASS_INSTANCE: u8 = 26;
 pub const WIRE_VALUE_FILE_HANDLE: u8 = 27;
 pub const WIRE_VALUE_COMPLEX: u8 = 28;
 pub const WIRE_VALUE_MODULE: u8 = 29;
+pub const WIRE_VALUE_DECIMAL: u8 = 30;
 
 pub const WIRE_CALL_RESULT_RETURN: u8 = 0;
 pub const WIRE_CALL_RESULT_EXCEPTION: u8 = 1;
@@ -298,6 +299,11 @@ impl WireValue {
                 arg: arg.clone(),
                 ..Self::default()
             },
+            MontyNode::Decimal(v) => Self {
+                kind: WIRE_VALUE_DECIMAL,
+                string_value: v.clone(),
+                ..Self::default()
+            },
             MontyNode::Path(v) => Self {
                 kind: WIRE_VALUE_PATH,
                 string_value: v.clone(),
@@ -484,6 +490,7 @@ impl WireValue {
                 self.arg,
             )),
             WIRE_VALUE_PATH => Ok(MontyObject::path(self.string_value)),
+            WIRE_VALUE_DECIMAL => Ok(MontyObject::decimal(self.string_value)),
             WIRE_VALUE_DATACLASS => Err(
                 "dataclass values are no longer supported by this version of monty; use class_instance".to_owned(),
             ),
@@ -1096,6 +1103,17 @@ mod tests {
             .into_monty()
             .expect("module should round-trip");
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn wire_value_round_trips_decimal() {
+        for text in ["1.20", "1E+5", "-NaN12", "Infinity"] {
+            let original = MontyObject::decimal(text);
+            let decoded = WireValue::from_monty(&original)
+                .into_monty()
+                .expect("decimal should round-trip");
+            assert_eq!(decoded, original);
+        }
     }
 
     #[test]

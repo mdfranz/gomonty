@@ -17,7 +17,7 @@ use std::{
     ptr,
 };
 
-use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
+use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef, dump};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
@@ -184,10 +184,10 @@ where
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug)]
 struct StoredRepl(MontyRepl);
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug)]
 enum StoredProgress {
     Run {
         progress: RunProgress,
@@ -439,8 +439,19 @@ impl StoredProgress {
         }
     }
 
+    /// Serializes the suspended state with upstream's versioned dump framing.
     fn dump(&self) -> Result<Vec<u8>, FfiError> {
-        postcard::to_allocvec(self).map_err(|e| FfiError::Api(e.to_string()))
+        let (script_name, session) = match self {
+            Self::Run {
+                progress,
+                script_name,
+            } => (script_name, SessionRef::Running(progress)),
+            Self::Repl {
+                progress,
+                script_name,
+            } => (script_name, SessionRef::Suspended(progress)),
+        };
+        dump(script_name, None, &[], session).map_err(|e| FfiError::Api(e.to_string()))
     }
 }
 
@@ -1195,6 +1206,8 @@ pub extern "C" fn monty_go_runner_load(
 ) {
     let result = catch_runner_result(|| {
         let data = unsafe { slice_from_raw(data_ptr, data_len) };
+        // `MontyRun` is compiled code, not a session, so upstream has no
+        // `dump` framing for it: it is encoded directly as self-describing CBOR.
         #[derive(serde::Deserialize)]
         struct StoredRunner {
             runner: MontyRun,
@@ -1202,7 +1215,7 @@ pub extern "C" fn monty_go_runner_load(
             input_names: Vec<String>,
         }
 
-        match postcard::from_bytes::<StoredRunner>(data) {
+        match minicbor_serde::from_slice::<StoredRunner>(data) {
             Ok(stored) => MontyGoRunnerResult::ok(MontyGoRunner {
                 runner: stored.runner,
                 script_name: stored.script_name,
@@ -1248,7 +1261,7 @@ pub extern "C" fn monty_go_runner_dump(
             input_names: &'a [String],
         }
 
-        match postcard::to_allocvec(&StoredRunner {
+        match minicbor_serde::to_vec(&StoredRunner {
             runner: &runner.runner,
             script_name: &runner.script_name,
             input_names: &runner.input_names,
@@ -1393,17 +1406,18 @@ pub extern "C" fn monty_go_repl_load(
 ) {
     let result = catch_repl_result(|| {
         let data = unsafe { slice_from_raw(data_ptr, data_len) };
-        #[derive(serde::Deserialize)]
-        struct StoredLoadedRepl {
-            script_name: String,
-            repl: StoredRepl,
-        }
-
-        match postcard::from_bytes::<StoredLoadedRepl>(data) {
-            Ok(stored) => MontyGoReplResult::ok(MontyGoRepl {
-                script_name: stored.script_name,
-                inner: Some(stored.repl),
+        match Dump::load(data) {
+            Ok(Dump {
+                script_name,
+                state: Session::Idle(repl),
+                ..
+            }) => MontyGoReplResult::ok(MontyGoRepl {
+                script_name,
+                inner: Some(StoredRepl(*repl)),
             }),
+            Ok(_) => MontyGoReplResult::err(FfiError::Api(
+                "dump does not hold an idle REPL session".to_owned(),
+            )),
             Err(error) => MontyGoReplResult::err(FfiError::Api(error.to_string())),
         }
     });
@@ -1444,15 +1458,7 @@ pub extern "C" fn monty_go_repl_dump(
             }
             return MontyGoBytes::empty();
         };
-        #[derive(serde::Serialize)]
-        struct StoredReplRef<'a> {
-            script_name: &'a str,
-            repl: &'a StoredRepl,
-        }
-        match postcard::to_allocvec(&StoredReplRef {
-            script_name: &repl.script_name,
-            repl: inner,
-        }) {
+        match dump(&repl.script_name, None, &[], SessionRef::Idle(&inner.0)) {
             Ok(bytes) => MontyGoBytes::from_vec(bytes),
             Err(error) => {
                 if !error_out.is_null() {
@@ -1609,12 +1615,35 @@ pub extern "C" fn monty_go_progress_load(
 ) {
     let result = catch_op_result(|| {
         let data = unsafe { slice_from_raw(data_ptr, data_len) };
-        match postcard::from_bytes::<StoredProgress>(data) {
-            Ok(progress) => MontyGoOpResult::ok(progress, String::new()),
-            Err(error) => {
-                MontyGoOpResult::err(FfiError::Api(error.to_string()), None, String::new())
+        let progress = match Dump::load(data) {
+            Ok(Dump {
+                script_name,
+                state: Session::Running(progress),
+                ..
+            }) => StoredProgress::Run {
+                progress: *progress,
+                script_name,
+            },
+            Ok(Dump {
+                script_name,
+                state: Session::Suspended(progress),
+                ..
+            }) => StoredProgress::Repl {
+                progress: *progress,
+                script_name,
+            },
+            Ok(_) => {
+                return MontyGoOpResult::err(
+                    FfiError::Api("dump does not hold a suspended session".to_owned()),
+                    None,
+                    String::new(),
+                );
             }
-        }
+            Err(error) => {
+                return MontyGoOpResult::err(FfiError::Api(error.to_string()), None, String::new());
+            }
+        };
+        MontyGoOpResult::ok(progress, String::new())
     });
     if !out.is_null() {
         // SAFETY: caller owns the out pointer
