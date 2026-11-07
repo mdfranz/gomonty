@@ -43,6 +43,7 @@ func TestUpstreamRefreshWireValuesRoundTrip(t *testing.T) {
 		// don't enforce input/output directionality on either side; only
 		// Rust's into_monty does (see TestFileHandleRejectedAsRunnerInput).
 		FileHandleValue(FileHandle{Path: "/tmp/example.txt", Mode: "r", Position: 42}),
+		DecimalValue("-NaN12"),
 	}
 
 	for _, original := range values {

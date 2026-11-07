@@ -43,6 +43,7 @@ const (
 	wireValueFileHandle
 	wireValueComplex
 	wireValueModule
+	wireValueDecimal
 )
 
 const (
@@ -510,6 +511,8 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 			ExcType: exception.Type,
 			Arg:     exception.Arg,
 		}, nil
+	case valueKindDecimal:
+		return wireValue{Kind: wireValueDecimal, String: string(value.data.(Decimal))}, nil
 	case valueKindPath:
 		return wireValue{Kind: wireValuePath, String: string(value.data.(Path))}, nil
 	case valueKindClassInstance:
@@ -690,6 +693,8 @@ func (value wireValue) toPublic() (Value, error) {
 		return FrozenSetValue(FrozenSet(items)), nil
 	case wireValueException:
 		return ExceptionValue(Exception{Type: value.ExcType, Arg: value.Arg}), nil
+	case wireValueDecimal:
+		return DecimalValue(Decimal(value.String)), nil
 	case wireValuePath:
 		return PathValue(Path(value.String)), nil
 	case wireValueDataclass:
