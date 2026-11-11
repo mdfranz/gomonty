@@ -17,20 +17,20 @@ use std::{
     ptr,
 };
 
-use monty::{
-    Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef,
-};
+use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
-    PrintWriter, PrintWriterCallback, ResourceTracker, TypeCheckingConfig, TypeCheckingFormat,
+    CompileOptions, ExcType, ExtFunctionResult, ModuleFile, MontyException, MontyObject,
+    NameLookupResult, PrintWriter, PrintWriterCallback, ResourceTracker, TypeCheckingConfig,
+    TypeCheckingFormat,
 };
 use wire::{
-    WIRE_CALL_RESULT_EXCEPTION, WIRE_CALL_RESULT_PENDING, WIRE_CALL_RESULT_RETURN,
-    WIRE_LOOKUP_RESULT_UNDEFINED, WIRE_LOOKUP_RESULT_VALUE, WIRE_PROGRESS_COMPLETE,
-    WIRE_PROGRESS_FUNCTION_CALL, WIRE_PROGRESS_FUTURE, WIRE_PROGRESS_NAME_LOOKUP, WireCallResult,
-    WireCompileOptions, WireErrorSummary, WireFeedOptions, WireFutureResults, WireLookupResult,
-    WireProgressPayload, WireReplOptions, WireStartOptions, WireValue,
+    WIRE_CALL_RESULT_EXCEPTION, WIRE_CALL_RESULT_MODULE_FILE, WIRE_CALL_RESULT_NOT_FOUND,
+    WIRE_CALL_RESULT_PENDING, WIRE_CALL_RESULT_RETURN, WIRE_LOOKUP_RESULT_UNDEFINED,
+    WIRE_LOOKUP_RESULT_VALUE, WIRE_PROGRESS_COMPLETE, WIRE_PROGRESS_FUNCTION_CALL,
+    WIRE_PROGRESS_FUTURE, WIRE_PROGRESS_NAME_LOOKUP, WireCallResult, WireCompileOptions,
+    WireErrorSummary, WireFeedOptions, WireFutureResults, WireLookupResult, WireProgressPayload,
+    WireReplOptions, WireStartOptions, WireValue,
 };
 
 /// Opaque runner handle for the Go bindings.
@@ -684,6 +684,13 @@ fn decode_call_result(result: WireCallResult) -> Result<ExtFunctionResult, FfiEr
             result.arg,
         ))),
         WIRE_CALL_RESULT_PENDING => Ok(ExtFunctionResult::Future(0)),
+        WIRE_CALL_RESULT_NOT_FOUND => {
+            Ok(ExtFunctionResult::NotFound(result.arg.unwrap_or_default()))
+        }
+        WIRE_CALL_RESULT_MODULE_FILE => Ok(ExtFunctionResult::ModuleFile(ModuleFile {
+            path: result.module_path,
+            source: result.module_source,
+        })),
         other => Err(FfiError::Api(format!("unknown call result kind: {other}"))),
     }
 }

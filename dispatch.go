@@ -69,6 +69,13 @@ func dispatchLoop(ctx context.Context, progress Progress, cfg dispatchConfig) (V
 					Type: exception.Type,
 					Arg:  exception.Arg,
 				}), cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
+			case result.kind == resultKindNotFound:
+				progress, err = current.progressBase.resumeCall(ctx, mustMarshalCallResult(callResultPayload{Kind: "not_found"}), cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
+			case result.kind == resultKindModuleFile:
+				progress, err = current.progressBase.resumeCall(ctx, mustMarshalCallResult(callResultPayload{
+					Kind:   "module_file",
+					Module: result.module,
+				}), cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
 			default:
 				progress, err = current.progressBase.resumeCall(ctx, mustMarshalCallResult(callResultPayload{
 					Kind:  "return",
@@ -112,6 +119,10 @@ func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfi
 		osHandler := cfg.os
 		if snapshot.FunctionName == string(OSImport) || snapshot.FunctionName == string(OSImportStubs) {
 			osHandler = importHandler(cfg.modules, cfg.os)
+		}
+		if osHandler == nil && snapshot.FunctionName == string(OSGetTypeHints) {
+			// A host that does not handle type hints gives {}.
+			return Return(DictValue(nil)), nil
 		}
 		if osHandler == nil {
 			// No call was actually attempted (no OS handler configured at
@@ -314,8 +325,7 @@ func importHandler(modules map[string]Module, fallback OSHandler) OSHandler {
 			if fallback != nil {
 				return fallback(ctx, call)
 			}
-			message := fmt.Sprintf("No module named '%s'", name)
-			return Raise(Exception{Type: "ModuleNotFoundError", Arg: &message}), nil
+			return NotFound(), nil
 		case OSImportStubs:
 			var names []Value
 			if len(call.Args) > 0 {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mdfranz/gomonty"
+	monty "github.com/mdfranz/gomonty"
 )
 
 func TestMemoryFSReadWriteRename(t *testing.T) {
@@ -137,5 +137,71 @@ sorted(str(p) for p in Path('/data').rglob('*.txt'))
 `)
 	if got.String() != "['/data/a.txt', '/data/sub/b.txt']" {
 		t.Fatalf("rglob = %s", got)
+	}
+}
+
+func runImportScript(t *testing.T, fileSystem *MemoryFS, code string) (monty.Value, error) {
+	t.Helper()
+	runner, err := monty.New(code, monty.CompileOptions{ScriptName: "import.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runner.Run(context.Background(), monty.RunOptions{OS: Handler(fileSystem, MapEnvironment{})})
+}
+
+func TestHandlerImportsPythonFiles(t *testing.T) {
+	fileSystem := NewMemoryFS()
+	fileSystem.AddText("/helper.py", "ANSWER = 40 + 2\n")
+	fileSystem.AddText("/pkg/__init__.py", "NAME = 'pkg'\n")
+	fileSystem.AddText("/pkg/sub.py", "VALUE = 7\n")
+
+	got, err := runImportScript(t, fileSystem, `
+import helper
+import pkg
+import pkg.sub
+(helper.ANSWER, pkg.NAME, pkg.sub.VALUE)
+`)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got.String() != "(42, 'pkg', 7)" {
+		t.Fatalf("result = %s", got.String())
+	}
+}
+
+func TestHandlerImportMissingModule(t *testing.T) {
+	fileSystem := NewMemoryFS()
+	fileSystem.AddText("/pkg/__init__.py", "")
+
+	got, err := runImportScript(t, fileSystem, `
+results = []
+try:
+    import nothing_here
+except ModuleNotFoundError as e:
+    results.append(type(e).__name__)
+try:
+    from pkg import missing
+except ImportError as e:
+    results.append(type(e).__name__)
+results
+`)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got.String() != "['ModuleNotFoundError', 'ImportError']" {
+		t.Fatalf("result = %s", got.String())
+	}
+}
+
+func TestHandlerTypeHintsDefaultsToEmptyDict(t *testing.T) {
+	result, err := Handler(NewMemoryFS(), MapEnvironment{})(context.Background(), monty.OSCall{
+		Function: monty.OSGetTypeHints,
+		Args:     []monty.Value{monty.String("function"), monty.String("f")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Value(); got.Kind() != "dict" {
+		t.Fatalf("result = %v", got)
 	}
 }

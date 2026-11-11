@@ -57,6 +57,8 @@ pub const WIRE_VALUE_DECIMAL: u8 = 30;
 pub const WIRE_CALL_RESULT_RETURN: u8 = 0;
 pub const WIRE_CALL_RESULT_EXCEPTION: u8 = 1;
 pub const WIRE_CALL_RESULT_PENDING: u8 = 2;
+pub const WIRE_CALL_RESULT_NOT_FOUND: u8 = 3;
+pub const WIRE_CALL_RESULT_MODULE_FILE: u8 = 4;
 
 pub const WIRE_LOOKUP_RESULT_VALUE: u8 = 0;
 pub const WIRE_LOOKUP_RESULT_UNDEFINED: u8 = 1;
@@ -669,6 +671,12 @@ pub struct WireCallResult {
     pub exc_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arg: Option<String>,
+    /// `MODULE_FILE` only: the virtual path the module's source was read from.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub module_path: String,
+    /// `MODULE_FILE` only: the module's source text.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub module_source: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1116,7 +1124,10 @@ mod tests {
         let wire = WireValue::from_monty(&original);
         assert_eq!(wire.kind, super::WIRE_VALUE_DECIMAL);
         assert_eq!(wire.string_value, "1.10");
-        assert_eq!(wire.into_monty().expect("decimal should round-trip"), original);
+        assert_eq!(
+            wire.into_monty().expect("decimal should round-trip"),
+            original
+        );
     }
 
     #[test]
