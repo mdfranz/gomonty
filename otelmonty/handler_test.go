@@ -388,3 +388,50 @@ func TestHandlerFeedRunUsesMontyFeedSpanName(t *testing.T) {
 		t.Fatal("no monty.feed span recorded for Repl.FeedRun")
 	}
 }
+
+func TestHandlerPrintCaptureOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts monty.TelemetryOptions
+		want string
+	}{
+		{name: "default off"},
+		{name: "enabled", opts: monty.TelemetryOptions{RecordPrint: true}, want: "secret\n"},
+		{name: "truncated", opts: monty.TelemetryOptions{RecordPrint: true, MaxAttributeBytes: 3}, want: "sec"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, recorder := newTestHandler()
+			runner, err := monty.New(`print("secret")`, monty.CompileOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Telemetry capture must also work without an ordinary Print callback.
+			if _, err := runner.Run(context.Background(), monty.RunOptions{Telemetry: handler, TelemetryOptions: tc.opts}); err != nil {
+				t.Fatal(err)
+			}
+			root := findSpan(recorder.Ended(), "monty.run")
+			if root == nil {
+				t.Fatal("no monty.run span recorded")
+			}
+			events := root.Events()
+			if !tc.opts.RecordPrint {
+				if len(events) != 0 {
+					t.Errorf("unexpected events with print recording disabled: %+v", events)
+				}
+				return
+			}
+			if len(events) != 1 || events[0].Name != "monty.print" {
+				t.Fatalf("expected one monty.print event, got %+v", events)
+			}
+			for _, attr := range events[0].Attributes {
+				if string(attr.Key) == "monty.text" {
+					if got := attr.Value.AsString(); got != tc.want {
+						t.Errorf("print text = %q, want %q", got, tc.want)
+					}
+					return
+				}
+			}
+			t.Fatal("missing monty.text attribute")
+		})
+	}
+}

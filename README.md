@@ -31,6 +31,8 @@ Since v1.2.0, a Python `import` of a name Monty does not provide reaches your `O
 
 Dumps are not portable across releases that change the pinned Monty. They are raw `postcard` encodings of upstream's types, with no version header. Moving from v0.0.18 to the v1.2.0 pin, `Runner.Dump` and plain call snapshots still load, but name-lookup, future and REPL snapshots do not (they fail with a `postcard` decode error). Load a dump with the same release that wrote it, and re-create a runner from source after upgrading.
 
+**Unreleased telemetry change:** Python `print()` output is now excluded from telemetry by default. Set `TelemetryOptions{RecordPrint: true}` to keep print events in `SlogHandler` or `otelmonty`. Captured telemetry chunks are capped by `MaxAttributeBytes` (4096 bytes by default) at a UTF-8 boundary; ordinary `RunOptions.Print` and `FeedOptions.Print` callbacks still receive the full output.
+
 I know of no other breaking changes. The module path differs from the original (`github.com/ewhauser/gomonty`), so switching between the two means changing import paths.
 
 ## Install

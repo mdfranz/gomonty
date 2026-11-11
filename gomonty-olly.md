@@ -78,9 +78,9 @@ On completion of the root span, record aggregate timing attributes, such as `mon
 ### 4. Data sanitization, limits, and stdout multiplexing
 
 Python inputs, kwargs, returned values, and print streams can contain sensitive credentials or multi-megabyte payloads.
-- Make payload recording strictly opt-in via telemetry options (e.g. `RecordArguments`, `RecordOutputs`, defaulting to `false`).
-- Enforce size truncation limits on strings and collections (e.g., configurable `MaxAttributeBytes`, defaulting to 1024 bytes) similar to upstream’s `serialize_capped` and `length_limit_exceeded` flag.
-- When both `RunOptions.Print` and telemetry are active, multiplex output cleanly: stream text to `opts.Print` while also emitting structured `RecordPrint` events to the telemetry handler.
+- Make payload recording strictly opt-in via telemetry options (e.g. `RecordArguments`, `RecordOutputs`, `RecordPrint`, defaulting to `false`).
+- Enforce size truncation limits on strings and collections (e.g., configurable `MaxAttributeBytes`, defaulting to 4096 bytes) similar to upstream’s `serialize_capped` and `length_limit_exceeded` flag.
+- When both `RunOptions.Print` and telemetry are active, multiplex output cleanly: stream text to `opts.Print` while also emitting structured `RecordPrint` events when `TelemetryOptions.RecordPrint` is enabled. Cap each telemetry print chunk with `MaxAttributeBytes` at a UTF-8 boundary; the ordinary print callback receives the full text. The `RecordPrint(ctx, text)` signature stays unchanged, so it receives the capped string without a separate truncation flag.
 
 ### 5. Support local structured logging (`log/slog`)
 

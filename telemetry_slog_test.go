@@ -3,6 +3,8 @@ package monty_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
@@ -192,5 +194,53 @@ func TestSlogHandlerRespectsRecordArgumentsOptIn(t *testing.T) {
 
 	if strings.Contains(buf.String(), "do-not-log-me") {
 		t.Errorf("argument content was logged despite RecordArguments being off:\n%s", buf.String())
+	}
+}
+
+func TestSlogHandlerPrintCaptureOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts monty.TelemetryOptions
+		want string
+	}{
+		{name: "default off"},
+		{name: "enabled", opts: monty.TelemetryOptions{RecordPrint: true}, want: "secret\n"},
+		{name: "truncated", opts: monty.TelemetryOptions{RecordPrint: true, MaxAttributeBytes: 3}, want: "sec"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			handler := monty.SlogHandler{Logger: slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+			runner, err := monty.New(`print("secret")`, monty.CompileOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runner.Run(context.Background(), monty.RunOptions{Telemetry: handler, TelemetryOptions: tc.opts}); err != nil {
+				t.Fatal(err)
+			}
+			var prints []string
+			decoder := json.NewDecoder(&buf)
+			for {
+				var record map[string]any
+				if err := decoder.Decode(&record); err == io.EOF {
+					break
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				if record["msg"] == "monty print" {
+					text, ok := record["text"].(string)
+					if !ok {
+						t.Fatalf("print record missing text: %+v", record)
+					}
+					prints = append(prints, text)
+				}
+			}
+			if !tc.opts.RecordPrint {
+				if len(prints) != 0 {
+					t.Errorf("printed content leaked to logs: %q", prints)
+				}
+			} else if len(prints) != 1 || prints[0] != tc.want {
+				t.Errorf("print records = %q, want [%q]", prints, tc.want)
+			}
+		})
 	}
 }
