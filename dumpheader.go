@@ -12,7 +12,7 @@ import (
 // TestDumpHeaderRevisionMatchesCargoPin). Dumps are only portable between
 // builds with the same revision, because Monty's serialized layout changes
 // without notice.
-const montyRevision = "e8db9aef41aa73f4f709c15a4bc8a2d198be5ead"
+const montyRevision = "3f89dcbf82071896efb5e3ded507db4191e8d829"
 
 const (
 	dumpMagic         = "GMONTY\x00"

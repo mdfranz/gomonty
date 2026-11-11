@@ -47,6 +47,7 @@ const (
 	valueKindClassInstance  ValueKind = "class_instance"
 	valueKindFileHandle     ValueKind = "file_handle"
 	valueKindComplex        ValueKind = "complex"
+	valueKindDecimal        ValueKind = "decimal"
 	valueKindModule         ValueKind = "module"
 )
 
@@ -472,6 +473,13 @@ func Complex(value complex128) Value {
 	return Value{kind: valueKindComplex, data: value}
 }
 
+// DecimalValue returns a decimal.Decimal value from its string form, for
+// example "1.10". Monty parses and validates the text when the value is used
+// as an input; the digits and exponent are preserved exactly.
+func DecimalValue(value string) Value {
+	return Value{kind: valueKindDecimal, data: value}
+}
+
 // String returns a string value.
 func String(value string) Value {
 	return Value{kind: valueKindString, data: value}
@@ -610,6 +618,14 @@ func (v Value) Raw() any {
 func (v Value) Complex() (complex128, bool) {
 	value, ok := v.data.(complex128)
 	return value, ok
+}
+
+// Decimal returns the decimal.Decimal payload in its string form if present.
+func (v Value) Decimal() (string, bool) {
+	if v.kind != valueKindDecimal {
+		return "", false
+	}
+	return v.data.(string), true
 }
 
 // Module returns the host-module payload if present.
@@ -1115,6 +1131,11 @@ func (v Value) MarshalJSON() ([]byte, error) {
 			Name:      payload.Name,
 			Docstring: payload.Docstring,
 		})
+	case valueKindDecimal:
+		return json.Marshal(struct {
+			Kind  ValueKind `json:"kind"`
+			Value string    `json:"value"`
+		}{Kind: valueKindDecimal, Value: v.data.(string)})
 	case valueKindRepr:
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
@@ -1352,6 +1373,14 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = FunctionValue(payload)
+	case valueKindDecimal:
+		var payload struct {
+			Value string `json:"value"`
+		}
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return err
+		}
+		*v = DecimalValue(payload.Value)
 	case valueKindRepr:
 		var payload struct {
 			Value string `json:"value"`
@@ -1483,6 +1512,8 @@ func (v Value) String() string {
 	case valueKindFileHandle:
 		handle := v.data.(FileHandle)
 		return fmt.Sprintf("<file name=%q mode=%q>", handle.Path, handle.Mode)
+	case valueKindDecimal:
+		return fmt.Sprintf("Decimal(%q)", v.data.(string))
 	case valueKindRepr, valueKindCycle:
 		return v.data.(string)
 	case valueKindList:

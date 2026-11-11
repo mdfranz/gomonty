@@ -1,6 +1,7 @@
 package monty
 
 import (
+	"context"
 	"encoding/json"
 	"math/big"
 	"regexp"
@@ -280,5 +281,34 @@ func TestValueStringContainers(t *testing.T) {
 				t.Fatalf("String() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDecimalValueRoundTrip(t *testing.T) {
+	runner, err := New("x + x", CompileOptions{ScriptName: "decimal.py", Inputs: []string{"x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestRunner(runner)
+
+	got, err := runner.Run(context.Background(), RunOptions{Inputs: map[string]Value{"x": DecimalValue("1.10")}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	text, ok := got.Decimal()
+	if !ok || text != "2.20" {
+		t.Fatalf("result = %#v (decimal %q, %v), want Decimal 2.20", got, text, ok)
+	}
+
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Value
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if text, ok := decoded.Decimal(); !ok || text != "2.20" {
+		t.Fatalf("JSON round trip = %#v", decoded)
 	}
 }

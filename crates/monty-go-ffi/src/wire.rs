@@ -52,6 +52,7 @@ pub const WIRE_VALUE_CLASS_INSTANCE: u8 = 26;
 pub const WIRE_VALUE_FILE_HANDLE: u8 = 27;
 pub const WIRE_VALUE_COMPLEX: u8 = 28;
 pub const WIRE_VALUE_MODULE: u8 = 29;
+pub const WIRE_VALUE_DECIMAL: u8 = 30;
 
 pub const WIRE_CALL_RESULT_RETURN: u8 = 0;
 pub const WIRE_CALL_RESULT_EXCEPTION: u8 = 1;
@@ -363,10 +364,19 @@ impl WireValue {
                 position: handle.position,
                 ..Self::default()
             },
-            MontyNode::Function { name, docstring } => Self {
+            MontyNode::Function {
+                name,
+                docstring,
+                is_async: _,
+            } => Self {
                 kind: WIRE_VALUE_FUNCTION,
                 name: name.clone(),
                 docstring: docstring.clone(),
+                ..Self::default()
+            },
+            MontyNode::Decimal(v) => Self {
+                kind: WIRE_VALUE_DECIMAL,
+                string_value: v.clone(),
                 ..Self::default()
             },
             MontyNode::Repr(v) => Self {
@@ -564,6 +574,7 @@ impl WireValue {
                     .collect::<Result<Vec<_>, String>>()?;
                 Ok(MontyObject::module(self.name, id, attrs))
             }
+            WIRE_VALUE_DECIMAL => Ok(MontyObject::decimal(self.string_value)),
             other => Err(format!("unknown wire value kind: {other}")),
         }
     }
@@ -1096,6 +1107,16 @@ mod tests {
             .into_monty()
             .expect("module should round-trip");
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn wire_value_round_trips_decimals() {
+        let original = MontyObject::decimal("1.10");
+
+        let wire = WireValue::from_monty(&original);
+        assert_eq!(wire.kind, super::WIRE_VALUE_DECIMAL);
+        assert_eq!(wire.string_value, "1.10");
+        assert_eq!(wire.into_monty().expect("decimal should round-trip"), original);
     }
 
     #[test]
