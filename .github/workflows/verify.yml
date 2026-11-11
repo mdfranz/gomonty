@@ -63,6 +63,9 @@ jobs:
           export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
           MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh x86_64-unknown-linux-gnu
 
+      - name: Run shmonty Python examples
+        run: env -u OTEL_EXPORTER_OTLP_ENDPOINT make shmonty-examples
+
       - name: Run Rust tests
         shell: bash
         run: |
