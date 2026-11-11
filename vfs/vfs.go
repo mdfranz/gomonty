@@ -795,6 +795,9 @@ func mapError(err error) monty.Exception {
 	case errors.Is(err, stdfs.ErrExist):
 		message := err.Error()
 		return monty.Exception{Type: "FileExistsError", Arg: &message}
+	case errors.Is(err, stdfs.ErrPermission):
+		message := err.Error()
+		return monty.Exception{Type: "PermissionError", Arg: &message}
 	case errors.Is(err, syscall.EISDIR):
 		message := err.Error()
 		return monty.Exception{Type: "IsADirectoryError", Arg: &message}
