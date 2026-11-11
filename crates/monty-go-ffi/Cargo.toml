@@ -24,7 +24,7 @@ serde = { workspace = true }
 serde_bytes = { workspace = true }
 serde_json = { workspace = true }
 rmp-serde = { workspace = true }
-postcard = { workspace = true }
+minicbor-serde = { workspace = true }
 num-bigint = { workspace = true }
 
 [dev-dependencies]

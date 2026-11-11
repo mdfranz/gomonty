@@ -1232,11 +1232,11 @@ dependencies = [
 name = "monty-go-ffi"
 version = "0.1.0"
 dependencies = [
+ "minicbor-serde",
  "monty",
  "monty-type-checking",
  "monty-types",
  "num-bigint",
- "postcard",
  "pretty_assertions",
  "rmp-serde",
  "serde",
