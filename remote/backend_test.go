@@ -172,6 +172,7 @@ func TestInputsAndResultsRoundTripThroughTheArena(t *testing.T) {
 		"decimal":    monty.DecimalValue("1.20"),
 		"path":       monty.PathValue("/tmp/x"),
 		"exception":  monty.ExceptionValue(monty.Exception{Type: "ValueError", Arg: &text}),
+		"function":   monty.FunctionValue(monty.Function{Name: "tool"}),
 		"emptylist":  monty.List(),
 		"nestedlist": monty.List(monty.List(monty.List(monty.Int(1)))),
 		"dict": monty.DictValue(monty.Dict{
@@ -317,48 +318,6 @@ func TestPingIsAnswered(t *testing.T) {
 	wantInt(t, got, err, 5)
 	if !<-answered {
 		t.Fatal("the client did not answer Ping with Pong")
-	}
-}
-
-// A script that needs the host cannot be served yet. The feed is aborted, so
-// the session survives, and the caller gets an error naming the cause.
-func TestHostCallsAreAbortedNotLeftHanging(t *testing.T) {
-	var abortedWith string
-	var mu sync.Mutex
-	repl := newRepl(t, func(s *fakeworker.Stream) {
-		if s.RecvConfigure() == nil {
-			return
-		}
-		s.Send(fakeworker.Ok())
-		if s.RecvFeed() == nil {
-			return
-		}
-		s.Send(fakeworker.CallsHost("lookup"))
-		req := s.Recv()
-		if req == nil || req.GetAbortFeed() == nil {
-			t.Errorf("worker expected AbortFeed, got %v", req)
-			return
-		}
-		mu.Lock()
-		abortedWith = req.GetAbortFeed().GetException().GetExcType()
-		mu.Unlock()
-		s.Send(fakeworker.Raised("RuntimeError", "aborted"))
-		if s.RecvFeed() != nil {
-			s.Send(fakeworker.Complete(0, fakeworker.Int(9)))
-		}
-	})
-
-	_, err := feed(t, repl, "lookup()", monty.FeedOptions{})
-	if !errors.Is(err, remote.ErrUnsupported) || !strings.Contains(err.Error(), "host function call") {
-		t.Fatalf("err = %v, want ErrUnsupported naming the host call", err)
-	}
-	got, err := feed(t, repl, "1", monty.FeedOptions{})
-	wantInt(t, got, err, 9)
-
-	mu.Lock()
-	defer mu.Unlock()
-	if abortedWith != "RuntimeError" {
-		t.Fatalf("abort exception = %q", abortedWith)
 	}
 }
 

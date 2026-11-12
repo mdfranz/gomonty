@@ -230,7 +230,7 @@ func normalizeCallbackResult(result Result, err error) (Result, error) {
 		return Result{}, errors.New("pending callback result is missing a waiter")
 	case result.wireException() == nil && result.kind == resultKindException:
 		return Result{}, errors.New("exception callback result is missing an exception")
-	case result.kind == resultKindReturn && result.value.Kind() == valueKindNone:
+	case result.kind == resultKindReturn && result.value.Kind() == ValueKindNone:
 		return Return(None()), nil
 	default:
 		return result, nil

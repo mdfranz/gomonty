@@ -1,6 +1,6 @@
 module github.com/mdfranz/gomonty/cmd/shmonty
 
-go 1.25.0
+go 1.27.4
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0

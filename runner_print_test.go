@@ -86,7 +86,7 @@ func TestRunnerRunCapturesInitialPrint(t *testing.T) {
 	if got := out.String(); got != "hello\n" {
 		t.Fatalf("unexpected print output: got %q want %q", got, "hello\n")
 	}
-	if value.Kind() != valueKindNone {
+	if value.Kind() != ValueKindNone {
 		t.Fatalf("unexpected result kind: got %v want None", value.Kind())
 	}
 }
@@ -157,7 +157,7 @@ func TestRunnerRunCapturesPrintAfterResume(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("unexpected external call count: got %d want %d", calls, 1)
 	}
-	if value.Kind() != valueKindNone {
+	if value.Kind() != ValueKindNone {
 		t.Fatalf("unexpected result kind: got %v want None", value.Kind())
 	}
 }
@@ -182,7 +182,7 @@ func TestReplFeedRunCapturesInitialPrint(t *testing.T) {
 	if got := out.String(); got != "hello\n" {
 		t.Fatalf("unexpected print output: got %q want %q", got, "hello\n")
 	}
-	if value.Kind() != valueKindNone {
+	if value.Kind() != ValueKindNone {
 		t.Fatalf("unexpected result kind: got %v want None", value.Kind())
 	}
 }

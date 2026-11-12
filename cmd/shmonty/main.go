@@ -40,6 +40,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"os"
@@ -789,10 +790,21 @@ func main() {
 // it. A read or execution error prints to stderr and exits non-zero,
 // matching Python's own unhandled-exception convention.
 func runScript(path string) {
+	if err := execScript(path, os.Stdout, os.Stderr); err != nil {
+		os.Exit(1)
+	}
+}
+
+// execScript runs the script at path, writing program output and the final
+// value to stdout and diagnostics to stderr. A non-nil error means the
+// script failed (the message has already been written to stderr), which
+// runScript turns into exit status 1. It never exits the process, so tests
+// can call it in-process.
+func execScript(path string, stdout, stderr io.Writer) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, err)
+		return err
 	}
 
 	ctx := context.Background()
@@ -804,15 +816,15 @@ func runScript(path string) {
 
 	runner, err := monty.New(string(data), monty.CompileOptions{ScriptName: filepath.Base(path)})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, err)
+		return err
 	}
 
 	sandbox := newSandbox()
 	opts := monty.RunOptions{
 		OS:        sandbox.os,
 		Modules:   sandbox.modules,
-		Print:     monty.WriterPrintCallback(os.Stdout),
+		Print:     monty.WriterPrintCallback(stdout),
 		Functions: hostFunctions(),
 	}
 	if otelHandler != nil {
@@ -831,23 +843,24 @@ func runScript(path string) {
 	value, runErr := runner.Run(ctx, opts)
 
 	if runErr != nil {
-		fmt.Fprintln(os.Stderr, "error:", runErr)
-		printDebugLogs(logs)
-		os.Exit(1)
+		fmt.Fprintln(stderr, "error:", runErr)
+		printDebugLogs(logs, stderr)
+		return runErr
 	}
-	fmt.Println(value.String())
-	printDebugLogs(logs)
+	fmt.Fprintln(stdout, value.String())
+	printDebugLogs(logs, stderr)
+	return nil
 }
 
 // printDebugLogs writes captured telemetry lines to stderr as a labeled
 // trailing block, or nothing at all if none were captured.
-func printDebugLogs(logs *logBuffer) {
+func printDebugLogs(logs *logBuffer, w io.Writer) {
 	lines := logs.drain()
 	if len(lines) == 0 {
 		return
 	}
-	fmt.Fprintln(os.Stderr, rule("telemetry", 80))
+	fmt.Fprintln(w, rule("telemetry", 80))
 	for _, line := range lines {
-		fmt.Fprintln(os.Stderr, line)
+		fmt.Fprintln(w, line)
 	}
 }

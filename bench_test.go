@@ -553,9 +553,9 @@ func benchmarkInt64(b *testing.B, value Value) int64 {
 	b.Helper()
 
 	switch value.Kind() {
-	case valueKindInt:
+	case ValueKindInt:
 		return value.Raw().(int64)
-	case valueKindBigInt:
+	case ValueKindBigInt:
 		bigValue := value.Raw().(*big.Int)
 		if !bigValue.IsInt64() {
 			b.Fatalf("big int result out of int64 range: %s", bigValue.String())
