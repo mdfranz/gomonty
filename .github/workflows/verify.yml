@@ -14,7 +14,12 @@ permissions:
   contents: read
 
 jobs:
+  # The full linux-amd64 (x86-64) check: builds the native library for
+  # x86_64-unknown-linux-gnu and runs formatting, the Rust tests, the Go tests,
+  # vet, a short fuzz and the example/submodule tests. The job id stays
+  # `go-pure`; the name below is what shows up in the checks list.
   go-pure:
+    name: verify linux-amd64
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -111,17 +116,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: linux-arm64
-            runner: ubuntu-24.04-arm
-            rust_target: aarch64-unknown-linux-gnu
-            run_go_tests: true
-            build_only_note: ""
-          - name: darwin-arm64
-            runner: macos-15
-            rust_target: aarch64-apple-darwin
-            run_go_tests: true
-            build_only_note: ""
+        # macOS is the slowest job on a PR, so it is off by default.
+        # Enable it with:
+        #   gh variable set RUN_MACOS_CI --body true --repo mdfranz/gomonty
+        # release-prep.yml still builds the macOS library for every release.
+        include: ${{ fromJSON(vars.RUN_MACOS_CI == 'true' && '[{"name":"linux-arm64","runner":"ubuntu-24.04-arm","rust_target":"aarch64-unknown-linux-gnu","run_go_tests":true,"build_only_note":""},{"name":"darwin-arm64","runner":"macos-15","rust_target":"aarch64-apple-darwin","run_go_tests":true,"build_only_note":""}]' || '[{"name":"linux-arm64","runner":"ubuntu-24.04-arm","rust_target":"aarch64-unknown-linux-gnu","run_go_tests":true,"build_only_note":""}]') }}
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
