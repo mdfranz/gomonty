@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"github.com/mdfranz/gomonty/internal/ffi"
 )
 
 var (
@@ -64,7 +62,7 @@ type Complete struct {
 
 type runnerState struct {
 	mu     sync.Mutex
-	handle *ffi.Runner
+	handle runnerHandle
 	// scriptName is set once at construction and never mutated, so it's
 	// safe to read without holding mu.
 	scriptName string
@@ -72,7 +70,7 @@ type runnerState struct {
 
 type replState struct {
 	mu       sync.Mutex
-	handle   *ffi.Repl
+	handle   replHandle
 	inFlight bool
 	// scriptName is set once at construction and never mutated, so it's
 	// safe to read without holding mu.
@@ -81,7 +79,7 @@ type replState struct {
 
 type progressState struct {
 	mu     sync.Mutex
-	handle *ffi.Progress
+	handle progressHandle
 	owner  *replState
 }
 
@@ -93,77 +91,102 @@ type progressBase struct {
 
 // New compiles Monty code into a reusable runner.
 func New(code string, opts CompileOptions) (*Runner, error) {
-	payload, err := marshalWire(newWireCompileOptions(opts))
+	return newRunnerWith(defaultBackend, code, opts)
+}
+
+func newRunnerWith(b backend, code string, opts CompileOptions) (*Runner, error) {
+	handle, err := b.newRunner(code, newWireCompileOptions(opts))
 	if err != nil {
 		return nil, err
 	}
-
-	result := ffi.NewRunner([]byte(code), payload)
-	if result.Error != nil {
-		return nil, newError(result.Error)
-	}
 	return &Runner{
-		state: &runnerState{handle: result.Runner, scriptName: opts.ScriptName},
+		state: &runnerState{handle: handle, scriptName: opts.ScriptName},
 	}, nil
 }
 
 // LoadRunner restores a serialized runner.
 func LoadRunner(data []byte) (*Runner, error) {
+	return loadRunnerWith(defaultBackend, data)
+}
+
+func loadRunnerWith(b backend, data []byte) (*Runner, error) {
 	data, err := stripDumpHeader(data)
 	if err != nil {
 		return nil, err
 	}
-	result := ffi.LoadRunner(data)
-	if result.Error != nil {
-		return nil, newError(result.Error)
+	handle, err := b.loadRunner(data)
+	if err != nil {
+		return nil, err
 	}
 	return &Runner{
-		state: &runnerState{handle: result.Runner},
+		state: &runnerState{handle: handle},
 	}, nil
 }
 
 // LoadSnapshot restores a serialized non-REPL or REPL snapshot without an owner REPL.
 func LoadSnapshot(data []byte) (Progress, error) {
+	return loadSnapshotWith(defaultBackend, data)
+}
+
+func loadSnapshotWith(b backend, data []byte) (Progress, error) {
 	data, err := stripDumpHeader(data)
 	if err != nil {
 		return nil, err
 	}
-	result := ffi.LoadProgress(data)
-	if result.Error != nil {
-		return nil, newError(result.Error)
+	result := b.loadProgress(data)
+	if result.err != nil {
+		result.discard()
+		return nil, result.err
 	}
-	return progressFromResult(result.Progress, result.ProgressPayload, nil)
+	if result.progress == nil {
+		result.discard()
+		return nil, fmt.Errorf("monty backend returned no progress handle")
+	}
+	return progressFromResult(result.progress, result.desc, nil)
 }
 
 // LoadReplSnapshot restores a serialized REPL snapshot and also returns a base
 // REPL handle that can be used to abandon the in-flight snippet.
 func LoadReplSnapshot(data []byte) (Progress, *Repl, error) {
+	return loadReplSnapshotWith(defaultBackend, data)
+}
+
+func loadReplSnapshotWith(b backend, data []byte) (Progress, *Repl, error) {
 	data, err := stripDumpHeader(data)
 	if err != nil {
 		return nil, nil, err
 	}
 	owner := &Repl{state: &replState{}}
 
-	primary := ffi.LoadProgress(data)
-	if primary.Error != nil {
-		return nil, nil, newError(primary.Error)
+	primary := b.loadProgress(data)
+	if primary.err != nil {
+		primary.discard()
+		return nil, nil, primary.err
+	}
+	if primary.progress == nil {
+		primary.discard()
+		return nil, nil, fmt.Errorf("monty backend returned no progress handle")
 	}
 
-	backup := ffi.LoadProgress(data)
-	if backup.Error != nil {
-		primary.Progress.Close()
-		return nil, nil, newError(backup.Error)
+	backup := b.loadProgress(data)
+	if backup.err != nil || backup.progress == nil {
+		backup.discard()
+		primary.progress.Close()
+		if backup.err != nil {
+			return nil, nil, backup.err
+		}
+		return nil, nil, fmt.Errorf("monty backend returned no progress handle")
 	}
 
-	replResult := backup.Progress.TakeRepl()
-	backup.Progress.Close()
-	if replResult.Error != nil {
-		primary.Progress.Close()
-		return nil, nil, newError(replResult.Error)
+	repl, err := backup.progress.takeRepl()
+	backup.progress.Close()
+	if err != nil {
+		primary.progress.Close()
+		return nil, nil, err
 	}
-	owner.state.restore(replResult.Repl)
+	owner.state.restore(repl)
 
-	progress, err := progressFromResult(primary.Progress, primary.ProgressPayload, owner.state)
+	progress, err := progressFromResult(primary.progress, primary.desc, owner.state)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -172,17 +195,16 @@ func LoadReplSnapshot(data []byte) (Progress, *Repl, error) {
 
 // NewRepl constructs an empty REPL session.
 func NewRepl(opts ReplOptions) (*Repl, error) {
-	payload, err := marshalWire(newWireReplOptions(opts))
+	return newReplWith(defaultBackend, opts)
+}
+
+func newReplWith(b backend, opts ReplOptions) (*Repl, error) {
+	handle, err := b.newRepl(newWireReplOptions(opts))
 	if err != nil {
 		return nil, err
 	}
-
-	result := ffi.NewRepl(payload)
-	if result.Error != nil {
-		return nil, newError(result.Error)
-	}
 	return &Repl{
-		state: &replState{handle: result.Repl, scriptName: opts.ScriptName},
+		state: &replState{handle: handle, scriptName: opts.ScriptName},
 	}, nil
 }
 
@@ -194,9 +216,9 @@ func (r *Runner) Dump() ([]byte, error) {
 	}
 	defer release()
 
-	data, ffiErr := handle.Dump()
-	if ffiErr != nil {
-		return nil, newError(ffiErr)
+	data, err := handle.dump()
+	if err != nil {
+		return nil, err
 	}
 	return addDumpHeader(data), nil
 }
@@ -209,10 +231,7 @@ func (r *Runner) TypeCheck(prefix string) error {
 	}
 	defer release()
 
-	if ffiErr := handle.TypeCheck([]byte(prefix)); ffiErr != nil {
-		return newError(ffiErr)
-	}
-	return nil
+	return handle.typeCheck(prefix)
 }
 
 // Start begins low-level runner execution.
@@ -235,13 +254,7 @@ func (r *Runner) start(ctx context.Context, opts StartOptions, print PrintCallba
 		return nil, err
 	}
 
-	payload, err := marshalWire(wireOptions)
-	if err != nil {
-		return nil, err
-	}
-
-	result := handle.Start(payload)
-	return consumeOpResult(ctx, result, nil, print, pt)
+	return consumeOpResult(ctx, handle.start(wireOptions), nil, print, pt)
 }
 
 // Run executes the runner through the high-level host callback loop.
@@ -287,9 +300,9 @@ func (r *Repl) Dump() ([]byte, error) {
 	}
 	defer release()
 
-	data, ffiErr := handle.Dump()
-	if ffiErr != nil {
-		return nil, newError(ffiErr)
+	data, err := handle.dump()
+	if err != nil {
+		return nil, err
 	}
 	return addDumpHeader(data), nil
 }
@@ -310,18 +323,12 @@ func (r *Repl) feedStart(ctx context.Context, code string, opts FeedStartOptions
 
 	wireOptions, err := newWireFeedOptions(opts)
 	if err != nil {
-		return nil, err
-	}
-
-	payload, err := marshalWire(wireOptions)
-	if err != nil {
+		// Nothing has run yet, so give the session back.
 		r.state.restore(handle)
 		return nil, err
 	}
 
-	result := handle.FeedStart([]byte(code), payload)
-	handle.Close()
-	progress, consumeErr := consumeOpResult(ctx, result, r.state, print, pt)
+	progress, consumeErr := consumeOpResult(ctx, handle.feedStart(code, wireOptions), r.state, print, pt)
 	if consumeErr != nil {
 		return nil, consumeErr
 	}
@@ -381,12 +388,7 @@ func (s *Snapshot) ResumeReturn(ctx context.Context, value Value) (Progress, err
 	if err != nil {
 		return nil, err
 	}
-
-	payload, err := marshalWire(wireResult)
-	if err != nil {
-		return nil, err
-	}
-	return s.progressBase.resumeCall(ctx, payload, nil, printTelemetry{})
+	return s.progressBase.resumeCall(ctx, wireResult, nil, printTelemetry{})
 }
 
 // ResumeException resumes a function or OS snapshot by raising an exception.
@@ -395,21 +397,12 @@ func (s *Snapshot) ResumeException(ctx context.Context, exception Exception) (Pr
 	if err != nil {
 		return nil, err
 	}
-
-	payload, err := marshalWire(wireResult)
-	if err != nil {
-		return nil, err
-	}
-	return s.progressBase.resumeCall(ctx, payload, nil, printTelemetry{})
+	return s.progressBase.resumeCall(ctx, wireResult, nil, printTelemetry{})
 }
 
 // ResumePending resumes a function or OS snapshot with a pending future.
 func (s *Snapshot) ResumePending(ctx context.Context) (Progress, error) {
-	payload, err := marshalWire(wireCallResult{Kind: wireCallResultPending})
-	if err != nil {
-		return nil, err
-	}
-	return s.progressBase.resumeCall(ctx, payload, nil, printTelemetry{})
+	return s.progressBase.resumeCall(ctx, wireCallResult{Kind: wireCallResultPending}, nil, printTelemetry{})
 }
 
 // ResumeValue resumes a name lookup with a resolved value.
@@ -418,21 +411,12 @@ func (s *NameLookupSnapshot) ResumeValue(ctx context.Context, value Value) (Prog
 	if err != nil {
 		return nil, err
 	}
-
-	payload, err := marshalWire(wireResult)
-	if err != nil {
-		return nil, err
-	}
-	return s.progressBase.resumeLookup(ctx, payload, nil, printTelemetry{})
+	return s.progressBase.resumeLookup(ctx, wireResult, nil, printTelemetry{})
 }
 
 // ResumeUndefined resumes a name lookup as undefined.
 func (s *NameLookupSnapshot) ResumeUndefined(ctx context.Context) (Progress, error) {
-	payload, err := marshalWire(wireLookupResult{Kind: wireLookupResultUndefined})
-	if err != nil {
-		return nil, err
-	}
-	return s.progressBase.resumeLookup(ctx, payload, nil, printTelemetry{})
+	return s.progressBase.resumeLookup(ctx, wireLookupResult{Kind: wireLookupResultUndefined}, nil, printTelemetry{})
 }
 
 // PendingCallIDs returns the unresolved call IDs for the future snapshot.
@@ -446,12 +430,7 @@ func (s *FutureSnapshot) ResumeResults(ctx context.Context, results map[uint32]R
 	if err != nil {
 		return nil, err
 	}
-
-	payload, err := marshalWire(wireResults)
-	if err != nil {
-		return nil, err
-	}
-	return s.progressBase.resumeFutures(ctx, payload, nil, printTelemetry{})
+	return s.progressBase.resumeFutures(ctx, wireResults, nil, printTelemetry{})
 }
 
 func (s *Snapshot) isProgress()           {}
@@ -478,14 +457,14 @@ func (b *progressBase) dump() ([]byte, error) {
 	}
 	defer release()
 
-	bytes, ffiErr := handle.Dump()
-	if ffiErr != nil {
-		return nil, newError(ffiErr)
+	data, err := handle.dump()
+	if err != nil {
+		return nil, err
 	}
-	return addDumpHeader(bytes), nil
+	return addDumpHeader(data), nil
 }
 
-func (b *progressBase) resumeCall(ctx context.Context, payload []byte, print PrintCallback, pt printTelemetry) (Progress, error) {
+func (b *progressBase) resumeCall(ctx context.Context, result wireCallResult, print PrintCallback, pt printTelemetry) (Progress, error) {
 	if err := ctx.Err(); err != nil {
 		if restoreErr := b.restoreOwner(); restoreErr != nil {
 			return nil, errors.Join(err, restoreErr)
@@ -499,10 +478,10 @@ func (b *progressBase) resumeCall(ctx context.Context, payload []byte, print Pri
 	}
 	defer handle.Close()
 
-	return consumeOpResult(ctx, handle.ResumeCall(payload), owner, print, pt)
+	return consumeOpResult(ctx, handle.resumeCall(result), owner, print, pt)
 }
 
-func (b *progressBase) resumeLookup(ctx context.Context, payload []byte, print PrintCallback, pt printTelemetry) (Progress, error) {
+func (b *progressBase) resumeLookup(ctx context.Context, result wireLookupResult, print PrintCallback, pt printTelemetry) (Progress, error) {
 	if err := ctx.Err(); err != nil {
 		if restoreErr := b.restoreOwner(); restoreErr != nil {
 			return nil, errors.Join(err, restoreErr)
@@ -516,10 +495,10 @@ func (b *progressBase) resumeLookup(ctx context.Context, payload []byte, print P
 	}
 	defer handle.Close()
 
-	return consumeOpResult(ctx, handle.ResumeLookup(payload), owner, print, pt)
+	return consumeOpResult(ctx, handle.resumeLookup(result), owner, print, pt)
 }
 
-func (b *progressBase) resumeFutures(ctx context.Context, payload []byte, print PrintCallback, pt printTelemetry) (Progress, error) {
+func (b *progressBase) resumeFutures(ctx context.Context, results wireFutureResults, print PrintCallback, pt printTelemetry) (Progress, error) {
 	if err := ctx.Err(); err != nil {
 		if restoreErr := b.restoreOwner(); restoreErr != nil {
 			return nil, errors.Join(err, restoreErr)
@@ -533,7 +512,7 @@ func (b *progressBase) resumeFutures(ctx context.Context, payload []byte, print 
 	}
 	defer handle.Close()
 
-	return consumeOpResult(ctx, handle.ResumeFutures(payload), owner, print, pt)
+	return consumeOpResult(ctx, handle.resumeFutures(results), owner, print, pt)
 }
 
 func (b *progressBase) restoreOwner() error {
@@ -546,16 +525,16 @@ func (b *progressBase) restoreOwner() error {
 	if owner == nil {
 		return nil
 	}
-	result := handle.TakeRepl()
-	if result.Error != nil {
+	repl, err := handle.takeRepl()
+	if err != nil {
 		owner.clear()
-		return newError(result.Error)
+		return err
 	}
-	owner.restore(result.Repl)
+	owner.restore(repl)
 	return nil
 }
 
-func (s *runnerState) borrow() (*ffi.Runner, func(), error) {
+func (s *runnerState) borrow() (runnerHandle, func(), error) {
 	if s == nil || !s.mu.TryLock() {
 		return nil, nil, ErrConcurrentUse
 	}
@@ -566,7 +545,7 @@ func (s *runnerState) borrow() (*ffi.Runner, func(), error) {
 	return s.handle, s.mu.Unlock, nil
 }
 
-func (s *replState) borrow() (*ffi.Repl, func(), error) {
+func (s *replState) borrow() (replHandle, func(), error) {
 	if s == nil || !s.mu.TryLock() {
 		return nil, nil, ErrConcurrentUse
 	}
@@ -580,7 +559,7 @@ func (s *replState) borrow() (*ffi.Repl, func(), error) {
 	return s.handle, s.mu.Unlock, nil
 }
 
-func (s *replState) takeForExecution() (*ffi.Repl, error) {
+func (s *replState) takeForExecution() (replHandle, error) {
 	if s == nil || !s.mu.TryLock() {
 		return nil, ErrConcurrentUse
 	}
@@ -598,7 +577,7 @@ func (s *replState) takeForExecution() (*ffi.Repl, error) {
 	return handle, nil
 }
 
-func (s *replState) restore(handle *ffi.Repl) {
+func (s *replState) restore(handle replHandle) {
 	s.mu.Lock()
 	old := s.handle
 	s.handle = handle
@@ -620,7 +599,7 @@ func (s *replState) clear() {
 	}
 }
 
-func (s *progressState) borrow() (*ffi.Progress, func(), error) {
+func (s *progressState) borrow() (progressHandle, func(), error) {
 	if s == nil || !s.mu.TryLock() {
 		return nil, nil, ErrConcurrentUse
 	}
@@ -631,7 +610,7 @@ func (s *progressState) borrow() (*ffi.Progress, func(), error) {
 	return s.handle, s.mu.Unlock, nil
 }
 
-func (s *progressState) take() (*ffi.Progress, *replState, error) {
+func (s *progressState) take() (progressHandle, *replState, error) {
 	if s == nil || !s.mu.TryLock() {
 		return nil, nil, ErrConcurrentUse
 	}
@@ -645,59 +624,50 @@ func (s *progressState) take() (*ffi.Progress, *replState, error) {
 	return handle, s.owner, nil
 }
 
-func consumeOpResult(ctx context.Context, result ffi.OpResult, owner *replState, print PrintCallback, pt printTelemetry) (Progress, error) {
-	if result.Prints != "" {
+func consumeOpResult(ctx context.Context, result opResult, owner *replState, print PrintCallback, pt printTelemetry) (Progress, error) {
+	if result.prints != "" {
 		if print != nil {
-			print("stdout", result.Prints)
+			print("stdout", result.prints)
 		}
-		recordPrint(ctx, pt, result.Prints)
+		recordPrint(ctx, pt, result.prints)
 	}
 
-	if result.Error != nil {
+	if result.err != nil {
 		if owner != nil {
-			if result.Repl != nil {
-				owner.restore(result.Repl)
+			if result.repl != nil {
+				owner.restore(result.repl)
 			} else {
 				owner.clear()
 			}
-		} else if result.Repl != nil {
-			result.Repl.Close()
+		} else if result.repl != nil {
+			result.repl.Close()
 		}
-		if result.Progress != nil {
-			result.Progress.Close()
+		if result.progress != nil {
+			result.progress.Close()
 		}
-		return nil, newError(result.Error)
+		return nil, result.err
 	}
 
-	if result.Progress == nil {
+	if result.progress == nil {
 		if owner != nil {
 			owner.clear()
 		}
-		if result.Repl != nil {
-			result.Repl.Close()
+		if result.repl != nil {
+			result.repl.Close()
 		}
-		return nil, fmt.Errorf("monty ffi returned no progress handle")
+		return nil, fmt.Errorf("monty backend returned no progress handle")
 	}
 
-	return progressFromResult(result.Progress, result.ProgressPayload, owner)
+	return progressFromResult(result.progress, result.desc, owner)
 }
 
-func progressFromResult(handle *ffi.Progress, payload []byte, owner *replState) (Progress, error) {
-	if len(payload) == 0 {
+func progressFromResult(handle progressHandle, desc *wireProgressPayload, owner *replState) (Progress, error) {
+	if desc == nil {
 		handle.Close()
 		if owner != nil {
 			owner.clear()
 		}
-		return nil, fmt.Errorf("monty ffi returned no progress payload")
-	}
-
-	var desc wireProgressPayload
-	if err := unmarshalWire(payload, &desc); err != nil {
-		handle.Close()
-		if owner != nil {
-			owner.clear()
-		}
-		return nil, fmt.Errorf("invalid progress payload: %w", err)
+		return nil, fmt.Errorf("monty backend returned no progress payload")
 	}
 
 	state := &progressState{
@@ -764,14 +734,14 @@ func progressFromResult(handle *ffi.Progress, payload []byte, owner *replState) 
 			return nil, err
 		}
 		if owner != nil {
-			result := handle.TakeRepl()
+			repl, err := handle.takeRepl()
 			handle.Close()
 			state.handle = nil
-			if result.Error != nil {
+			if err != nil {
 				owner.clear()
-				return nil, newError(result.Error)
+				return nil, err
 			}
-			owner.restore(result.Repl)
+			owner.restore(repl)
 		} else {
 			handle.Close()
 			state.handle = nil
