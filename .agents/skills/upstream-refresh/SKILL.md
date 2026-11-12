@@ -101,6 +101,11 @@ cargo update -p monty -p monty-type-checking -p monty-types
 
 Read the `cargo update` output: new crates appearing (for example `minicbor` when upstream changed its dump encoding) hint at serialization changes to check in Step 7.
 
+Two other files carry the same pin, and tests fail if they drift:
+
+- `montyRevision` in `dumpheader.go` (the dump header's revision; `TestDumpHeaderRevisionMatchesCargoPin`).
+- The vendored proto in `remote/proto/`: copy `crates/monty-proto/proto/monty/v1/monty.proto` from the new upstream commit unchanged, update `remote/proto/UPSTREAM` (tag, commit, sha256), then run `make proto` and commit the regenerated `remote/internal/montyv1` (`TestProtoPinMatchesCargoPin`, `make check-proto`). Read the proto diff for message changes the remote client will need.
+
 ## Step 4: Update the Rust wire format
 
 File: `crates/monty-go-ffi/src/wire.rs`
