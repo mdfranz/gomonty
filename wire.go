@@ -394,25 +394,25 @@ func valuesFromWire(items []wireValue) ([]Value, error) {
 
 func wireValueFromPublic(value Value) (wireValue, error) {
 	switch value.Kind() {
-	case valueKindNone:
+	case ValueKindNone:
 		return wireValue{Kind: wireValueNone}, nil
-	case valueKindEllipsis:
+	case ValueKindEllipsis:
 		return wireValue{Kind: wireValueEllipsis}, nil
-	case valueKindNotImplemented:
+	case ValueKindNotImplemented:
 		return wireValue{Kind: wireValueNotImplemented}, nil
-	case valueKindBool:
+	case ValueKindBool:
 		return wireValue{Kind: wireValueBool, Bool: value.data.(bool)}, nil
-	case valueKindInt:
+	case ValueKindInt:
 		return wireValue{Kind: wireValueInt, Int: value.data.(int64)}, nil
-	case valueKindBigInt:
+	case ValueKindBigInt:
 		return wireValue{Kind: wireValueBigInt, BigInt: value.data.(*big.Int).String()}, nil
-	case valueKindFloat:
+	case ValueKindFloat:
 		return wireValue{Kind: wireValueFloat, Float: value.data.(float64)}, nil
-	case valueKindComplex:
+	case ValueKindComplex:
 		c := value.data.(complex128)
 		re, im := real(c), imag(c)
 		return wireValue{Kind: wireValueComplex, Real: &re, Imag: &im}, nil
-	case valueKindModule:
+	case ValueKindModule:
 		module := value.data.(Module)
 		attrs, err := wirePairsFromDict(module.Attrs)
 		if err != nil {
@@ -424,23 +424,23 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 			InstanceID: module.ID,
 			Attrs:      attrs,
 		}, nil
-	case valueKindString:
+	case ValueKindString:
 		return wireValue{Kind: wireValueString, String: value.data.(string)}, nil
-	case valueKindBytes:
+	case ValueKindBytes:
 		return wireValue{Kind: wireValueBytes, Bytes: append([]byte(nil), value.data.([]byte)...)}, nil
-	case valueKindList:
+	case ValueKindList:
 		items, err := wireValuesFromPublic(value.data.([]Value))
 		if err != nil {
 			return wireValue{}, err
 		}
 		return wireValue{Kind: wireValueList, Items: items}, nil
-	case valueKindTuple:
+	case ValueKindTuple:
 		items, err := wireValuesFromPublic([]Value(value.data.(Tuple)))
 		if err != nil {
 			return wireValue{}, err
 		}
 		return wireValue{Kind: wireValueTuple, Items: items}, nil
-	case valueKindNamedTuple:
+	case ValueKindNamedTuple:
 		namedTuple := value.data.(NamedTuple)
 		values, err := wireValuesFromPublic(namedTuple.Values)
 		if err != nil {
@@ -452,36 +452,36 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 			FieldNames: append([]string(nil), namedTuple.FieldNames...),
 			Values:     values,
 		}, nil
-	case valueKindDict:
+	case ValueKindDict:
 		pairs, err := wirePairsFromDict(value.data.(Dict))
 		if err != nil {
 			return wireValue{}, err
 		}
 		return wireValue{Kind: wireValueDict, Pairs: pairs}, nil
-	case valueKindSet:
+	case ValueKindSet:
 		items, err := wireValuesFromPublic([]Value(value.data.(Set)))
 		if err != nil {
 			return wireValue{}, err
 		}
 		return wireValue{Kind: wireValueSet, Items: items}, nil
-	case valueKindFrozenSet:
+	case ValueKindFrozenSet:
 		items, err := wireValuesFromPublic([]Value(value.data.(FrozenSet)))
 		if err != nil {
 			return wireValue{}, err
 		}
 		return wireValue{Kind: wireValueFrozenSet, Items: items}, nil
-	case valueKindException:
+	case ValueKindException:
 		exception := value.data.(Exception)
 		return wireValue{
 			Kind:    wireValueException,
 			ExcType: exception.Type,
 			Arg:     exception.Arg,
 		}, nil
-	case valueKindDecimal:
+	case ValueKindDecimal:
 		return wireValue{Kind: wireValueDecimal, String: string(value.data.(Decimal))}, nil
-	case valueKindPath:
+	case ValueKindPath:
 		return wireValue{Kind: wireValuePath, String: string(value.data.(Path))}, nil
-	case valueKindClassInstance:
+	case ValueKindClassInstance:
 		instance := value.data.(ClassInstance)
 		classAttrs, err := wirePairsFromDict(instance.ClassType.Attrs)
 		if err != nil {
@@ -501,7 +501,7 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 			ClassAttrs:  classAttrs,
 			Attrs:       attrs,
 		}, nil
-	case valueKindFileHandle:
+	case ValueKindFileHandle:
 		handle := value.data.(FileHandle)
 		return wireValue{
 			Kind:     wireValueFileHandle,
@@ -509,18 +509,18 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 			Mode:     handle.Mode,
 			Position: handle.Position,
 		}, nil
-	case valueKindFunction:
+	case ValueKindFunction:
 		function := value.data.(Function)
 		return wireValue{
 			Kind:      wireValueFunction,
 			Name:      function.Name,
 			Docstring: function.Docstring,
 		}, nil
-	case valueKindRepr:
+	case ValueKindRepr:
 		return wireValue{Kind: wireValueRepr, String: value.data.(string)}, nil
-	case valueKindCycle:
+	case ValueKindCycle:
 		return wireValue{Kind: wireValueCycle, Placeholder: value.data.(string)}, nil
-	case valueKindDate:
+	case ValueKindDate:
 		date := value.data.(Date)
 		return wireValue{
 			Kind:  wireValueDate,
@@ -528,7 +528,7 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 			Month: date.Month,
 			Day:   date.Day,
 		}, nil
-	case valueKindDateTime:
+	case ValueKindDateTime:
 		dt := value.data.(DateTime)
 		return wireValue{
 			Kind:         wireValueDateTime,
@@ -542,7 +542,7 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 			OffsetSecs:   dt.OffsetSeconds,
 			TimezoneName: dt.TimezoneName,
 		}, nil
-	case valueKindTimeDelta:
+	case ValueKindTimeDelta:
 		td := value.data.(TimeDelta)
 		return wireValue{
 			Kind:         wireValueTimeDelta,
@@ -550,14 +550,14 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 			Seconds:      td.Seconds,
 			Microseconds: td.Microseconds,
 		}, nil
-	case valueKindTimeZone:
+	case ValueKindTimeZone:
 		tz := value.data.(TimeZone)
 		return wireValue{
 			Kind:         wireValueTimeZone,
 			Days:         tz.OffsetSeconds,
 			TimezoneName: tz.Name,
 		}, nil
-	case valueKindTime:
+	case ValueKindTime:
 		t := value.data.(Time)
 		return wireValue{
 			Kind:         wireValueTime,
@@ -628,7 +628,7 @@ func (value wireValue) toPublic() (Value, error) {
 		if err != nil {
 			return Value{}, err
 		}
-		return Value{kind: valueKindTuple, data: Tuple(items)}, nil
+		return Value{kind: ValueKindTuple, data: Tuple(items)}, nil
 	case wireValueNamedTuple:
 		values, err := valuesFromWire(value.Values)
 		if err != nil {

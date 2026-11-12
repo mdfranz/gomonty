@@ -19,36 +19,36 @@ import (
 type ValueKind string
 
 const (
-	valueKindNone           ValueKind = "none"
-	valueKindEllipsis       ValueKind = "ellipsis"
-	valueKindBool           ValueKind = "bool"
-	valueKindInt            ValueKind = "int"
-	valueKindBigInt         ValueKind = "big_int"
-	valueKindFloat          ValueKind = "float"
-	valueKindString         ValueKind = "string"
-	valueKindBytes          ValueKind = "bytes"
-	valueKindList           ValueKind = "list"
-	valueKindTuple          ValueKind = "tuple"
-	valueKindNamedTuple     ValueKind = "named_tuple"
-	valueKindDict           ValueKind = "dict"
-	valueKindSet            ValueKind = "set"
-	valueKindFrozenSet      ValueKind = "frozen_set"
-	valueKindException      ValueKind = "exception"
-	valueKindPath           ValueKind = "path"
-	valueKindDecimal        ValueKind = "decimal"
-	valueKindFunction       ValueKind = "function"
-	valueKindRepr           ValueKind = "repr"
-	valueKindCycle          ValueKind = "cycle"
-	valueKindDate           ValueKind = "date"
-	valueKindDateTime       ValueKind = "datetime"
-	valueKindTimeDelta      ValueKind = "timedelta"
-	valueKindTimeZone       ValueKind = "timezone"
-	valueKindNotImplemented ValueKind = "not_implemented"
-	valueKindTime           ValueKind = "time"
-	valueKindClassInstance  ValueKind = "class_instance"
-	valueKindFileHandle     ValueKind = "file_handle"
-	valueKindComplex        ValueKind = "complex"
-	valueKindModule         ValueKind = "module"
+	ValueKindNone           ValueKind = "none"
+	ValueKindEllipsis       ValueKind = "ellipsis"
+	ValueKindBool           ValueKind = "bool"
+	ValueKindInt            ValueKind = "int"
+	ValueKindBigInt         ValueKind = "big_int"
+	ValueKindFloat          ValueKind = "float"
+	ValueKindString         ValueKind = "string"
+	ValueKindBytes          ValueKind = "bytes"
+	ValueKindList           ValueKind = "list"
+	ValueKindTuple          ValueKind = "tuple"
+	ValueKindNamedTuple     ValueKind = "named_tuple"
+	ValueKindDict           ValueKind = "dict"
+	ValueKindSet            ValueKind = "set"
+	ValueKindFrozenSet      ValueKind = "frozen_set"
+	ValueKindException      ValueKind = "exception"
+	ValueKindPath           ValueKind = "path"
+	ValueKindDecimal        ValueKind = "decimal"
+	ValueKindFunction       ValueKind = "function"
+	ValueKindRepr           ValueKind = "repr"
+	ValueKindCycle          ValueKind = "cycle"
+	ValueKindDate           ValueKind = "date"
+	ValueKindDateTime       ValueKind = "datetime"
+	ValueKindTimeDelta      ValueKind = "timedelta"
+	ValueKindTimeZone       ValueKind = "timezone"
+	ValueKindNotImplemented ValueKind = "not_implemented"
+	ValueKindTime           ValueKind = "time"
+	ValueKindClassInstance  ValueKind = "class_instance"
+	ValueKindFileHandle     ValueKind = "file_handle"
+	ValueKindComplex        ValueKind = "complex"
+	ValueKindModule         ValueKind = "module"
 )
 
 // Value is the public tagged union used by the Go bindings.
@@ -486,98 +486,98 @@ func None() Value {
 
 // Ellipsis returns the Python Ellipsis value.
 func Ellipsis() Value {
-	return Value{kind: valueKindEllipsis}
+	return Value{kind: ValueKindEllipsis}
 }
 
 // NotImplemented returns the Python NotImplemented value.
 func NotImplemented() Value {
-	return Value{kind: valueKindNotImplemented}
+	return Value{kind: ValueKindNotImplemented}
 }
 
 // Bool returns a bool value.
 func Bool(value bool) Value {
-	return Value{kind: valueKindBool, data: value}
+	return Value{kind: ValueKindBool, data: value}
 }
 
 // Int returns a signed integer value.
 func Int(value int64) Value {
-	return Value{kind: valueKindInt, data: value}
+	return Value{kind: ValueKindInt, data: value}
 }
 
 // BigInt returns an arbitrary-precision integer value.
 func BigInt(value *big.Int) Value {
 	if value == nil {
-		return Value{kind: valueKindBigInt, data: big.NewInt(0)}
+		return Value{kind: ValueKindBigInt, data: big.NewInt(0)}
 	}
-	return Value{kind: valueKindBigInt, data: new(big.Int).Set(value)}
+	return Value{kind: ValueKindBigInt, data: new(big.Int).Set(value)}
 }
 
 // Float returns a float value.
 func Float(value float64) Value {
-	return Value{kind: valueKindFloat, data: value}
+	return Value{kind: ValueKindFloat, data: value}
 }
 
 // Complex returns a complex value. A zero or NaN part keeps its sign and
 // payload across the boundary, including -0.0.
 func Complex(value complex128) Value {
-	return Value{kind: valueKindComplex, data: value}
+	return Value{kind: ValueKindComplex, data: value}
 }
 
 // String returns a string value.
 func String(value string) Value {
-	return Value{kind: valueKindString, data: value}
+	return Value{kind: ValueKindString, data: value}
 }
 
 // Bytes returns a bytes value.
 func Bytes(value []byte) Value {
-	return Value{kind: valueKindBytes, data: slices.Clone(value)}
+	return Value{kind: ValueKindBytes, data: slices.Clone(value)}
 }
 
 // List returns a list value.
 func List(items ...Value) Value {
-	return Value{kind: valueKindList, data: slices.Clone(items)}
+	return Value{kind: ValueKindList, data: slices.Clone(items)}
 }
 
 // TupleValue returns a tuple value.
 func TupleValue(items ...Value) Value {
-	return Value{kind: valueKindTuple, data: Tuple(slices.Clone(items))}
+	return Value{kind: ValueKindTuple, data: Tuple(slices.Clone(items))}
 }
 
 // NamedTupleValue returns a named-tuple value.
 func NamedTupleValue(value NamedTuple) Value {
 	value.FieldNames = slices.Clone(value.FieldNames)
 	value.Values = slices.Clone(value.Values)
-	return Value{kind: valueKindNamedTuple, data: value}
+	return Value{kind: ValueKindNamedTuple, data: value}
 }
 
 // DictValue returns a dict value.
 func DictValue(items Dict) Value {
-	return Value{kind: valueKindDict, data: slices.Clone(items)}
+	return Value{kind: ValueKindDict, data: slices.Clone(items)}
 }
 
 // SetValue returns a set value.
 func SetValue(items Set) Value {
-	return Value{kind: valueKindSet, data: slices.Clone(items)}
+	return Value{kind: ValueKindSet, data: slices.Clone(items)}
 }
 
 // FrozenSetValue returns a frozenset value.
 func FrozenSetValue(items FrozenSet) Value {
-	return Value{kind: valueKindFrozenSet, data: slices.Clone(items)}
+	return Value{kind: ValueKindFrozenSet, data: slices.Clone(items)}
 }
 
 // ExceptionValue returns an exception value.
 func ExceptionValue(exception Exception) Value {
-	return Value{kind: valueKindException, data: exception}
+	return Value{kind: ValueKindException, data: exception}
 }
 
 // DecimalValue returns a decimal.Decimal value from its string form.
 func DecimalValue(d Decimal) Value {
-	return Value{kind: valueKindDecimal, data: d}
+	return Value{kind: ValueKindDecimal, data: d}
 }
 
 // PathValue returns a path value.
 func PathValue(path Path) Value {
-	return Value{kind: valueKindPath, data: path}
+	return Value{kind: ValueKindPath, data: path}
 }
 
 // ClassInstanceValue returns a class-instance value. ClassType.ID and
@@ -591,7 +591,7 @@ func ClassInstanceValue(value ClassInstance) Value {
 	}
 	value.ClassType.Attrs = slices.Clone(value.ClassType.Attrs)
 	value.Attrs = slices.Clone(value.Attrs)
-	return Value{kind: valueKindClassInstance, data: value}
+	return Value{kind: ValueKindClassInstance, data: value}
 }
 
 // ModuleValue returns a host-module value. ID is generated via NewClassID if
@@ -601,58 +601,58 @@ func ModuleValue(value Module) Value {
 		value.ID = NewClassID()
 	}
 	value.Attrs = slices.Clone(value.Attrs)
-	return Value{kind: valueKindModule, data: value}
+	return Value{kind: ValueKindModule, data: value}
 }
 
 // FunctionValue returns an external-function value.
 func FunctionValue(function Function) Value {
-	return Value{kind: valueKindFunction, data: function}
+	return Value{kind: ValueKindFunction, data: function}
 }
 
 // ReprValue returns an output-only repr placeholder.
 func ReprValue(value string) Value {
-	return Value{kind: valueKindRepr, data: value}
+	return Value{kind: ValueKindRepr, data: value}
 }
 
 // CycleValue returns an output-only cycle placeholder.
 func CycleValue(value string) Value {
-	return Value{kind: valueKindCycle, data: value}
+	return Value{kind: ValueKindCycle, data: value}
 }
 
 // DateValue returns a date value.
 func DateValue(date Date) Value {
-	return Value{kind: valueKindDate, data: date}
+	return Value{kind: ValueKindDate, data: date}
 }
 
 // DateTimeValue returns a datetime value.
 func DateTimeValue(dt DateTime) Value {
-	return Value{kind: valueKindDateTime, data: dt}
+	return Value{kind: ValueKindDateTime, data: dt}
 }
 
 // TimeDeltaValue returns a timedelta value.
 func TimeDeltaValue(td TimeDelta) Value {
-	return Value{kind: valueKindTimeDelta, data: td}
+	return Value{kind: ValueKindTimeDelta, data: td}
 }
 
 // TimeZoneValue returns a timezone value.
 func TimeZoneValue(tz TimeZone) Value {
-	return Value{kind: valueKindTimeZone, data: tz}
+	return Value{kind: ValueKindTimeZone, data: tz}
 }
 
 // TimeValue returns a datetime.time value.
 func TimeValue(t Time) Value {
-	return Value{kind: valueKindTime, data: t}
+	return Value{kind: ValueKindTime, data: t}
 }
 
 // FileHandleValue returns an output-only open-file value.
 func FileHandleValue(handle FileHandle) Value {
-	return Value{kind: valueKindFileHandle, data: handle}
+	return Value{kind: ValueKindFileHandle, data: handle}
 }
 
 // Kind reports the value variant.
 func (v Value) Kind() ValueKind {
 	if v.kind == "" {
-		return valueKindNone
+		return ValueKindNone
 	}
 	return v.kind
 }
@@ -688,7 +688,7 @@ func (v Value) ClassInstance() (ClassInstance, bool) {
 
 // StatResult returns a stat-result payload when the value is a compatible named tuple.
 func (v Value) StatResult() (StatResult, bool) {
-	if v.Kind() != valueKindNamedTuple {
+	if v.Kind() != ValueKindNamedTuple {
 		return StatResult{}, false
 	}
 	namedTuple := v.data.(NamedTuple)
@@ -697,14 +697,14 @@ func (v Value) StatResult() (StatResult, bool) {
 	}
 	intValue := func(index int) (int64, bool) {
 		value := namedTuple.Values[index]
-		if value.Kind() != valueKindInt {
+		if value.Kind() != ValueKindInt {
 			return 0, false
 		}
 		return value.data.(int64), true
 	}
 	floatValue := func(index int) (float64, bool) {
 		value := namedTuple.Values[index]
-		if value.Kind() != valueKindFloat {
+		if value.Kind() != ValueKindFloat {
 			return 0, false
 		}
 		return value.data.(float64), true
@@ -877,7 +877,7 @@ func ValueOf(value any) (Value, error) {
 		}
 		return List(items...), nil
 	case Tuple:
-		return Value{kind: valueKindTuple, data: value}, nil
+		return Value{kind: ValueKindTuple, data: value}, nil
 	case NamedTuple:
 		return NamedTupleValue(value), nil
 	case Dict:
@@ -1026,66 +1026,66 @@ func (r Result) Waiter() Waiter {
 
 func (v Value) MarshalJSON() ([]byte, error) {
 	switch v.Kind() {
-	case valueKindNone:
+	case ValueKindNone:
 		return json.Marshal(struct {
 			Kind ValueKind `json:"kind"`
-		}{Kind: valueKindNone})
-	case valueKindEllipsis:
+		}{Kind: ValueKindNone})
+	case ValueKindEllipsis:
 		return json.Marshal(struct {
 			Kind ValueKind `json:"kind"`
-		}{Kind: valueKindEllipsis})
-	case valueKindNotImplemented:
+		}{Kind: ValueKindEllipsis})
+	case ValueKindNotImplemented:
 		return json.Marshal(struct {
 			Kind ValueKind `json:"kind"`
-		}{Kind: valueKindNotImplemented})
-	case valueKindBool:
+		}{Kind: ValueKindNotImplemented})
+	case ValueKindBool:
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
 			Value bool      `json:"value"`
-		}{Kind: valueKindBool, Value: v.data.(bool)})
-	case valueKindInt:
+		}{Kind: ValueKindBool, Value: v.data.(bool)})
+	case ValueKindInt:
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
 			Value int64     `json:"value"`
-		}{Kind: valueKindInt, Value: v.data.(int64)})
-	case valueKindBigInt:
+		}{Kind: ValueKindInt, Value: v.data.(int64)})
+	case ValueKindBigInt:
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
 			Value string    `json:"value"`
-		}{Kind: valueKindBigInt, Value: v.data.(*big.Int).String()})
-	case valueKindFloat:
+		}{Kind: ValueKindBigInt, Value: v.data.(*big.Int).String()})
+	case ValueKindFloat:
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
 			Value float64   `json:"value"`
-		}{Kind: valueKindFloat, Value: v.data.(float64)})
-	case valueKindComplex:
+		}{Kind: ValueKindFloat, Value: v.data.(float64)})
+	case ValueKindComplex:
 		c := v.data.(complex128)
 		return json.Marshal(struct {
 			Kind ValueKind `json:"kind"`
 			Real float64   `json:"real"`
 			Imag float64   `json:"imag"`
-		}{Kind: valueKindComplex, Real: real(c), Imag: imag(c)})
-	case valueKindString:
+		}{Kind: ValueKindComplex, Real: real(c), Imag: imag(c)})
+	case ValueKindString:
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
 			Value string    `json:"value"`
-		}{Kind: valueKindString, Value: v.data.(string)})
-	case valueKindBytes:
+		}{Kind: ValueKindString, Value: v.data.(string)})
+	case ValueKindBytes:
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
 			Value []byte    `json:"value"`
-		}{Kind: valueKindBytes, Value: v.data.([]byte)})
-	case valueKindList:
+		}{Kind: ValueKindBytes, Value: v.data.([]byte)})
+	case ValueKindList:
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
 			Items []Value   `json:"items"`
-		}{Kind: valueKindList, Items: v.data.([]Value)})
-	case valueKindTuple:
+		}{Kind: ValueKindList, Items: v.data.([]Value)})
+	case ValueKindTuple:
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
 			Items Tuple     `json:"items"`
-		}{Kind: valueKindTuple, Items: v.data.(Tuple)})
-	case valueKindNamedTuple:
+		}{Kind: ValueKindTuple, Items: v.data.(Tuple)})
+	case ValueKindNamedTuple:
 		payload := v.data.(NamedTuple)
 		return json.Marshal(struct {
 			Kind       ValueKind `json:"kind"`
@@ -1093,48 +1093,48 @@ func (v Value) MarshalJSON() ([]byte, error) {
 			FieldNames []string  `json:"field_names"`
 			Values     []Value   `json:"values"`
 		}{
-			Kind:       valueKindNamedTuple,
+			Kind:       ValueKindNamedTuple,
 			TypeName:   payload.TypeName,
 			FieldNames: payload.FieldNames,
 			Values:     payload.Values,
 		})
-	case valueKindDict:
+	case ValueKindDict:
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
 			Items Dict      `json:"items"`
-		}{Kind: valueKindDict, Items: v.data.(Dict)})
-	case valueKindSet:
+		}{Kind: ValueKindDict, Items: v.data.(Dict)})
+	case ValueKindSet:
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
 			Items Set       `json:"items"`
-		}{Kind: valueKindSet, Items: v.data.(Set)})
-	case valueKindFrozenSet:
+		}{Kind: ValueKindSet, Items: v.data.(Set)})
+	case ValueKindFrozenSet:
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
 			Items FrozenSet `json:"items"`
-		}{Kind: valueKindFrozenSet, Items: v.data.(FrozenSet)})
-	case valueKindException:
+		}{Kind: ValueKindFrozenSet, Items: v.data.(FrozenSet)})
+	case ValueKindException:
 		payload := v.data.(Exception)
 		return json.Marshal(struct {
 			Kind ValueKind `json:"kind"`
 			Type string    `json:"exc_type"`
 			Arg  *string   `json:"arg,omitempty"`
 		}{
-			Kind: valueKindException,
+			Kind: ValueKindException,
 			Type: payload.Type,
 			Arg:  payload.Arg,
 		})
-	case valueKindDecimal:
+	case ValueKindDecimal:
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
 			Value string    `json:"value"`
-		}{Kind: valueKindDecimal, Value: string(v.data.(Decimal))})
-	case valueKindPath:
+		}{Kind: ValueKindDecimal, Value: string(v.data.(Decimal))})
+	case ValueKindPath:
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
 			Value string    `json:"value"`
-		}{Kind: valueKindPath, Value: string(v.data.(Path))})
-	case valueKindClassInstance:
+		}{Kind: ValueKindPath, Value: string(v.data.(Path))})
+	case ValueKindClassInstance:
 		payload := v.data.(ClassInstance)
 		return json.Marshal(struct {
 			Kind       ValueKind `json:"kind"`
@@ -1142,12 +1142,12 @@ func (v Value) MarshalJSON() ([]byte, error) {
 			InstanceID string    `json:"instance_id"`
 			Attrs      Dict      `json:"attrs"`
 		}{
-			Kind:       valueKindClassInstance,
+			Kind:       ValueKindClassInstance,
 			ClassType:  payload.ClassType,
 			InstanceID: payload.InstanceID,
 			Attrs:      payload.Attrs,
 		})
-	case valueKindModule:
+	case ValueKindModule:
 		payload := v.data.(Module)
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
@@ -1155,12 +1155,12 @@ func (v Value) MarshalJSON() ([]byte, error) {
 			ID    string    `json:"id"`
 			Attrs Dict      `json:"attrs"`
 		}{
-			Kind:  valueKindModule,
+			Kind:  ValueKindModule,
 			Name:  payload.Name,
 			ID:    payload.ID,
 			Attrs: payload.Attrs,
 		})
-	case valueKindFileHandle:
+	case ValueKindFileHandle:
 		payload := v.data.(FileHandle)
 		return json.Marshal(struct {
 			Kind     ValueKind `json:"kind"`
@@ -1168,41 +1168,41 @@ func (v Value) MarshalJSON() ([]byte, error) {
 			Mode     string    `json:"mode"`
 			Position uint64    `json:"position"`
 		}{
-			Kind:     valueKindFileHandle,
+			Kind:     ValueKindFileHandle,
 			Path:     payload.Path,
 			Mode:     payload.Mode,
 			Position: payload.Position,
 		})
-	case valueKindFunction:
+	case ValueKindFunction:
 		payload := v.data.(Function)
 		return json.Marshal(struct {
 			Kind      ValueKind `json:"kind"`
 			Name      string    `json:"name"`
 			Docstring *string   `json:"docstring,omitempty"`
 		}{
-			Kind:      valueKindFunction,
+			Kind:      ValueKindFunction,
 			Name:      payload.Name,
 			Docstring: payload.Docstring,
 		})
-	case valueKindRepr:
+	case ValueKindRepr:
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
 			Value string    `json:"value"`
-		}{Kind: valueKindRepr, Value: v.data.(string)})
-	case valueKindCycle:
+		}{Kind: ValueKindRepr, Value: v.data.(string)})
+	case ValueKindCycle:
 		return json.Marshal(struct {
 			Kind        ValueKind `json:"kind"`
 			Placeholder string    `json:"placeholder"`
-		}{Kind: valueKindCycle, Placeholder: v.data.(string)})
-	case valueKindDate:
+		}{Kind: ValueKindCycle, Placeholder: v.data.(string)})
+	case ValueKindDate:
 		payload := v.data.(Date)
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
 			Year  int32     `json:"year"`
 			Month uint8     `json:"month"`
 			Day   uint8     `json:"day"`
-		}{Kind: valueKindDate, Year: payload.Year, Month: payload.Month, Day: payload.Day})
-	case valueKindDateTime:
+		}{Kind: ValueKindDate, Year: payload.Year, Month: payload.Month, Day: payload.Day})
+	case ValueKindDateTime:
 		payload := v.data.(DateTime)
 		return json.Marshal(struct {
 			Kind          ValueKind `json:"kind"`
@@ -1216,27 +1216,27 @@ func (v Value) MarshalJSON() ([]byte, error) {
 			OffsetSeconds *int32    `json:"offset_seconds,omitempty"`
 			TimezoneName  *string   `json:"timezone_name,omitempty"`
 		}{
-			Kind: valueKindDateTime, Year: payload.Year, Month: payload.Month,
+			Kind: ValueKindDateTime, Year: payload.Year, Month: payload.Month,
 			Day: payload.Day, Hour: payload.Hour, Minute: payload.Minute,
 			Second: payload.Second, Microsecond: payload.Microsecond,
 			OffsetSeconds: payload.OffsetSeconds, TimezoneName: payload.TimezoneName,
 		})
-	case valueKindTimeDelta:
+	case ValueKindTimeDelta:
 		payload := v.data.(TimeDelta)
 		return json.Marshal(struct {
 			Kind         ValueKind `json:"kind"`
 			Days         int32     `json:"days"`
 			Seconds      int32     `json:"seconds"`
 			Microseconds int32     `json:"microseconds"`
-		}{Kind: valueKindTimeDelta, Days: payload.Days, Seconds: payload.Seconds, Microseconds: payload.Microseconds})
-	case valueKindTimeZone:
+		}{Kind: ValueKindTimeDelta, Days: payload.Days, Seconds: payload.Seconds, Microseconds: payload.Microseconds})
+	case ValueKindTimeZone:
 		payload := v.data.(TimeZone)
 		return json.Marshal(struct {
 			Kind          ValueKind `json:"kind"`
 			OffsetSeconds int32     `json:"offset_seconds"`
 			Name          *string   `json:"name,omitempty"`
-		}{Kind: valueKindTimeZone, OffsetSeconds: payload.OffsetSeconds, Name: payload.Name})
-	case valueKindTime:
+		}{Kind: ValueKindTimeZone, OffsetSeconds: payload.OffsetSeconds, Name: payload.Name})
+	case ValueKindTime:
 		payload := v.data.(Time)
 		return json.Marshal(struct {
 			Kind          ValueKind `json:"kind"`
@@ -1248,7 +1248,7 @@ func (v Value) MarshalJSON() ([]byte, error) {
 			TimezoneName  *string   `json:"timezone_name,omitempty"`
 			Fold          uint8     `json:"fold"`
 		}{
-			Kind: valueKindTime, Hour: payload.Hour, Minute: payload.Minute, Second: payload.Second,
+			Kind: ValueKindTime, Hour: payload.Hour, Minute: payload.Minute, Second: payload.Second,
 			Microsecond: payload.Microsecond, OffsetSeconds: payload.OffsetSeconds,
 			TimezoneName: payload.TimezoneName, Fold: payload.Fold,
 		})
@@ -1267,13 +1267,13 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 	}
 
 	switch envelope.Kind {
-	case valueKindNone:
+	case ValueKindNone:
 		*v = None()
-	case valueKindEllipsis:
+	case ValueKindEllipsis:
 		*v = Ellipsis()
-	case valueKindNotImplemented:
+	case ValueKindNotImplemented:
 		*v = NotImplemented()
-	case valueKindBool:
+	case ValueKindBool:
 		var payload struct {
 			Value bool `json:"value"`
 		}
@@ -1281,7 +1281,7 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = Bool(payload.Value)
-	case valueKindInt:
+	case ValueKindInt:
 		var payload struct {
 			Value int64 `json:"value"`
 		}
@@ -1289,7 +1289,7 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = Int(payload.Value)
-	case valueKindBigInt:
+	case ValueKindBigInt:
 		var payload struct {
 			Value string `json:"value"`
 		}
@@ -1301,7 +1301,7 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("invalid bigint %q", payload.Value)
 		}
 		*v = BigInt(bigValue)
-	case valueKindFloat:
+	case ValueKindFloat:
 		var payload struct {
 			Value float64 `json:"value"`
 		}
@@ -1309,7 +1309,7 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = Float(payload.Value)
-	case valueKindComplex:
+	case ValueKindComplex:
 		var payload struct {
 			Real float64 `json:"real"`
 			Imag float64 `json:"imag"`
@@ -1318,7 +1318,7 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = Complex(complex(payload.Real, payload.Imag))
-	case valueKindString:
+	case ValueKindString:
 		var payload struct {
 			Value string `json:"value"`
 		}
@@ -1326,7 +1326,7 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = String(payload.Value)
-	case valueKindBytes:
+	case ValueKindBytes:
 		var payload struct {
 			Value []byte `json:"value"`
 		}
@@ -1334,7 +1334,7 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = Bytes(payload.Value)
-	case valueKindList:
+	case ValueKindList:
 		var payload struct {
 			Items []Value `json:"items"`
 		}
@@ -1342,21 +1342,21 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = List(payload.Items...)
-	case valueKindTuple:
+	case ValueKindTuple:
 		var payload struct {
 			Items Tuple `json:"items"`
 		}
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
 		}
-		*v = Value{kind: valueKindTuple, data: payload.Items}
-	case valueKindNamedTuple:
+		*v = Value{kind: ValueKindTuple, data: payload.Items}
+	case ValueKindNamedTuple:
 		var payload NamedTuple
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
 		}
 		*v = NamedTupleValue(payload)
-	case valueKindDict:
+	case ValueKindDict:
 		var payload struct {
 			Items Dict `json:"items"`
 		}
@@ -1364,7 +1364,7 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = DictValue(payload.Items)
-	case valueKindSet:
+	case ValueKindSet:
 		var payload struct {
 			Items Set `json:"items"`
 		}
@@ -1372,7 +1372,7 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = SetValue(payload.Items)
-	case valueKindFrozenSet:
+	case ValueKindFrozenSet:
 		var payload struct {
 			Items FrozenSet `json:"items"`
 		}
@@ -1380,7 +1380,7 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = FrozenSetValue(payload.Items)
-	case valueKindException:
+	case ValueKindException:
 		var payload struct {
 			Type string  `json:"exc_type"`
 			Arg  *string `json:"arg"`
@@ -1389,7 +1389,7 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = ExceptionValue(Exception{Type: payload.Type, Arg: payload.Arg})
-	case valueKindDecimal:
+	case ValueKindDecimal:
 		var payload struct {
 			Value string `json:"value"`
 		}
@@ -1397,7 +1397,7 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = DecimalValue(Decimal(payload.Value))
-	case valueKindPath:
+	case ValueKindPath:
 		var payload struct {
 			Value string `json:"value"`
 		}
@@ -1405,31 +1405,31 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = PathValue(Path(payload.Value))
-	case valueKindClassInstance:
+	case ValueKindClassInstance:
 		var payload ClassInstance
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
 		}
 		*v = ClassInstanceValue(payload)
-	case valueKindModule:
+	case ValueKindModule:
 		var payload Module
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
 		}
 		*v = ModuleValue(payload)
-	case valueKindFileHandle:
+	case ValueKindFileHandle:
 		var payload FileHandle
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
 		}
 		*v = FileHandleValue(payload)
-	case valueKindFunction:
+	case ValueKindFunction:
 		var payload Function
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
 		}
 		*v = FunctionValue(payload)
-	case valueKindRepr:
+	case ValueKindRepr:
 		var payload struct {
 			Value string `json:"value"`
 		}
@@ -1437,7 +1437,7 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = ReprValue(payload.Value)
-	case valueKindCycle:
+	case ValueKindCycle:
 		var payload struct {
 			Placeholder string `json:"placeholder"`
 		}
@@ -1445,31 +1445,31 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = CycleValue(payload.Placeholder)
-	case valueKindDate:
+	case ValueKindDate:
 		var payload Date
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
 		}
 		*v = DateValue(payload)
-	case valueKindDateTime:
+	case ValueKindDateTime:
 		var payload DateTime
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
 		}
 		*v = DateTimeValue(payload)
-	case valueKindTimeDelta:
+	case ValueKindTimeDelta:
 		var payload TimeDelta
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
 		}
 		*v = TimeDeltaValue(payload)
-	case valueKindTimeZone:
+	case ValueKindTimeZone:
 		var payload TimeZone
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
 		}
 		*v = TimeZoneValue(payload)
-	case valueKindTime:
+	case ValueKindTime:
 		var payload Time
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
@@ -1483,34 +1483,34 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 
 func (v Value) String() string {
 	switch v.Kind() {
-	case valueKindNone:
+	case ValueKindNone:
 		return "None"
-	case valueKindEllipsis:
+	case ValueKindEllipsis:
 		return "Ellipsis"
-	case valueKindNotImplemented:
+	case ValueKindNotImplemented:
 		return "NotImplemented"
-	case valueKindBool, valueKindInt, valueKindFloat, valueKindString:
+	case ValueKindBool, ValueKindInt, ValueKindFloat, ValueKindString:
 		return fmt.Sprintf("%v", v.data)
-	case valueKindBigInt:
+	case ValueKindBigInt:
 		return v.data.(*big.Int).String()
-	case valueKindComplex:
+	case ValueKindComplex:
 		return complexString(v.data.(complex128))
-	case valueKindModule:
+	case ValueKindModule:
 		return fmt.Sprintf("<module %q>", v.data.(Module).Name)
-	case valueKindBytes:
+	case ValueKindBytes:
 		return fmt.Sprintf("%q", v.data.([]byte))
-	case valueKindDecimal:
+	case ValueKindDecimal:
 		return string(v.data.(Decimal))
-	case valueKindPath:
+	case ValueKindPath:
 		return string(v.data.(Path))
-	case valueKindException:
+	case ValueKindException:
 		return v.data.(Exception).Error()
-	case valueKindFunction:
+	case ValueKindFunction:
 		return v.data.(Function).Name
-	case valueKindDate:
+	case ValueKindDate:
 		d := v.data.(Date)
 		return fmt.Sprintf("%04d-%02d-%02d", d.Year, d.Month, d.Day)
-	case valueKindDateTime:
+	case ValueKindDateTime:
 		dt := v.data.(DateTime)
 		base := fmt.Sprintf("%04d-%02d-%02d %02d:%02d:%02d", dt.Year, dt.Month, dt.Day, dt.Hour, dt.Minute, dt.Second)
 		if dt.Microsecond != 0 {
@@ -1526,10 +1526,10 @@ func (v Value) String() string {
 			base += fmt.Sprintf("%s%02d:%02d", sign, offset/3600, (offset%3600)/60)
 		}
 		return base
-	case valueKindTimeDelta:
+	case ValueKindTimeDelta:
 		td := v.data.(TimeDelta)
 		return fmt.Sprintf("timedelta(days=%d, seconds=%d, microseconds=%d)", td.Days, td.Seconds, td.Microseconds)
-	case valueKindTimeZone:
+	case ValueKindTimeZone:
 		tz := v.data.(TimeZone)
 		if tz.Name != nil {
 			return *tz.Name
@@ -1541,7 +1541,7 @@ func (v Value) String() string {
 			offset = -offset
 		}
 		return fmt.Sprintf("UTC%s%02d:%02d", sign, offset/3600, (offset%3600)/60)
-	case valueKindTime:
+	case ValueKindTime:
 		t := v.data.(Time)
 		base := fmt.Sprintf("%02d:%02d:%02d", t.Hour, t.Minute, t.Second)
 		if t.Microsecond != 0 {
@@ -1557,22 +1557,22 @@ func (v Value) String() string {
 			base += fmt.Sprintf("%s%02d:%02d", sign, offset/3600, (offset%3600)/60)
 		}
 		return base
-	case valueKindClassInstance:
+	case ValueKindClassInstance:
 		return v.data.(ClassInstance).ClassType.Name
-	case valueKindFileHandle:
+	case ValueKindFileHandle:
 		handle := v.data.(FileHandle)
 		return fmt.Sprintf("<file name=%q mode=%q>", handle.Path, handle.Mode)
-	case valueKindRepr, valueKindCycle:
+	case ValueKindRepr, ValueKindCycle:
 		return v.data.(string)
-	case valueKindList:
+	case ValueKindList:
 		return reprJoin("[", "]", v.data.([]Value))
-	case valueKindTuple:
+	case ValueKindTuple:
 		items := []Value(v.data.(Tuple))
 		if len(items) == 1 {
 			return "(" + reprElement(items[0]) + ",)"
 		}
 		return reprJoin("(", ")", items)
-	case valueKindNamedTuple:
+	case ValueKindNamedTuple:
 		nt := v.data.(NamedTuple)
 		parts := make([]string, len(nt.Values))
 		for i, fv := range nt.Values {
@@ -1583,20 +1583,20 @@ func (v Value) String() string {
 			parts[i] = fmt.Sprintf("%s=%s", name, reprElement(fv))
 		}
 		return fmt.Sprintf("%s(%s)", nt.TypeName, strings.Join(parts, ", "))
-	case valueKindDict:
+	case ValueKindDict:
 		pairs := v.data.(Dict)
 		parts := make([]string, len(pairs))
 		for i, p := range pairs {
 			parts[i] = fmt.Sprintf("%s: %s", reprElement(p.Key), reprElement(p.Value))
 		}
 		return "{" + strings.Join(parts, ", ") + "}"
-	case valueKindSet:
+	case ValueKindSet:
 		items := []Value(v.data.(Set))
 		if len(items) == 0 {
 			return "set()"
 		}
 		return reprJoin("{", "}", items)
-	case valueKindFrozenSet:
+	case ValueKindFrozenSet:
 		items := []Value(v.data.(FrozenSet))
 		if len(items) == 0 {
 			return "frozenset()"
@@ -1614,7 +1614,7 @@ func (v Value) String() string {
 // "[a]"), everything else defers to String(), which already recurses
 // correctly for nested containers.
 func reprElement(v Value) string {
-	if v.Kind() == valueKindString {
+	if v.Kind() == ValueKindString {
 		return quotePythonString(v.data.(string))
 	}
 	return v.String()

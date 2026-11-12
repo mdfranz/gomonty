@@ -166,6 +166,13 @@ Common constructors:
 
 You can also convert ordinary Go values with `monty.ValueOf(...)` or `monty.MustValueOf(...)`.
 
+Switch on `value.Kind()` using the exported `monty.ValueKind*` constants (for example `monty.ValueKindList`), or call `value.IsNone()` for the common None check.
+
+Two JSON forms are available:
+
+- `json.Marshal(value)` is lossless: every value is wrapped as `{"kind": ..., "value": ...}`.
+- `value.Native()` returns plain Go values (`[]any`, `map[string]any`, scalars) that marshal to ordinary JSON. It is lossy: dict order is lost, non-string keys become strings, and kinds with no JSON equivalent (dates, exceptions, paths, ...) become their `String()` text. See the `Native` doc comment for the full mapping.
+
 Host callbacks return `monty.Result`:
 
 - `monty.Return(value)` for success
