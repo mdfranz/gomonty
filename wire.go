@@ -149,20 +149,6 @@ type wireFeedOptions struct {
 	Inputs  map[string]wireValue `msgpack:"inputs,omitempty"`
 }
 
-type callResultPayload struct {
-	Kind  string
-	Value Value
-	Type  string
-	Arg   *string
-
-	Module ModuleFile
-}
-
-type lookupResultPayload struct {
-	Kind  string
-	Value Value
-}
-
 type wireCallResult struct {
 	Kind  uint8      `msgpack:"kind"`
 	Value *wireValue `msgpack:"value,omitempty"`
@@ -279,38 +265,6 @@ func newWireCallResult(result Result) (wireCallResult, error) {
 	}
 }
 
-func (payload callResultPayload) toWire() (wireCallResult, error) {
-	switch payload.Kind {
-	case "return":
-		wireValue, err := wireValueFromPublic(payload.Value)
-		if err != nil {
-			return wireCallResult{}, err
-		}
-		return wireCallResult{
-			Kind:  wireCallResultReturn,
-			Value: &wireValue,
-		}, nil
-	case "exception":
-		return wireCallResult{
-			Kind: wireCallResultException,
-			Type: payload.Type,
-			Arg:  payload.Arg,
-		}, nil
-	case "pending":
-		return wireCallResult{Kind: wireCallResultPending}, nil
-	case "not_found":
-		return wireCallResult{Kind: wireCallResultNotFound}, nil
-	case "module_file":
-		return wireCallResult{
-			Kind:         wireCallResultModuleFile,
-			ModulePath:   payload.Module.Path,
-			ModuleSource: payload.Module.Source,
-		}, nil
-	default:
-		return wireCallResult{}, fmt.Errorf("unknown call result kind %q", payload.Kind)
-	}
-}
-
 func newWireLookupResult(value Value) (wireLookupResult, error) {
 	wireValue, err := wireValueFromPublic(value)
 	if err != nil {
@@ -320,17 +274,6 @@ func newWireLookupResult(value Value) (wireLookupResult, error) {
 		Kind:  wireLookupResultValue,
 		Value: &wireValue,
 	}, nil
-}
-
-func (payload lookupResultPayload) toWire() (wireLookupResult, error) {
-	switch payload.Kind {
-	case "value":
-		return newWireLookupResult(payload.Value)
-	case "undefined":
-		return wireLookupResult{Kind: wireLookupResultUndefined}, nil
-	default:
-		return wireLookupResult{}, fmt.Errorf("unknown lookup result kind %q", payload.Kind)
-	}
 }
 
 func newWireFutureResults(results map[uint32]Result) (wireFutureResults, error) {
