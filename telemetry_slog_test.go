@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	monty "github.com/mdfranz/gomonty"
 )
@@ -240,6 +241,36 @@ func TestSlogHandlerPrintCaptureOptions(t *testing.T) {
 				}
 			} else if len(prints) != 1 || prints[0] != tc.want {
 				t.Errorf("print records = %q, want [%q]", prints, tc.want)
+			}
+		})
+	}
+}
+
+func TestSlogHandlerTimingPrecision(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		unit   monty.DurationUnit
+		suffix string
+		want   [4]float64
+	}{
+		{name: "default milliseconds", suffix: "_ms", want: [4]float64{0.448, 0.3, 0.1, 0.048}},
+		{name: "microseconds", unit: monty.DurationMicroseconds, suffix: "_us", want: [4]float64{448, 300, 100, 48}},
+		{name: "nanoseconds", unit: monty.DurationNanoseconds, suffix: "_ns", want: [4]float64{448000, 300000, 100000, 48000}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			handler := monty.SlogHandler{Logger: slog.New(slog.NewJSONHandler(&buf, nil)), DurationUnit: tc.unit}
+			_, span := handler.StartExecution(context.Background(), monty.ExecutionInfo{})
+			buf.Reset()
+			span.End(monty.None(), nil, monty.ExecutionTiming{Total: 448 * time.Microsecond, Callback: 100 * time.Microsecond, Wait: 48 * time.Microsecond}, monty.TruncatedPayload{})
+			var record map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &record); err != nil {
+				t.Fatal(err)
+			}
+			for i, key := range []string{"duration", "python_duration", "callback_duration", "wait_duration"} {
+				if got := record[key+tc.suffix]; got != tc.want[i] {
+					t.Errorf("%s = %v, want %v", key+tc.suffix, got, tc.want[i])
+				}
 			}
 		})
 	}

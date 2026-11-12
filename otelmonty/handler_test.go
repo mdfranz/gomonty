@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	monty "github.com/mdfranz/gomonty"
 	"github.com/mdfranz/gomonty/otelmonty"
+	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -432,6 +434,43 @@ func TestHandlerPrintCaptureOptions(t *testing.T) {
 				}
 			}
 			t.Fatal("missing monty.text attribute")
+		})
+	}
+}
+
+func TestHandlerTimingPreservesFractionalMilliseconds(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		timing monty.ExecutionTiming
+		want   [3]float64
+	}{
+		{name: "zero"},
+		{name: "submillisecond", timing: monty.ExecutionTiming{Total: 448 * time.Microsecond, Callback: 100 * time.Microsecond, Wait: 48 * time.Microsecond}, want: [3]float64{0.1, 0.048, 0.3}},
+		{name: "fractional", timing: monty.ExecutionTiming{Total: 4480 * time.Microsecond, Callback: 1100 * time.Microsecond, Wait: 1080 * time.Microsecond}, want: [3]float64{1.1, 1.08, 2.3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, recorder := newTestHandler()
+			_, span := handler.StartExecution(context.Background(), monty.ExecutionInfo{})
+			span.End(monty.None(), nil, tc.timing, monty.TruncatedPayload{})
+			root := findSpan(recorder.Ended(), "monty.run")
+			if root == nil {
+				t.Fatal("no monty.run span recorded")
+			}
+			for i, key := range []string{"monty.callback_duration_ms", "monty.wait_duration_ms", "monty.python_duration_ms"} {
+				found := false
+				for _, a := range root.Attributes() {
+					if string(a.Key) != key {
+						continue
+					}
+					found = true
+					if a.Value.Type() != attribute.FLOAT64 || a.Value.AsFloat64() != tc.want[i] {
+						t.Errorf("%s = %v (%v), want float64 %v", key, a.Value.Emit(), a.Value.Type(), tc.want[i])
+					}
+				}
+				if !found {
+					t.Errorf("missing %s", key)
+				}
+			}
 		})
 	}
 }

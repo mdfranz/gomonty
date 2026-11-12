@@ -10,6 +10,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/mdfranz/gomonty"
@@ -282,10 +283,10 @@ func Handler(fileSystem FileSystem, environment Environment) monty.OSHandler {
 		case monty.OSPathScan:
 			return scanTree(fileSystem, call), nil
 		case monty.OSImport:
-			// No host modules here; the sandbox treats this as an unknown module.
-			name, _ := stringArg(call.Args, 0)
-			message := "No module named '" + name + "'"
-			return monty.Raise(monty.Exception{Type: "ModuleNotFoundError", Arg: &message}), nil
+			return importFromFileSystem(fileSystem, call), nil
+		case monty.OSGetTypeHints:
+			// No host functions or classes are described here.
+			return monty.Return(monty.DictValue(nil)), nil
 		case monty.OSImportStubs:
 			return monty.Return(monty.DictValue(nil)), nil
 		default:
@@ -795,6 +796,9 @@ func mapError(err error) monty.Exception {
 	case errors.Is(err, stdfs.ErrExist):
 		message := err.Error()
 		return monty.Exception{Type: "FileExistsError", Arg: &message}
+	case errors.Is(err, stdfs.ErrPermission):
+		message := err.Error()
+		return monty.Exception{Type: "PermissionError", Arg: &message}
 	case errors.Is(err, syscall.EISDIR):
 		message := err.Error()
 		return monty.Exception{Type: "IsADirectoryError", Arg: &message}
@@ -883,4 +887,69 @@ func kwarg(kwargs monty.Dict, name string) (monty.Value, bool) {
 		}
 	}
 	return monty.Value{}, false
+}
+
+// maxSearchDirs mirrors upstream's cap on how many search directories one
+// import call may make the host read.
+const maxSearchDirs = 32
+
+// importFromFileSystem answers an OSImport call by searching the call's
+// search path for the module's .py file, per directory the package
+// name/__init__.py before the module name.py. A miss answers NotFound, which
+// the sandbox turns into the right ModuleNotFoundError or ImportError.
+func importFromFileSystem(fileSystem FileSystem, call monty.OSCall) monty.Result {
+	name, err := stringArg(call.Args, 0)
+	if err != nil {
+		return monty.Raise(mapError(err))
+	}
+	var dirs []monty.Value
+	if len(call.Args) > 1 {
+		dirs, _ = call.Args[1].Raw().([]monty.Value)
+	}
+	parts := strings.Split(name, ".")
+	for _, part := range parts {
+		if !isIdentifier(part) {
+			return monty.NotFound()
+		}
+	}
+	leaf := parts[len(parts)-1]
+
+	searched := 0
+	for _, dir := range dirs {
+		text, _ := dir.Raw().(string)
+		if !strings.HasPrefix(text, "/") || strings.ContainsRune(text, 0) {
+			continue
+		}
+		if searched++; searched > maxSearchDirs {
+			break
+		}
+		text = strings.TrimSuffix(text, "/")
+		for _, candidate := range []string{text + "/" + leaf + "/__init__.py", text + "/" + leaf + ".py"} {
+			isFile, err := fileSystem.IsFile(candidate)
+			if err != nil || !isFile {
+				continue
+			}
+			source, err := fileSystem.ReadText(candidate)
+			if err != nil {
+				return monty.Raise(mapError(err))
+			}
+			return monty.ImportFile(monty.ModuleFile{Path: candidate, Source: source})
+		}
+	}
+	return monty.NotFound()
+}
+
+// isIdentifier reports whether s is a plain ASCII-or-Unicode Python
+// identifier, which keeps sandbox-controlled names from building odd paths.
+func isIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if r == '_' || unicode.IsLetter(r) || (i > 0 && unicode.IsDigit(r)) {
+			continue
+		}
+		return false
+	}
+	return true
 }

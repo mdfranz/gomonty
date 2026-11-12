@@ -24,8 +24,8 @@ type SlogHandler struct {
 	// Logger receives every log record. Defaults to slog.Default() if nil.
 	Logger *slog.Logger
 	// DurationUnit selects the unit every duration_* attribute is rendered
-	// in. Defaults to DurationMilliseconds — DurationMicroseconds or
-	// DurationNanoseconds preserve shorter local calls.
+	// in. Defaults to DurationMilliseconds, which preserves fractional
+	// milliseconds.
 	DurationUnit DurationUnit
 }
 
@@ -42,8 +42,8 @@ func (h SlogHandler) logger() *slog.Logger {
 type DurationUnit int
 
 const (
-	// DurationMilliseconds renders durations as whole milliseconds, e.g.
-	// duration_ms=2. This is SlogHandler's default.
+	// DurationMilliseconds renders durations as fractional milliseconds, e.g.
+	// duration_ms=0.448. This is SlogHandler's default.
 	DurationMilliseconds DurationUnit = iota
 	// DurationNanoseconds renders durations as whole nanoseconds, e.g.
 	// duration_ns=2041846.
@@ -62,7 +62,7 @@ func appendDurationAttr(attrs []any, unit DurationUnit, key string, d time.Durat
 	case DurationMicroseconds:
 		return append(attrs, key+"_us", d.Microseconds())
 	default:
-		return append(attrs, key+"_ms", d.Milliseconds())
+		return append(attrs, key+"_ms", float64(d)/float64(time.Millisecond))
 	}
 }
 

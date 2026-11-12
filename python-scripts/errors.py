@@ -10,3 +10,5 @@ result = safe_divide(10, 2)
 assert result == 5, "10 / 2 should be 5"
 
 safe_divide(10, 0)
+
+assert safe_divide(10, 0) is None

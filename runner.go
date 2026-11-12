@@ -109,6 +109,10 @@ func New(code string, opts CompileOptions) (*Runner, error) {
 
 // LoadRunner restores a serialized runner.
 func LoadRunner(data []byte) (*Runner, error) {
+	data, err := stripDumpHeader(data)
+	if err != nil {
+		return nil, err
+	}
 	result := ffi.LoadRunner(data)
 	if result.Error != nil {
 		return nil, newError(result.Error)
@@ -120,6 +124,10 @@ func LoadRunner(data []byte) (*Runner, error) {
 
 // LoadSnapshot restores a serialized non-REPL or REPL snapshot without an owner REPL.
 func LoadSnapshot(data []byte) (Progress, error) {
+	data, err := stripDumpHeader(data)
+	if err != nil {
+		return nil, err
+	}
 	result := ffi.LoadProgress(data)
 	if result.Error != nil {
 		return nil, newError(result.Error)
@@ -130,6 +138,10 @@ func LoadSnapshot(data []byte) (Progress, error) {
 // LoadReplSnapshot restores a serialized REPL snapshot and also returns a base
 // REPL handle that can be used to abandon the in-flight snippet.
 func LoadReplSnapshot(data []byte) (Progress, *Repl, error) {
+	data, err := stripDumpHeader(data)
+	if err != nil {
+		return nil, nil, err
+	}
 	owner := &Repl{state: &replState{}}
 
 	primary := ffi.LoadProgress(data)
@@ -186,7 +198,7 @@ func (r *Runner) Dump() ([]byte, error) {
 	if ffiErr != nil {
 		return nil, newError(ffiErr)
 	}
-	return data, nil
+	return addDumpHeader(data), nil
 }
 
 // TypeCheck runs static type checking on the compiled runner.
@@ -279,7 +291,7 @@ func (r *Repl) Dump() ([]byte, error) {
 	if ffiErr != nil {
 		return nil, newError(ffiErr)
 	}
-	return data, nil
+	return addDumpHeader(data), nil
 }
 
 // FeedStart begins low-level REPL snippet execution.
@@ -470,7 +482,7 @@ func (b *progressBase) dump() ([]byte, error) {
 	if ffiErr != nil {
 		return nil, newError(ffiErr)
 	}
-	return bytes, nil
+	return addDumpHeader(bytes), nil
 }
 
 func (b *progressBase) resumeCall(ctx context.Context, payload []byte, print PrintCallback, pt printTelemetry) (Progress, error) {

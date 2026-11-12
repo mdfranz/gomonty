@@ -153,3 +153,11 @@ monty_type_checking = { path = "../monty/crates/monty-type-checking" }
 ```
 
 See [`RELEASING.md`](../RELEASING.md) for bumping the upstream pin and for the protected-branch release flow: `make release` opens the release-prep PR, then `make publish-release VERSION=vX.Y.Z` tags merged `main`, creates the GitHub release, and warms the Go module proxy.
+
+Run `make shmonty-examples` to build shmonty and execute every
+`python-scripts/*.py` example non-interactively. Each script asserts its key
+results; the target runs all scripts and reports the failure count at the end.
+CI unsets `OTEL_EXPORTER_OTLP_ENDPOINT`, so no collector is required.
+Script mode appends a telemetry block (timestamps and durations) and the
+trailing value to stdout. Check exit status and script assertions rather
+than comparing full stdout byte for byte.

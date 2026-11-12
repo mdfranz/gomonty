@@ -4,3 +4,6 @@
 timestamp = host_time()
 print("host time:", timestamp)
 timestamp
+
+assert isinstance(timestamp, str)
+assert len(timestamp) > 0
