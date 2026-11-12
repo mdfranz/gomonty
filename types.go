@@ -1015,6 +1015,21 @@ func (r Result) IsPending() bool {
 	return r.wirePending()
 }
 
+// IsNotFound reports whether the result says the host has no such name: for a
+// call, no such function; for an import, no such module.
+func (r Result) IsNotFound() bool {
+	return r.kind == resultKindNotFound
+}
+
+// ModuleFile returns the module source an import was answered with, and false
+// if this result is not one.
+func (r Result) ModuleFile() (ModuleFile, bool) {
+	if r.kind != resultKindModuleFile {
+		return ModuleFile{}, false
+	}
+	return r.module, true
+}
+
 func (r Result) waiterValue() Waiter {
 	return r.waiter
 }

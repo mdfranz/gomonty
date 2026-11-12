@@ -15,7 +15,7 @@ import (
 //
 // Supported kinds are None, Ellipsis, NotImplemented, bool, int (including
 // ints wider than 64 bits), float, complex, str, bytes, list, tuple, set,
-// frozenset, dict, Decimal, Path and simple exception values. A result the
+// frozenset, dict, Decimal, Path, host function and simple exception values. A result the
 // worker sends in any other form (dates, class instances, functions) is
 // reported as an error and not guessed at. Cycles and reprs, which the worker
 // only ever sends, decode to monty.CycleValue and monty.ReprValue.
@@ -114,6 +114,9 @@ func (b *arenaBuilder) encode(v monty.Value) (uint32, error) {
 		return b.add(&montyv1.MontyNode{Kind: &montyv1.MontyNode_Decimal{Decimal: string(v.Raw().(monty.Decimal))}}), nil
 	case "path":
 		return b.add(&montyv1.MontyNode{Kind: &montyv1.MontyNode_Path{Path: string(v.Raw().(monty.Path))}}), nil
+	case "function":
+		f := v.Raw().(monty.Function)
+		return b.add(&montyv1.MontyNode{Kind: &montyv1.MontyNode_Function{Function: &montyv1.Function{Name: f.Name, Docstring: f.Docstring}}}), nil
 	case "exception":
 		e := v.Raw().(monty.Exception)
 		return b.add(&montyv1.MontyNode{Kind: &montyv1.MontyNode_Exception{Exception: &montyv1.Exception{ExcType: e.Type, Arg: e.Arg}}}), nil
@@ -143,21 +146,35 @@ func encodeInputs(inputs map[string]monty.Value) ([]*montyv1.NamedRef, *montyv1.
 	return refs, b.arena(), nil
 }
 
-// decodeValue builds the value at index root of an arena.
-func decodeValue(arena *montyv1.Arena, root uint32) (monty.Value, error) {
+// decodeArena builds every value in an arena in one forward pass.
+func decodeArena(arena *montyv1.Arena) ([]monty.Value, error) {
 	nodes := arena.GetNodes()
-	if int(root) >= len(nodes) {
-		return monty.Value{}, fmt.Errorf("remote: result index %d is outside an arena of %d nodes", root, len(nodes))
-	}
 	values := make([]monty.Value, len(nodes))
 	for i, node := range nodes {
 		v, err := decodeNode(node, values[:i])
 		if err != nil {
-			return monty.Value{}, fmt.Errorf("remote: node %d: %w", i, err)
+			return nil, fmt.Errorf("remote: node %d: %w", i, err)
 		}
 		values[i] = v
 	}
-	return values[root], nil
+	return values, nil
+}
+
+// decodeValue builds the value at index root of an arena.
+func decodeValue(arena *montyv1.Arena, root uint32) (monty.Value, error) {
+	values, err := decodeArena(arena)
+	if err != nil {
+		return monty.Value{}, err
+	}
+	return pick(values, root)
+}
+
+// pick returns the value at idx of an already decoded arena.
+func pick(values []monty.Value, idx uint32) (monty.Value, error) {
+	if int(idx) >= len(values) {
+		return monty.Value{}, fmt.Errorf("remote: index %d is outside an arena of %d nodes", idx, len(values))
+	}
+	return values[idx], nil
 }
 
 // child returns the already-decoded node at idx. Post-order means a child is
@@ -252,6 +269,8 @@ func decodeNode(node *montyv1.MontyNode, done []monty.Value) (monty.Value, error
 		return monty.PathValue(monty.Path(k.Path)), nil
 	case *montyv1.MontyNode_Exception:
 		return monty.ExceptionValue(monty.Exception{Type: k.Exception.GetExcType(), Arg: k.Exception.Arg}), nil
+	case *montyv1.MontyNode_Function:
+		return monty.FunctionValue(monty.Function{Name: k.Function.GetName(), Docstring: k.Function.Docstring}), nil
 	case *montyv1.MontyNode_Repr:
 		return monty.ReprValue(k.Repr), nil
 	case *montyv1.MontyNode_Cycle:
