@@ -423,9 +423,9 @@ type CompileOptions struct {
 	TypeCheck      bool
 	TypeCheckStubs string
 
-	// backend selects what runs the interpreter; nil means the native
-	// library. It is unexported until a second backend decides the public shape.
-	backend backend
+	// Backend selects what runs the interpreter; nil means the native library.
+	// The Backend API is experimental; see Backend.
+	Backend Backend
 }
 
 // StartOptions configures low-level runner execution.
@@ -439,8 +439,9 @@ type ReplOptions struct {
 	ScriptName string
 	Limits     *ResourceLimits
 
-	// backend selects what runs the interpreter; nil means the native library.
-	backend backend
+	// Backend selects what runs the interpreter; nil means the native library.
+	// The Backend API is experimental; see Backend.
+	Backend Backend
 }
 
 // FeedStartOptions configures low-level REPL snippet execution.

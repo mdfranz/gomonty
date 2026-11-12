@@ -22,63 +22,63 @@ type fakeProgress struct {
 	complete bool
 }
 
-func (f *fakeBackend) newRunner(string, CompileOptions) (runnerHandle, error) {
+func (f *fakeBackend) NewRunner(string, CompileOptions) (RunnerHandle, error) {
 	return &fakeRunner{b: f}, nil
 }
-func (f *fakeBackend) loadRunner([]byte) (runnerHandle, error) { return &fakeRunner{b: f}, nil }
-func (f *fakeBackend) newRepl(ReplOptions) (replHandle, error) { return &fakeRepl{b: f}, nil }
-func (f *fakeBackend) loadProgress([]byte) step {
-	return step{err: errors.New("fake backend cannot load dumps")}
+func (f *fakeBackend) LoadRunner([]byte) (RunnerHandle, error) { return &fakeRunner{b: f}, nil }
+func (f *fakeBackend) NewRepl(ReplOptions) (ReplHandle, error) { return &fakeRepl{b: f}, nil }
+func (f *fakeBackend) LoadProgress([]byte) Step {
+	return Step{Err: errors.New("fake backend cannot load dumps")}
 }
 
 func (r *fakeRunner) Close()                        { r.b.closes.Add(1) }
 func (r *fakeRunner) Dump() ([]byte, error)         { return []byte("runner"), nil }
 func (r *fakeRunner) TypeCheck(prefix string) error { return nil }
-func (r *fakeRunner) Start(opts StartOptions) step {
+func (r *fakeRunner) Start(opts StartOptions) Step {
 	return pausedAtDouble(r.b, opts.Inputs["x"], false)
 }
 func (r *fakeRepl) Close()                { r.b.closes.Add(1) }
 func (r *fakeRepl) Dump() ([]byte, error) { return []byte("repl"), nil }
-func (r *fakeRepl) FeedStart(_ string, opts FeedStartOptions) step {
+func (r *fakeRepl) FeedStart(_ string, opts FeedStartOptions) Step {
 	return pausedAtDouble(r.b, opts.Inputs["x"], true)
 }
 
-func pausedAtDouble(b *fakeBackend, x Value, isRepl bool) step {
-	return step{
-		progress: &fakeProgress{b: b},
-		prints:   "paused\n",
-		desc: progressDesc{
-			kind:         progressFunctionCall,
-			scriptName:   "fake.py",
-			isRepl:       isRepl,
-			functionName: "double",
-			args:         []Value{x},
-			callID:       1,
+func pausedAtDouble(b *fakeBackend, x Value, isRepl bool) Step {
+	return Step{
+		Progress: &fakeProgress{b: b},
+		Prints:   "paused\n",
+		Desc: ProgressDesc{
+			Kind:         ProgressFunctionCall,
+			ScriptName:   "fake.py",
+			IsRepl:       isRepl,
+			FunctionName: "double",
+			Args:         []Value{x},
+			CallID:       1,
 		},
 	}
 }
 
 func (p *fakeProgress) Close()                { p.b.closes.Add(1) }
 func (p *fakeProgress) Dump() ([]byte, error) { return []byte("progress"), nil }
-func (p *fakeProgress) TakeRepl() (replHandle, error) {
+func (p *fakeProgress) TakeRepl() (ReplHandle, error) {
 	return &fakeRepl{b: p.b}, nil
 }
 
-func (p *fakeProgress) ResumeCall(result Result) step {
+func (p *fakeProgress) ResumeCall(result Result) Step {
 	value, ok := result.Value().Raw().(int64)
 	if !ok {
 		// Like a backend that cannot encode the answer: nothing was sent.
-		return step{err: errors.New("fake backend only takes ints"), retained: true}
+		return Step{Err: errors.New("fake backend only takes ints"), Retained: true}
 	}
-	return step{
-		progress: &fakeProgress{b: p.b, complete: true},
-		desc:     progressDesc{kind: progressComplete, scriptName: "fake.py", output: Int(value * 2)},
+	return Step{
+		Progress: &fakeProgress{b: p.b, complete: true},
+		Desc:     ProgressDesc{Kind: ProgressComplete, ScriptName: "fake.py", Output: Int(value * 2)},
 	}
 }
 
-func (p *fakeProgress) ResumeLookup(Value, bool) step { return step{err: errors.New("unused")} }
-func (p *fakeProgress) ResumeFutures(map[uint32]Result) step {
-	return step{err: errors.New("unused")}
+func (p *fakeProgress) ResumeLookup(Value, bool) Step { return Step{Err: errors.New("unused")} }
+func (p *fakeProgress) ResumeFutures(map[uint32]Result) Step {
+	return Step{Err: errors.New("unused")}
 }
 
 func doubleFunction(_ context.Context, call Call) (Result, error) {
@@ -87,7 +87,7 @@ func doubleFunction(_ context.Context, call Call) (Result, error) {
 
 func TestRunnerRunsOverAnyBackend(t *testing.T) {
 	fake := &fakeBackend{}
-	runner, err := New("ignored", CompileOptions{backend: fake})
+	runner, err := New("ignored", CompileOptions{Backend: fake})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestRunnerRunsOverAnyBackend(t *testing.T) {
 
 func TestSnapshotSurvivesAnAnswerTheBackendCannotEncode(t *testing.T) {
 	fake := &fakeBackend{}
-	runner, err := New("ignored", CompileOptions{backend: fake})
+	runner, err := New("ignored", CompileOptions{Backend: fake})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestSnapshotSurvivesAnAnswerTheBackendCannotEncode(t *testing.T) {
 }
 
 func TestReplRunsOverAnyBackendAndStaysUsable(t *testing.T) {
-	repl, err := NewRepl(ReplOptions{ScriptName: "fake.py", backend: &fakeBackend{}})
+	repl, err := NewRepl(ReplOptions{ScriptName: "fake.py", Backend: &fakeBackend{}})
 	if err != nil {
 		t.Fatal(err)
 	}

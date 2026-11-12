@@ -15,7 +15,7 @@ type ffiRunner struct{ h *ffi.Runner }
 type ffiRepl struct{ h *ffi.Repl }
 type ffiProgress struct{ h *ffi.Progress }
 
-func (ffiBackend) newRunner(code string, opts CompileOptions) (runnerHandle, error) {
+func (ffiBackend) NewRunner(code string, opts CompileOptions) (RunnerHandle, error) {
 	payload, err := marshalWire(newWireCompileOptions(opts))
 	if err != nil {
 		return nil, err
@@ -27,7 +27,7 @@ func (ffiBackend) newRunner(code string, opts CompileOptions) (runnerHandle, err
 	return &ffiRunner{h: result.Runner}, nil
 }
 
-func (ffiBackend) loadRunner(data []byte) (runnerHandle, error) {
+func (ffiBackend) LoadRunner(data []byte) (RunnerHandle, error) {
 	result := ffi.LoadRunner(data)
 	if result.Error != nil {
 		return nil, newError(result.Error)
@@ -35,7 +35,7 @@ func (ffiBackend) loadRunner(data []byte) (runnerHandle, error) {
 	return &ffiRunner{h: result.Runner}, nil
 }
 
-func (ffiBackend) newRepl(opts ReplOptions) (replHandle, error) {
+func (ffiBackend) NewRepl(opts ReplOptions) (ReplHandle, error) {
 	payload, err := marshalWire(newWireReplOptions(opts))
 	if err != nil {
 		return nil, err
@@ -47,7 +47,7 @@ func (ffiBackend) newRepl(opts ReplOptions) (replHandle, error) {
 	return &ffiRepl{h: result.Repl}, nil
 }
 
-func (ffiBackend) loadProgress(data []byte) step {
+func (ffiBackend) LoadProgress(data []byte) Step {
 	return stepFromOp(ffi.LoadProgress(data))
 }
 
@@ -65,14 +65,14 @@ func (r *ffiRunner) TypeCheck(prefix string) error {
 	return newError(r.h.TypeCheck([]byte(prefix)))
 }
 
-func (r *ffiRunner) Start(opts StartOptions) step {
+func (r *ffiRunner) Start(opts StartOptions) Step {
 	wireOptions, err := newWireStartOptions(opts)
 	if err != nil {
-		return step{err: err, retained: true}
+		return Step{Err: err, Retained: true}
 	}
 	payload, err := marshalWire(wireOptions)
 	if err != nil {
-		return step{err: err, retained: true}
+		return Step{Err: err, Retained: true}
 	}
 	return stepFromOp(r.h.Start(payload))
 }
@@ -87,14 +87,14 @@ func (r *ffiRepl) Dump() ([]byte, error) {
 	return data, nil
 }
 
-func (r *ffiRepl) FeedStart(code string, opts FeedStartOptions) step {
+func (r *ffiRepl) FeedStart(code string, opts FeedStartOptions) Step {
 	wireOptions, err := newWireFeedOptions(opts)
 	if err != nil {
-		return step{err: err, retained: true}
+		return Step{Err: err, Retained: true}
 	}
 	payload, err := marshalWire(wireOptions)
 	if err != nil {
-		return step{err: err, retained: true}
+		return Step{Err: err, Retained: true}
 	}
 	return stepFromOp(r.h.FeedStart([]byte(code), payload))
 }
@@ -109,7 +109,7 @@ func (p *ffiProgress) Dump() ([]byte, error) {
 	return data, nil
 }
 
-func (p *ffiProgress) TakeRepl() (replHandle, error) {
+func (p *ffiProgress) TakeRepl() (ReplHandle, error) {
 	result := p.h.TakeRepl()
 	if result.Error != nil {
 		return nil, newError(result.Error)
@@ -117,59 +117,59 @@ func (p *ffiProgress) TakeRepl() (replHandle, error) {
 	return &ffiRepl{h: result.Repl}, nil
 }
 
-func (p *ffiProgress) ResumeCall(result Result) step {
+func (p *ffiProgress) ResumeCall(result Result) Step {
 	wireResult, err := newWireCallResult(result)
 	if err != nil {
-		return step{err: err, retained: true}
+		return Step{Err: err, Retained: true}
 	}
 	payload, err := marshalWire(wireResult)
 	if err != nil {
-		return step{err: err, retained: true}
+		return Step{Err: err, Retained: true}
 	}
 	return stepFromOp(p.h.ResumeCall(payload))
 }
 
-func (p *ffiProgress) ResumeLookup(value Value, found bool) step {
+func (p *ffiProgress) ResumeLookup(value Value, found bool) Step {
 	var wireResult wireLookupResult
 	if found {
 		var err error
 		if wireResult, err = newWireLookupResult(value); err != nil {
-			return step{err: err, retained: true}
+			return Step{Err: err, Retained: true}
 		}
 	} else {
 		wireResult = wireLookupResult{Kind: wireLookupResultUndefined}
 	}
 	payload, err := marshalWire(wireResult)
 	if err != nil {
-		return step{err: err, retained: true}
+		return Step{Err: err, Retained: true}
 	}
 	return stepFromOp(p.h.ResumeLookup(payload))
 }
 
-func (p *ffiProgress) ResumeFutures(results map[uint32]Result) step {
+func (p *ffiProgress) ResumeFutures(results map[uint32]Result) Step {
 	wireResults, err := newWireFutureResults(results)
 	if err != nil {
-		return step{err: err, retained: true}
+		return Step{Err: err, Retained: true}
 	}
 	payload, err := marshalWire(wireResults)
 	if err != nil {
-		return step{err: err, retained: true}
+		return Step{Err: err, Retained: true}
 	}
 	return stepFromOp(p.h.ResumeFutures(payload))
 }
 
-// stepFromOp converts a native operation result into a step, decoding the
+// stepFromOp converts a native operation result into a Step, decoding the
 // progress description so nothing above the backend sees a wire payload.
-func stepFromOp(result ffi.OpResult) step {
-	st := step{prints: result.Prints}
+func stepFromOp(result ffi.OpResult) Step {
+	st := Step{Prints: result.Prints}
 	if result.Repl != nil {
-		st.repl = &ffiRepl{h: result.Repl}
+		st.Repl = &ffiRepl{h: result.Repl}
 	}
 	if result.Progress != nil {
-		st.progress = &ffiProgress{h: result.Progress}
+		st.Progress = &ffiProgress{h: result.Progress}
 	}
 	if result.Error != nil {
-		st.err = newError(result.Error)
+		st.Err = newError(result.Error)
 		return st
 	}
 	if result.Progress == nil {
@@ -177,59 +177,59 @@ func stepFromOp(result ffi.OpResult) step {
 	}
 	desc, err := decodeProgressDesc(result.ProgressPayload)
 	if err != nil {
-		st.err = err
+		st.Err = err
 		return st
 	}
-	st.desc = desc
+	st.Desc = desc
 	return st
 }
 
-func decodeProgressDesc(payload []byte) (progressDesc, error) {
+func decodeProgressDesc(payload []byte) (ProgressDesc, error) {
 	if len(payload) == 0 {
-		return progressDesc{}, errors.New("monty ffi returned no progress payload")
+		return ProgressDesc{}, errors.New("monty ffi returned no progress payload")
 	}
 
 	var wire wireProgressPayload
 	if err := unmarshalWire(payload, &wire); err != nil {
-		return progressDesc{}, fmt.Errorf("invalid progress payload: %w", err)
+		return ProgressDesc{}, fmt.Errorf("invalid progress payload: %w", err)
 	}
 
-	desc := progressDesc{scriptName: wire.ScriptName, isRepl: wire.IsRepl}
+	desc := ProgressDesc{ScriptName: wire.ScriptName, IsRepl: wire.IsRepl}
 	switch wire.Variant {
 	case wireProgressFunctionCall:
 		args, err := valuesFromWire(wire.Args)
 		if err != nil {
-			return progressDesc{}, err
+			return ProgressDesc{}, err
 		}
 		kwargs, err := dictFromWirePairs(wire.Kwargs)
 		if err != nil {
-			return progressDesc{}, err
+			return ProgressDesc{}, err
 		}
-		desc.kind = progressFunctionCall
-		desc.functionName = wire.FunctionName
-		desc.args = args
-		desc.kwargs = kwargs
-		desc.callID = wire.CallID
-		desc.isOSFunction = wire.IsOSFunction
-		desc.isMethodCall = wire.IsMethodCall
+		desc.Kind = ProgressFunctionCall
+		desc.FunctionName = wire.FunctionName
+		desc.Args = args
+		desc.Kwargs = kwargs
+		desc.CallID = wire.CallID
+		desc.IsOSFunction = wire.IsOSFunction
+		desc.IsMethodCall = wire.IsMethodCall
 	case wireProgressNameLookup:
-		desc.kind = progressNameLookup
-		desc.variableName = wire.VariableName
+		desc.Kind = ProgressNameLookup
+		desc.VariableName = wire.VariableName
 	case wireProgressFuture:
-		desc.kind = progressFuture
-		desc.pendingCallIDs = append([]uint32(nil), wire.PendingCallIDs...)
+		desc.Kind = ProgressFuture
+		desc.PendingCallIDs = append([]uint32(nil), wire.PendingCallIDs...)
 	case wireProgressComplete:
 		if wire.Output == nil {
-			return progressDesc{}, errors.New("complete progress payload is missing output")
+			return ProgressDesc{}, errors.New("complete progress payload is missing output")
 		}
 		output, err := wire.Output.toPublic()
 		if err != nil {
-			return progressDesc{}, err
+			return ProgressDesc{}, err
 		}
-		desc.kind = progressComplete
-		desc.output = output
+		desc.Kind = ProgressComplete
+		desc.Output = output
 	default:
-		return progressDesc{}, fmt.Errorf("unknown progress variant %q", wire.Variant)
+		return ProgressDesc{}, fmt.Errorf("unknown progress variant %q", wire.Variant)
 	}
 	return desc, nil
 }

@@ -62,7 +62,7 @@ type Complete struct {
 
 type runnerState struct {
 	mu     sync.Mutex
-	handle runnerHandle
+	handle RunnerHandle
 	// scriptName is set once at construction and never mutated, so it's
 	// safe to read without holding mu.
 	scriptName string
@@ -70,7 +70,7 @@ type runnerState struct {
 
 type replState struct {
 	mu       sync.Mutex
-	handle   replHandle
+	handle   ReplHandle
 	inFlight bool
 	// scriptName is set once at construction and never mutated, so it's
 	// safe to read without holding mu.
@@ -79,7 +79,7 @@ type replState struct {
 
 type progressState struct {
 	mu     sync.Mutex
-	handle progressHandle
+	handle ProgressHandle
 	owner  *replState
 }
 
@@ -91,7 +91,7 @@ type progressBase struct {
 
 // New compiles Monty code into a reusable runner.
 func New(code string, opts CompileOptions) (*Runner, error) {
-	handle, err := backendOrDefault(opts.backend).newRunner(code, opts)
+	handle, err := backendOrDefault(opts.Backend).NewRunner(code, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -105,12 +105,12 @@ func LoadRunner(data []byte) (*Runner, error) {
 	return loadRunner(nil, data)
 }
 
-func loadRunner(b backend, data []byte) (*Runner, error) {
+func loadRunner(b Backend, data []byte) (*Runner, error) {
 	data, err := stripDumpHeader(data)
 	if err != nil {
 		return nil, err
 	}
-	handle, err := backendOrDefault(b).loadRunner(data)
+	handle, err := backendOrDefault(b).LoadRunner(data)
 	if err != nil {
 		return nil, err
 	}
@@ -124,15 +124,15 @@ func LoadSnapshot(data []byte) (Progress, error) {
 	return loadSnapshot(nil, data)
 }
 
-func loadSnapshot(b backend, data []byte) (Progress, error) {
+func loadSnapshot(b Backend, data []byte) (Progress, error) {
 	data, err := stripDumpHeader(data)
 	if err != nil {
 		return nil, err
 	}
-	st := backendOrDefault(b).loadProgress(data)
-	if st.err != nil {
+	st := backendOrDefault(b).LoadProgress(data)
+	if st.Err != nil {
 		closeStep(st)
-		return nil, st.err
+		return nil, st.Err
 	}
 	return progressFromStep(st, nil)
 }
@@ -143,7 +143,7 @@ func LoadReplSnapshot(data []byte) (Progress, *Repl, error) {
 	return loadReplSnapshot(nil, data)
 }
 
-func loadReplSnapshot(b backend, data []byte) (Progress, *Repl, error) {
+func loadReplSnapshot(b Backend, data []byte) (Progress, *Repl, error) {
 	data, err := stripDumpHeader(data)
 	if err != nil {
 		return nil, nil, err
@@ -151,21 +151,21 @@ func loadReplSnapshot(b backend, data []byte) (Progress, *Repl, error) {
 	b = backendOrDefault(b)
 	owner := &Repl{state: &replState{}}
 
-	primary := b.loadProgress(data)
-	if primary.err != nil {
+	primary := b.LoadProgress(data)
+	if primary.Err != nil {
 		closeStep(primary)
-		return nil, nil, primary.err
+		return nil, nil, primary.Err
 	}
 
-	backup := b.loadProgress(data)
-	if backup.err != nil {
+	backup := b.LoadProgress(data)
+	if backup.Err != nil {
 		closeStep(backup)
 		closeStep(primary)
-		return nil, nil, backup.err
+		return nil, nil, backup.Err
 	}
 
-	repl, err := backup.progress.TakeRepl()
-	backup.progress.Close()
+	repl, err := backup.Progress.TakeRepl()
+	backup.Progress.Close()
 	if err != nil {
 		closeStep(primary)
 		return nil, nil, err
@@ -181,7 +181,7 @@ func loadReplSnapshot(b backend, data []byte) (Progress, *Repl, error) {
 
 // NewRepl constructs an empty REPL session.
 func NewRepl(opts ReplOptions) (*Repl, error) {
-	handle, err := backendOrDefault(opts.backend).newRepl(opts)
+	handle, err := backendOrDefault(opts.Backend).NewRepl(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -299,10 +299,10 @@ func (r *Repl) feedStart(ctx context.Context, code string, opts FeedStartOptions
 	}
 
 	st := handle.FeedStart(code, opts)
-	if st.retained {
+	if st.Retained {
 		// The options could not be encoded, so the session was not consumed.
 		r.state.restore(handle)
-		return nil, st.err
+		return nil, st.Err
 	}
 	handle.Close()
 	return consumeStep(ctx, st, r.state, print, pt)
@@ -422,21 +422,21 @@ func (b *progressBase) dump() ([]byte, error) {
 }
 
 func (b *progressBase) resumeCall(ctx context.Context, result Result, print PrintCallback, pt printTelemetry) (Progress, error) {
-	return b.resume(ctx, print, pt, func(h progressHandle) step { return h.ResumeCall(result) })
+	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeCall(result) })
 }
 
 func (b *progressBase) resumeLookup(ctx context.Context, value Value, found bool, print PrintCallback, pt printTelemetry) (Progress, error) {
-	return b.resume(ctx, print, pt, func(h progressHandle) step { return h.ResumeLookup(value, found) })
+	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeLookup(value, found) })
 }
 
 func (b *progressBase) resumeFutures(ctx context.Context, results map[uint32]Result, print PrintCallback, pt printTelemetry) (Progress, error) {
-	return b.resume(ctx, print, pt, func(h progressHandle) step { return h.ResumeFutures(results) })
+	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeFutures(results) })
 }
 
 // resume takes the paused handle, resumes it through call and consumes the
-// resulting step. A step that retained the handle (the answer could not be
+// resulting Step. A Step that retained the handle (the answer could not be
 // encoded) puts it back, so the snapshot stays usable.
-func (b *progressBase) resume(ctx context.Context, print PrintCallback, pt printTelemetry, call func(progressHandle) step) (Progress, error) {
+func (b *progressBase) resume(ctx context.Context, print PrintCallback, pt printTelemetry, call func(ProgressHandle) Step) (Progress, error) {
 	if err := ctx.Err(); err != nil {
 		if restoreErr := b.restoreOwner(); restoreErr != nil {
 			return nil, errors.Join(err, restoreErr)
@@ -450,9 +450,9 @@ func (b *progressBase) resume(ctx context.Context, print PrintCallback, pt print
 	}
 
 	st := call(handle)
-	if st.retained {
+	if st.Retained {
 		b.state.putBack(handle)
-		return nil, st.err
+		return nil, st.Err
 	}
 	handle.Close()
 	return consumeStep(ctx, st, owner, print, pt)
@@ -477,7 +477,7 @@ func (b *progressBase) restoreOwner() error {
 	return nil
 }
 
-func (s *runnerState) borrow() (runnerHandle, func(), error) {
+func (s *runnerState) borrow() (RunnerHandle, func(), error) {
 	if s == nil || !s.mu.TryLock() {
 		return nil, nil, ErrConcurrentUse
 	}
@@ -488,7 +488,7 @@ func (s *runnerState) borrow() (runnerHandle, func(), error) {
 	return s.handle, s.mu.Unlock, nil
 }
 
-func (s *replState) borrow() (replHandle, func(), error) {
+func (s *replState) borrow() (ReplHandle, func(), error) {
 	if s == nil || !s.mu.TryLock() {
 		return nil, nil, ErrConcurrentUse
 	}
@@ -502,7 +502,7 @@ func (s *replState) borrow() (replHandle, func(), error) {
 	return s.handle, s.mu.Unlock, nil
 }
 
-func (s *replState) takeForExecution() (replHandle, error) {
+func (s *replState) takeForExecution() (ReplHandle, error) {
 	if s == nil || !s.mu.TryLock() {
 		return nil, ErrConcurrentUse
 	}
@@ -520,7 +520,7 @@ func (s *replState) takeForExecution() (replHandle, error) {
 	return handle, nil
 }
 
-func (s *replState) restore(handle replHandle) {
+func (s *replState) restore(handle ReplHandle) {
 	s.mu.Lock()
 	old := s.handle
 	s.handle = handle
@@ -542,7 +542,7 @@ func (s *replState) clear() {
 	}
 }
 
-func (s *progressState) borrow() (progressHandle, func(), error) {
+func (s *progressState) borrow() (ProgressHandle, func(), error) {
 	if s == nil || !s.mu.TryLock() {
 		return nil, nil, ErrConcurrentUse
 	}
@@ -553,7 +553,7 @@ func (s *progressState) borrow() (progressHandle, func(), error) {
 	return s.handle, s.mu.Unlock, nil
 }
 
-func (s *progressState) take() (progressHandle, *replState, error) {
+func (s *progressState) take() (ProgressHandle, *replState, error) {
 	if s == nil || !s.mu.TryLock() {
 		return nil, nil, ErrConcurrentUse
 	}
@@ -568,52 +568,52 @@ func (s *progressState) take() (progressHandle, *replState, error) {
 }
 
 // putBack returns a handle that take removed but a resume did not consume.
-func (s *progressState) putBack(handle progressHandle) {
+func (s *progressState) putBack(handle ProgressHandle) {
 	s.mu.Lock()
 	s.handle = handle
 	s.mu.Unlock()
 }
 
-// closeStep releases whatever handles a step carries.
-func closeStep(st step) {
-	if st.progress != nil {
-		st.progress.Close()
+// closeStep releases whatever handles a Step carries.
+func closeStep(st Step) {
+	if st.Progress != nil {
+		st.Progress.Close()
 	}
-	if st.repl != nil {
-		st.repl.Close()
+	if st.Repl != nil {
+		st.Repl.Close()
 	}
 }
 
-func consumeStep(ctx context.Context, st step, owner *replState, print PrintCallback, pt printTelemetry) (Progress, error) {
-	if st.prints != "" {
+func consumeStep(ctx context.Context, st Step, owner *replState, print PrintCallback, pt printTelemetry) (Progress, error) {
+	if st.Prints != "" {
 		if print != nil {
-			print("stdout", st.prints)
+			print("stdout", st.Prints)
 		}
-		recordPrint(ctx, pt, st.prints)
+		recordPrint(ctx, pt, st.Prints)
 	}
 
-	if st.err != nil {
+	if st.Err != nil {
 		if owner != nil {
-			if st.repl != nil {
-				owner.restore(st.repl)
+			if st.Repl != nil {
+				owner.restore(st.Repl)
 			} else {
 				owner.clear()
 			}
-		} else if st.repl != nil {
-			st.repl.Close()
+		} else if st.Repl != nil {
+			st.Repl.Close()
 		}
-		if st.progress != nil {
-			st.progress.Close()
+		if st.Progress != nil {
+			st.Progress.Close()
 		}
-		return nil, st.err
+		return nil, st.Err
 	}
 
-	if st.progress == nil {
+	if st.Progress == nil {
 		if owner != nil {
 			owner.clear()
 		}
-		if st.repl != nil {
-			st.repl.Close()
+		if st.Repl != nil {
+			st.Repl.Close()
 		}
 		return nil, fmt.Errorf("monty backend returned no progress handle")
 	}
@@ -621,15 +621,15 @@ func consumeStep(ctx context.Context, st step, owner *replState, print PrintCall
 	return progressFromStep(st, owner)
 }
 
-func progressFromStep(st step, owner *replState) (Progress, error) {
-	handle := st.progress
+func progressFromStep(st Step, owner *replState) (Progress, error) {
+	handle := st.Progress
 	if handle == nil {
 		if owner != nil {
 			owner.clear()
 		}
 		return nil, fmt.Errorf("monty backend returned no progress handle")
 	}
-	desc := st.desc
+	desc := st.Desc
 
 	state := &progressState{
 		handle: handle,
@@ -637,32 +637,32 @@ func progressFromStep(st step, owner *replState) (Progress, error) {
 	}
 	base := progressBase{
 		state:      state,
-		scriptName: desc.scriptName,
-		isRepl:     desc.isRepl,
+		scriptName: desc.ScriptName,
+		isRepl:     desc.IsRepl,
 	}
 
-	switch desc.kind {
-	case progressFunctionCall:
+	switch desc.Kind {
+	case ProgressFunctionCall:
 		return &Snapshot{
 			progressBase: base,
-			FunctionName: desc.functionName,
-			Args:         desc.args,
-			Kwargs:       desc.kwargs,
-			CallID:       desc.callID,
-			IsOSFunction: desc.isOSFunction,
-			IsMethodCall: desc.isMethodCall,
+			FunctionName: desc.FunctionName,
+			Args:         desc.Args,
+			Kwargs:       desc.Kwargs,
+			CallID:       desc.CallID,
+			IsOSFunction: desc.IsOSFunction,
+			IsMethodCall: desc.IsMethodCall,
 		}, nil
-	case progressNameLookup:
+	case ProgressNameLookup:
 		return &NameLookupSnapshot{
 			progressBase: base,
-			VariableName: desc.variableName,
+			VariableName: desc.VariableName,
 		}, nil
-	case progressFuture:
+	case ProgressFuture:
 		return &FutureSnapshot{
 			progressBase:   base,
-			pendingCallIDs: desc.pendingCallIDs,
+			pendingCallIDs: desc.PendingCallIDs,
 		}, nil
-	case progressComplete:
+	case ProgressComplete:
 		if owner != nil {
 			repl, err := handle.TakeRepl()
 			handle.Close()
@@ -677,16 +677,16 @@ func progressFromStep(st step, owner *replState) (Progress, error) {
 			state.handle = nil
 		}
 		return &Complete{
-			Output:     desc.output,
-			ScriptName: desc.scriptName,
-			IsRepl:     desc.isRepl,
+			Output:     desc.Output,
+			ScriptName: desc.ScriptName,
+			IsRepl:     desc.IsRepl,
 		}, nil
 	default:
 		handle.Close()
 		if owner != nil {
 			owner.clear()
 		}
-		return nil, fmt.Errorf("unknown progress kind %d", desc.kind)
+		return nil, fmt.Errorf("unknown progress kind %d", desc.Kind)
 	}
 }
 
