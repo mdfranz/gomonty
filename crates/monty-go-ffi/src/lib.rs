@@ -17,7 +17,7 @@ use std::{
     ptr,
 };
 
-use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef};
+use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef, dump};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, ModuleFile, MontyException, MontyObject,
@@ -186,10 +186,10 @@ where
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug)]
 struct StoredRepl(MontyRepl);
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug)]
 enum StoredProgress {
     Run {
         progress: RunProgress,
@@ -441,8 +441,9 @@ impl StoredProgress {
         }
     }
 
+    /// Serializes the suspended state with upstream's versioned dump framing.
     fn dump(&self) -> Result<Vec<u8>, FfiError> {
-        let (script_name, state) = match self {
+        let (script_name, session) = match self {
             Self::Run {
                 progress,
                 script_name,
@@ -452,7 +453,7 @@ impl StoredProgress {
                 script_name,
             } => (script_name, SessionRef::Suspended(progress)),
         };
-        monty::dump(script_name, None, &[], state).map_err(|e| FfiError::Api(e.to_string()))
+        dump(script_name, None, &[], session).map_err(|e| FfiError::Api(e.to_string()))
     }
 }
 
@@ -1214,6 +1215,8 @@ pub extern "C" fn monty_go_runner_load(
 ) {
     let result = catch_runner_result(|| {
         let data = unsafe { slice_from_raw(data_ptr, data_len) };
+        // `MontyRun` is compiled code, not a session, so upstream has no
+        // `dump` framing for it: it is encoded directly as self-describing CBOR.
         #[derive(serde::Deserialize)]
         struct StoredRunner {
             runner: MontyRun,
@@ -1464,7 +1467,7 @@ pub extern "C" fn monty_go_repl_dump(
             }
             return MontyGoBytes::empty();
         };
-        match monty::dump(&repl.script_name, None, &[], SessionRef::Idle(&inner.0)) {
+        match dump(&repl.script_name, None, &[], SessionRef::Idle(&inner.0)) {
             Ok(bytes) => MontyGoBytes::from_vec(bytes),
             Err(error) => {
                 if !error_out.is_null() {
@@ -1621,38 +1624,35 @@ pub extern "C" fn monty_go_progress_load(
 ) {
     let result = catch_op_result(|| {
         let data = unsafe { slice_from_raw(data_ptr, data_len) };
-        match Dump::load(data) {
+        let progress = match Dump::load(data) {
             Ok(Dump {
                 script_name,
                 state: Session::Running(progress),
                 ..
-            }) => MontyGoOpResult::ok(
-                StoredProgress::Run {
-                    progress: *progress,
-                    script_name,
-                },
-                String::new(),
-            ),
+            }) => StoredProgress::Run {
+                progress: *progress,
+                script_name,
+            },
             Ok(Dump {
                 script_name,
                 state: Session::Suspended(progress),
                 ..
-            }) => MontyGoOpResult::ok(
-                StoredProgress::Repl {
-                    progress: *progress,
-                    script_name,
-                },
-                String::new(),
-            ),
-            Ok(_) => MontyGoOpResult::err(
-                FfiError::Api("dump does not hold a suspended session".to_owned()),
-                None,
-                String::new(),
-            ),
-            Err(error) => {
-                MontyGoOpResult::err(FfiError::Api(error.to_string()), None, String::new())
+            }) => StoredProgress::Repl {
+                progress: *progress,
+                script_name,
+            },
+            Ok(_) => {
+                return MontyGoOpResult::err(
+                    FfiError::Api("dump does not hold a suspended session".to_owned()),
+                    None,
+                    String::new(),
+                );
             }
-        }
+            Err(error) => {
+                return MontyGoOpResult::err(FfiError::Api(error.to_string()), None, String::new());
+            }
+        };
+        MontyGoOpResult::ok(progress, String::new())
     });
     if !out.is_null() {
         // SAFETY: caller owns the out pointer

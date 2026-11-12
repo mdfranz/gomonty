@@ -196,6 +196,7 @@ func TestUpstreamRefreshValueJSONRoundTrip(t *testing.T) {
 		}),
 		ClassInstanceValue(class),
 		FileHandleValue(FileHandle{Path: "/tmp/example.txt", Mode: "r", Position: 42}),
+		DecimalValue("1.20"),
 	}
 
 	for _, original := range values {

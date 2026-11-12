@@ -213,3 +213,19 @@ func TestStdlibImportsDoNotReachHost(t *testing.T) {
 		t.Fatalf("unexpected module result %s", got)
 	}
 }
+
+func TestDecimalRoundTripThroughRunner(t *testing.T) {
+	runner, err := New("import decimal\ndecimal.Decimal(d) * 2", CompileOptions{ScriptName: "decimal.py", Inputs: []string{"d"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { closeTestRunner(runner) })
+
+	got, err := runner.Run(context.Background(), RunOptions{Inputs: map[string]Value{"d": DecimalValue("1.20")}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if d, ok := got.Decimal(); !ok || d != "2.40" {
+		t.Fatalf("Run() = %#v, want Decimal(2.40)", got)
+	}
+}

@@ -35,6 +35,7 @@ const (
 	valueKindFrozenSet      ValueKind = "frozen_set"
 	valueKindException      ValueKind = "exception"
 	valueKindPath           ValueKind = "path"
+	valueKindDecimal        ValueKind = "decimal"
 	valueKindFunction       ValueKind = "function"
 	valueKindRepr           ValueKind = "repr"
 	valueKindCycle          ValueKind = "cycle"
@@ -136,6 +137,12 @@ type StatResult struct {
 
 // Path is an explicit Monty path value.
 type Path string
+
+// Decimal is a Python decimal.Decimal, held as its canonical string form
+// (what str(d) prints: "1.20", "1E+5", "-NaN12", "Infinity"). The text round
+// trips exactly; gomonty does no arithmetic on it. The sandbox rejects
+// malformed text when the value is imported.
+type Decimal string
 
 // Function is the explicit external-function value used during name lookup.
 type Function struct {
@@ -563,6 +570,11 @@ func ExceptionValue(exception Exception) Value {
 	return Value{kind: valueKindException, data: exception}
 }
 
+// DecimalValue returns a decimal.Decimal value from its string form.
+func DecimalValue(d Decimal) Value {
+	return Value{kind: valueKindDecimal, data: d}
+}
+
 // PathValue returns a path value.
 func PathValue(path Path) Value {
 	return Value{kind: valueKindPath, data: path}
@@ -648,6 +660,12 @@ func (v Value) Kind() ValueKind {
 // Raw exposes the underlying variant payload.
 func (v Value) Raw() any {
 	return v.data
+}
+
+// Decimal returns the decimal payload if present.
+func (v Value) Decimal() (Decimal, bool) {
+	value, ok := v.data.(Decimal)
+	return value, ok
 }
 
 // Complex returns the complex payload if present.
@@ -878,6 +896,8 @@ func ValueOf(value any) (Value, error) {
 		return FrozenSetValue(value), nil
 	case Path:
 		return PathValue(value), nil
+	case Decimal:
+		return DecimalValue(value), nil
 	case ClassInstance:
 		return ClassInstanceValue(value), nil
 	case Module:
@@ -1112,6 +1132,11 @@ func (v Value) MarshalJSON() ([]byte, error) {
 			Type: payload.Type,
 			Arg:  payload.Arg,
 		})
+	case valueKindDecimal:
+		return json.Marshal(struct {
+			Kind  ValueKind `json:"kind"`
+			Value string    `json:"value"`
+		}{Kind: valueKindDecimal, Value: string(v.data.(Decimal))})
 	case valueKindPath:
 		return json.Marshal(struct {
 			Kind  ValueKind `json:"kind"`
@@ -1377,6 +1402,14 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*v = ExceptionValue(Exception{Type: payload.Type, Arg: payload.Arg})
+	case valueKindDecimal:
+		var payload struct {
+			Value string `json:"value"`
+		}
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return err
+		}
+		*v = DecimalValue(Decimal(payload.Value))
 	case valueKindPath:
 		var payload struct {
 			Value string `json:"value"`
@@ -1487,6 +1520,8 @@ func (v Value) String() string {
 		return fmt.Sprintf("<module %q>", v.data.(Module).Name)
 	case valueKindBytes:
 		return fmt.Sprintf("%q", v.data.([]byte))
+	case valueKindDecimal:
+		return string(v.data.(Decimal))
 	case valueKindPath:
 		return string(v.data.(Path))
 	case valueKindException:
