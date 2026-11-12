@@ -8,10 +8,17 @@ repl: shmonty
 	./shmonty
 
 shmonty-examples: shmonty
-	@set -e; for script in python-scripts/*.py; do \
+	@failed=0; for script in python-scripts/*.py; do \
 		echo "=== $$script ==="; \
-		./shmonty "$$script"; \
-	done
+		if ! ./shmonty "$$script"; then \
+			echo "FAILED: $$script" >&2; \
+			failed=$$((failed + 1)); \
+		fi; \
+	done; \
+	if [ "$$failed" -ne 0 ]; then \
+		echo "$$failed example(s) failed" >&2; \
+		exit 1; \
+	fi
 
 release:
 	@command -v gh >/dev/null 2>&1 || { echo "gh is required"; exit 1; }

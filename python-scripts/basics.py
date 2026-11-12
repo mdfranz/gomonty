@@ -11,3 +11,6 @@ for i in range(5):
         count -= 1
 
 count
+
+assert greeting == "Hello, monty!"
+assert count == 1
