@@ -50,6 +50,8 @@ const (
 	wireCallResultReturn uint8 = iota
 	wireCallResultException
 	wireCallResultPending
+	wireCallResultNotFound
+	wireCallResultModuleFile
 )
 
 const (
@@ -152,6 +154,8 @@ type callResultPayload struct {
 	Value Value
 	Type  string
 	Arg   *string
+
+	Module ModuleFile
 }
 
 type lookupResultPayload struct {
@@ -164,6 +168,9 @@ type wireCallResult struct {
 	Value *wireValue `msgpack:"value,omitempty"`
 	Type  string     `msgpack:"exc_type,omitempty"`
 	Arg   *string    `msgpack:"arg,omitempty"`
+
+	ModulePath   string `msgpack:"module_path,omitempty"`
+	ModuleSource string `msgpack:"module_source,omitempty"`
 }
 
 type wireLookupResult struct {
@@ -245,6 +252,14 @@ func newWireCallResult(result Result) (wireCallResult, error) {
 	switch {
 	case result.wirePending():
 		return wireCallResult{Kind: wireCallResultPending}, nil
+	case result.kind == resultKindNotFound:
+		return wireCallResult{Kind: wireCallResultNotFound}, nil
+	case result.kind == resultKindModuleFile:
+		return wireCallResult{
+			Kind:         wireCallResultModuleFile,
+			ModulePath:   result.module.Path,
+			ModuleSource: result.module.Source,
+		}, nil
 	case result.wireException() != nil:
 		exception := result.wireException()
 		return wireCallResult{
@@ -283,6 +298,14 @@ func (payload callResultPayload) toWire() (wireCallResult, error) {
 		}, nil
 	case "pending":
 		return wireCallResult{Kind: wireCallResultPending}, nil
+	case "not_found":
+		return wireCallResult{Kind: wireCallResultNotFound}, nil
+	case "module_file":
+		return wireCallResult{
+			Kind:         wireCallResultModuleFile,
+			ModulePath:   payload.Module.Path,
+			ModuleSource: payload.Module.Source,
+		}, nil
 	default:
 		return wireCallResult{}, fmt.Errorf("unknown call result kind %q", payload.Kind)
 	}
