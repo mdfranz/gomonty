@@ -291,9 +291,14 @@ func TestFatalErrorEndsTheSession(t *testing.T) {
 // A worker that exits without a FatalError crashed; the client must not wait
 // for it.
 func TestWorkerCrashIsReported(t *testing.T) {
-	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
-		// return without answering: the stream ends
-	}))
+	repl := newRepl(t, func(s *fakeworker.Stream) {
+		if s.RecvConfigure() == nil {
+			return
+		}
+		s.Send(fakeworker.Ok())
+		s.RecvFeed()
+		// Return without answering, which ends the stream: the worker died.
+	})
 	_, err := feed(t, repl, "x", monty.FeedOptions{})
 	if err == nil || !strings.Contains(err.Error(), "closed the stream") {
 		t.Fatalf("err = %v, want a closed-stream error", err)
