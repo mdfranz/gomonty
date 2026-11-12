@@ -99,8 +99,19 @@ jobs:
       - name: Tag and push
         shell: bash
         run: |
+          # otelmonty is a nested module and needs its own paired tag.
           git tag "$VERSION" "$GITHUB_SHA"
-          git push origin "refs/tags/$VERSION"
+          git tag "otelmonty/$VERSION" "$GITHUB_SHA"
+          git push origin "refs/tags/$VERSION" "refs/tags/otelmonty/$VERSION"
+
+      - name: Warm Go module proxy
+        shell: bash
+        run: |
+          # Best effort: the proxy also fetches lazily on first request.
+          for mod in "github.com/mdfranz/gomonty@$VERSION" "github.com/mdfranz/gomonty/otelmonty@$VERSION"; do
+            curl -fsS --retry 3 "https://proxy.golang.org/${mod%@*}/@v/${mod#*@}.info" >/dev/null \
+              || echo "::warning::could not warm proxy for $mod"
+          done
 
       - name: Create GitHub release
         shell: bash

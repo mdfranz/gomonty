@@ -40,4 +40,4 @@ Releases are outward-facing and cannot be cleanly undone (a pushed tag and a war
 
 ## Known caveat
 
-`otelmonty` is a nested module but the release only tags `vX.Y.Z`, so it has no `otelmonty/vX.Y.Z` tag yet (issue #43). Mention this if the user expects `otelmonty` to be versioned.
+`otelmonty` is a nested module: release-prep pins its `gomonty` requirement to the release version, and `release` pushes a paired `otelmonty/vX.Y.Z` tag on the same commit.

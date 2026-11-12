@@ -2,10 +2,12 @@ package otelmonty
 
 import (
 	"context"
+	"time"
 
 	monty "github.com/mdfranz/gomonty"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -13,7 +15,7 @@ import (
 // TracerProvider they're registered with.
 const instrumentationName = "github.com/mdfranz/gomonty/otelmonty"
 
-// Handler is a monty.TelemetryHandler backed by OpenTelemetry tracing (see
+// Handler is a monty.TelemetryHandler backed by OpenTelemetry tracing and metrics (see
 // gomonty-olly.md §6). It produces a monty.run/monty.feed root span per
 // Runner.Run/Repl.FeedRun call, with monty.call and monty.wait child spans
 // for host callbacks and future-wait time — parent/child nesting comes for
@@ -29,6 +31,19 @@ type Handler struct {
 	// Tracer creates every span this handler starts. Defaults to
 	// otel.Tracer(instrumentationName) when nil.
 	Tracer trace.Tracer
+
+	// Meter creates the handler's metric instruments (see metrics.go for
+	// the names). Defaults to otel.Meter(instrumentationName) when nil;
+	// with no MeterProvider registered that is a no-op.
+	Meter metric.Meter
+}
+
+func (h Handler) instruments() instruments {
+	m := h.Meter
+	if m == nil {
+		m = otel.Meter(instrumentationName)
+	}
+	return newInstruments(m)
 }
 
 func (h Handler) tracer() trace.Tracer {
@@ -48,7 +63,7 @@ func (h Handler) StartExecution(ctx context.Context, info monty.ExecutionInfo) (
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(executionAttrs(info)...),
 	)
-	return ctx, otelExecutionSpan{span: span}
+	return ctx, otelExecutionSpan{span: span, metrics: h.instruments(), isRepl: info.IsRepl}
 }
 
 // StartCallback implements monty.TelemetryHandler.
@@ -57,7 +72,7 @@ func (h Handler) StartCallback(ctx context.Context, info monty.CallbackInfo) (co
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(callbackAttrs(info)...),
 	)
-	return ctx, otelCallbackSpan{span: span}
+	return ctx, otelCallbackSpan{span: span, metrics: h.instruments(), info: info, start: time.Now()}
 }
 
 // StartWait implements monty.TelemetryHandler.

@@ -259,6 +259,11 @@ jobs:
 
           sed -i -E '0,/^version = "[^"]+"/s//version = "'"$version_no_v"'"/' Cargo.toml
 
+          # otelmonty is a nested module: consumers ignore its replace
+          # directive, so it must require the gomonty version released here.
+          sed -i -E 's#^(\s*github.com/mdfranz/gomonty) v[^ ]+$#\1 '"$version"'#' otelmonty/go.mod
+          grep -q "github.com/mdfranz/gomonty $version\$" otelmonty/go.mod
+
           find internal/ffi/lib -type f \( -name '*.a' -o -name '*.lib' \) -delete
 
           mkdir -p \
@@ -321,7 +326,7 @@ jobs:
       - name: Commit and push changes
         shell: bash
         run: |
-          if ! git status --short -- Cargo.toml Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt | grep -q .; then
+          if ! git status --short -- Cargo.toml Cargo.lock otelmonty/go.mod internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt | grep -q .; then
             echo "Release tree is already current on main; skipping PR creation."
             echo "SKIP_PR=1" >> "$GITHUB_ENV"
             exit 0
@@ -330,7 +335,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$BRANCH_NAME"
-          git add Cargo.toml Cargo.lock internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt
+          git add Cargo.toml Cargo.lock otelmonty/go.mod internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt
           git commit -m "Release $VERSION"
           git push --set-upstream origin "$BRANCH_NAME"
 
