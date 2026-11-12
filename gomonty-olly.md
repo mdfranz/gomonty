@@ -75,6 +75,8 @@ Keep the three primary phases of execution time clearly distinguishable:
 
 On completion of the root span, record aggregate timing attributes, such as `monty.python_duration_ms` (calculated as `total_duration - callback_duration - wait_duration`), giving operators immediate visibility into Python compute time versus host I/O.
 
+Millisecond attributes use floating-point values to preserve sub-millisecond timings. This applies to both `otelmonty` and the default `SlogHandler`; consumers expecting integer millisecond attributes must accept floats. Explicit slog microsecond and nanosecond units remain integers.
+
 ### 4. Data sanitization, limits, and stdout multiplexing
 
 Python inputs, kwargs, returned values, and print streams can contain sensitive credentials or multi-megabyte payloads.
