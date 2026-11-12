@@ -45,6 +45,7 @@ latest semver tag (for example `v0.0.13` -> `v0.0.14`), and dispatches the
 version explicitly, use `make release VERSION=vX.Y.Z`. The workflow:
 
 - validates the requested version and ensures the tag does not already exist
+- pushes `otelmonty/vX.Y.Z` alongside `vX.Y.Z` on the same commit (nested module tag) and warms the Go proxy for both
 - rebuilds the tracked shared libraries for:
   - `darwin/arm64`
   - `linux/amd64` (GNU/glibc)
@@ -52,6 +53,7 @@ version explicitly, use `make release VERSION=vX.Y.Z`. The workflow:
   - `linux/amd64` (musl/Alpine)
   - `linux/arm64` (musl/Alpine)
   - `windows/amd64`
+- pins `otelmonty/go.mod`'s `github.com/mdfranz/gomonty` requirement to the release version (the `replace => ..` stays for local development)
 - regenerates `internal/ffi/include/monty_go_ffi.h` exactly once
 - updates `Cargo.toml`, `Cargo.lock`, `internal/ffi/lib/...`, and `internal/ffi/checksums.txt`
 - reruns release validation on the assembled tree:

@@ -1,6 +1,8 @@
 package otelmonty
 
 import (
+	"time"
+
 	monty "github.com/mdfranz/gomonty"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -9,7 +11,9 @@ import (
 
 // otelExecutionSpan implements monty.ExecutionSpan.
 type otelExecutionSpan struct {
-	span trace.Span
+	span    trace.Span
+	metrics instruments
+	isRepl  bool
 }
 
 // End implements monty.ExecutionSpan. It leaves the span's status Unset on
@@ -18,6 +22,7 @@ type otelExecutionSpan struct {
 // failure.
 func (s otelExecutionSpan) End(_ monty.Value, err error, timing monty.ExecutionTiming, output monty.TruncatedPayload) {
 	defer s.span.End()
+	s.metrics.recordExecution(s.isRepl, err, timing)
 	s.span.SetAttributes(timingAttrs(timing)...)
 	s.span.SetAttributes(appendPayloadAttrs(nil, attrOutput, attrOutputTruncated, output)...)
 	if err != nil {
@@ -28,7 +33,10 @@ func (s otelExecutionSpan) End(_ monty.Value, err error, timing monty.ExecutionT
 
 // otelCallbackSpan implements monty.CallbackSpan.
 type otelCallbackSpan struct {
-	span trace.Span
+	span    trace.Span
+	metrics instruments
+	info    monty.CallbackInfo
+	start   time.Time
 }
 
 // End implements monty.CallbackSpan. A Go-level err and a Monty exception
@@ -37,6 +45,7 @@ type otelCallbackSpan struct {
 // Python exception also gets its type recorded as an attribute.
 func (s otelCallbackSpan) End(result monty.Result, err error, output monty.TruncatedPayload) {
 	defer s.span.End()
+	s.metrics.recordCallback(s.info, result, err, time.Since(s.start).Seconds())
 	s.span.SetAttributes(appendPayloadAttrs(nil, attrOutput, attrOutputTruncated, output)...)
 	if err != nil {
 		s.span.RecordError(err)

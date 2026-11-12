@@ -17,7 +17,9 @@ import (
 	monty "github.com/mdfranz/gomonty"
 	"github.com/mdfranz/gomonty/otelmonty"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -37,6 +39,19 @@ func main() {
 	}()
 	otel.SetTracerProvider(tp)
 
+	metricExporter, err := otlpmetrichttp.New(ctx)
+	if err != nil {
+		log.Fatalf("new OTLP metric exporter: %v", err)
+	}
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter)))
+	// Shutdown flushes the final metric collection.
+	defer func() {
+		if err := mp.Shutdown(ctx); err != nil {
+			log.Printf("shutdown meter provider: %v", err)
+		}
+	}()
+	otel.SetMeterProvider(mp)
+
 	runner, err := monty.New(`
 import hostmod
 print("starting work")
@@ -49,7 +64,7 @@ result
 		log.Fatal(err)
 	}
 
-	handler := otelmonty.Handler{Tracer: tp.Tracer("otelmonty-example")}
+	handler := otelmonty.Handler{Tracer: tp.Tracer("otelmonty-example"), Meter: mp.Meter("otelmonty-example")}
 
 	rootCtx, rootSpan := handler.Tracer.Start(ctx, "example.main")
 	defer rootSpan.End()
