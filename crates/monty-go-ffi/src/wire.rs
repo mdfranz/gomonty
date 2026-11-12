@@ -798,8 +798,10 @@ const fn is_zero_i64(value: &i64) -> bool {
     *value == 0
 }
 
+/// True only for positive zero. `-0.0 == 0.0`, so comparing by value would
+/// skip a negative zero and it would decode as `+0.0`.
 fn is_zero_f64(value: &f64) -> bool {
-    *value == 0.0
+    value.to_bits() == 0
 }
 
 const fn is_zero_i32(value: &i32) -> bool {
@@ -819,6 +821,15 @@ mod tests {
         ExcType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta,
         MontyTimeZone, MontyUuid,
     };
+
+    #[test]
+    fn wire_value_preserves_negative_zero_float() {
+        let original = WireValue::from_monty(&MontyObject::float(-0.0));
+        let encoded = rmp_serde::to_vec_named(&original).expect("float should encode");
+        let decoded: WireValue = rmp_serde::from_slice(&encoded).expect("float should decode");
+        assert!(decoded.float_value.is_sign_negative());
+        assert_eq!(decoded.float_value, 0.0);
+    }
 
     #[test]
     fn wire_value_encodes_bytes_as_msgpack_binary() {

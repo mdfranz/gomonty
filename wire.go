@@ -76,7 +76,7 @@ type wireValue struct {
 	Bool         bool        `msgpack:"bool,omitempty"`
 	Int          int64       `msgpack:"int,omitempty"`
 	BigInt       string      `msgpack:"big_int,omitempty"`
-	Float        float64     `msgpack:"float,omitempty"`
+	Float        *float64    `msgpack:"float,omitempty"` // pointer so -0.0 is not dropped by omitempty
 	String       string      `msgpack:"string,omitempty"`
 	Bytes        []byte      `msgpack:"bytes,omitempty"`
 	Items        []wireValue `msgpack:"items,omitempty"`
@@ -407,7 +407,7 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 	case valueKindBigInt:
 		return wireValue{Kind: wireValueBigInt, BigInt: value.data.(*big.Int).String()}, nil
 	case valueKindFloat:
-		return wireValue{Kind: wireValueFloat, Float: value.data.(float64)}, nil
+		return wireValue{Kind: wireValueFloat, Float: ptr(value.data.(float64))}, nil
 	case valueKindComplex:
 		c := value.data.(complex128)
 		re, im := real(c), imag(c)
@@ -593,7 +593,10 @@ func (value wireValue) toPublic() (Value, error) {
 		}
 		return BigInt(bigValue), nil
 	case wireValueFloat:
-		return Float(value.Float), nil
+		if value.Float == nil {
+			return Float(0), nil
+		}
+		return Float(*value.Float), nil
 	case wireValueComplex:
 		var re, im float64
 		if value.Real != nil {
@@ -740,3 +743,5 @@ func (value wireValue) toPublic() (Value, error) {
 		return Value{}, fmt.Errorf("unknown wire value kind %d", value.Kind)
 	}
 }
+
+func ptr[T any](v T) *T { return &v }
