@@ -573,8 +573,6 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 			Name:      function.Name,
 			Docstring: function.Docstring,
 		}, nil
-	case valueKindDecimal:
-		return wireValue{Kind: wireValueDecimal, String: value.data.(string)}, nil
 	case valueKindRepr:
 		return wireValue{Kind: wireValueRepr, String: value.data.(string)}, nil
 	case valueKindCycle:
@@ -752,8 +750,6 @@ func (value wireValue) toPublic() (Value, error) {
 		}), nil
 	case wireValueFunction:
 		return FunctionValue(Function{Name: value.Name, Docstring: value.Docstring}), nil
-	case wireValueDecimal:
-		return DecimalValue(value.String), nil
 	case wireValueRepr:
 		return ReprValue(value.String), nil
 	case wireValueCycle:

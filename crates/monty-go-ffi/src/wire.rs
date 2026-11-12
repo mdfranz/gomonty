@@ -381,11 +381,6 @@ impl WireValue {
                 docstring: docstring.clone(),
                 ..Self::default()
             },
-            MontyNode::Decimal(v) => Self {
-                kind: WIRE_VALUE_DECIMAL,
-                string_value: v.clone(),
-                ..Self::default()
-            },
             MontyNode::Repr(v) => Self {
                 kind: WIRE_VALUE_REPR,
                 string_value: v.clone(),
@@ -582,7 +577,6 @@ impl WireValue {
                     .collect::<Result<Vec<_>, String>>()?;
                 Ok(MontyObject::module(self.name, id, attrs))
             }
-            WIRE_VALUE_DECIMAL => Ok(MontyObject::decimal(self.string_value)),
             other => Err(format!("unknown wire value kind: {other}")),
         }
     }
