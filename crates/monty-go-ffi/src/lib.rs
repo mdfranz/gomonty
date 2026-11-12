@@ -5,6 +5,17 @@
 //! payloads defined in [`wire`], while suspend/resume state stays in Rust-owned
 //! handles that the Go wrapper drives explicitly.
 
+// Every exported function takes raw pointers because that is the C ABI. The only
+// caller is the Go wrapper (through purego), which neither reads Rust's `unsafe`
+// markers nor could act on them, so marking the ~60 exports `unsafe extern "C"`
+// would only force `unsafe` blocks onto this crate's own tests. The pointer
+// contract is stated per function instead, in the `// SAFETY:` comments at each
+// dereference. Every dereference is null-checked first.
+#![expect(
+    clippy::not_unsafe_ptr_arg_deref,
+    reason = "C ABI exports are called only from Go via purego; contracts are in SAFETY comments"
+)]
+
 mod wire;
 
 use std::{
@@ -95,7 +106,7 @@ enum FfiError {
     Api(String),
 }
 
-fn ffi_panic_error(payload: Box<dyn Any + Send>) -> FfiError {
+fn ffi_panic_error(payload: &(dyn Any + Send)) -> FfiError {
     let message = if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_owned()
     } else if let Some(message) = payload.downcast_ref::<String>() {
@@ -131,7 +142,7 @@ where
 {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(result) => result,
-        Err(payload) => MontyGoRunnerResult::err(ffi_panic_error(payload)),
+        Err(payload) => MontyGoRunnerResult::err(ffi_panic_error(&*payload)),
     }
 }
 
@@ -141,7 +152,7 @@ where
 {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(result) => result,
-        Err(payload) => MontyGoReplResult::err(ffi_panic_error(payload)),
+        Err(payload) => MontyGoReplResult::err(ffi_panic_error(&*payload)),
     }
 }
 
@@ -151,7 +162,7 @@ where
 {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(result) => result,
-        Err(payload) => MontyGoOpResult::err(ffi_panic_error(payload), None, String::new()),
+        Err(payload) => MontyGoOpResult::err(ffi_panic_error(&*payload), None, String::new()),
     }
 }
 
@@ -162,7 +173,7 @@ where
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(result) => result,
         Err(payload) => Box::into_raw(Box::new(MontyGoError {
-            inner: ffi_panic_error(payload),
+            inner: ffi_panic_error(&*payload),
         })),
     }
 }
@@ -175,10 +186,11 @@ where
         Ok(result) => result,
         Err(payload) => {
             if !error_out.is_null() {
+                // SAFETY: the caller owns `error_out`, and it was null-checked just above
                 unsafe {
                     *error_out = Box::into_raw(Box::new(MontyGoError {
-                        inner: ffi_panic_error(payload),
-                    }))
+                        inner: ffi_panic_error(&*payload),
+                    }));
                 };
             }
             MontyGoBytes::empty()
@@ -189,6 +201,29 @@ where
 #[derive(Debug)]
 struct StoredRepl(MontyRepl);
 
+// `MontyRun` is compiled code, not a session, so upstream has no `dump` framing
+// for it: it is encoded directly as self-describing CBOR, in these two shapes.
+#[derive(serde::Deserialize)]
+struct StoredRunner {
+    runner: MontyRun,
+    script_name: String,
+    input_names: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct StoredRunnerRef<'a> {
+    runner: &'a MontyRun,
+    script_name: &'a str,
+    input_names: &'a [String],
+}
+
+// Each handle is a single heap allocation (`Box::into_raw` of `MontyGoProgress`),
+// so the size gap between the variants costs nothing worth the churn of boxing
+// the payload at every construction and match site.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "always held behind one Box per handle"
+)]
 #[derive(Debug)]
 enum StoredProgress {
     Run {
@@ -318,9 +353,7 @@ impl MontyGoOpResult {
             progress: ptr::null_mut(),
             progress_payload: MontyGoBytes::empty(),
             error: Box::into_raw(Box::new(MontyGoError { inner: error })),
-            repl: repl
-                .map(|repl| Box::into_raw(Box::new(repl)))
-                .unwrap_or(ptr::null_mut()),
+            repl: repl.map_or(ptr::null_mut(), |repl| Box::into_raw(Box::new(repl))),
             prints: MontyGoBytes::from_vec(prints.into_bytes()),
         }
     }
@@ -610,7 +643,7 @@ fn describe_os_call(
 
 fn extract_inputs(
     input_names: &[String],
-    inputs: BTreeMap<String, WireValue>,
+    inputs: &BTreeMap<String, WireValue>,
 ) -> Result<Vec<MontyObject>, FfiError> {
     input_names
         .iter()
@@ -744,7 +777,7 @@ fn start_runner_internal(
     handle: &MontyGoRunner,
     options: WireStartOptions,
 ) -> Result<(StoredProgress, String), (FfiError, String)> {
-    let inputs = extract_inputs(&handle.input_names, options.inputs)
+    let inputs = extract_inputs(&handle.input_names, &options.inputs)
         .map_err(|error| (error, String::new()))?;
     let mut prints = PrintCollector::new();
     let tracker = ResourceTracker::new(options.limits.map(Into::into).unwrap_or_default());
@@ -764,6 +797,10 @@ fn start_runner_internal(
     }
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "the error carries the REPL session back to the caller so it is not lost"
+)]
 fn feed_start_internal(
     repl_handle: &mut MontyGoRepl,
     code: &[u8],
@@ -827,6 +864,10 @@ fn feed_start_internal(
     }
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "the error carries the REPL session back to the caller so it is not lost"
+)]
 fn resume_call_internal(
     progress: StoredProgress,
     ext_result: ExtFunctionResult,
@@ -944,6 +985,10 @@ fn adjust_pending_result(result: ExtFunctionResult, call_id: u32) -> ExtFunction
     }
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "the error carries the REPL session back to the caller so it is not lost"
+)]
 fn resume_lookup_internal(
     progress: StoredProgress,
     lookup_result: NameLookupResult,
@@ -994,6 +1039,10 @@ fn resume_lookup_internal(
     }
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "the error carries the REPL session back to the caller so it is not lost"
+)]
 fn resume_futures_internal(
     progress: StoredProgress,
     decoded: Vec<(u32, ExtFunctionResult)>,
@@ -1047,9 +1096,10 @@ fn resume_futures_internal(
 #[unsafe(no_mangle)]
 pub extern "C" fn monty_go_bytes_free(ptr: *mut u8, len: usize) {
     if !ptr.is_null() && len > 0 {
-        // SAFETY: ptr/len were allocated by `MontyGoBytes::from_vec`
+        // SAFETY: ptr/len came from `MontyGoBytes::from_vec`, which leaks a
+        // `Box<[u8]>`, so rebuilding that box frees exactly the same allocation.
         catch_drop(|| unsafe {
-            let _ = Vec::from_raw_parts(ptr, len, len);
+            drop(Box::from_raw(ptr::slice_from_raw_parts_mut(ptr, len)));
         });
     }
 }
@@ -1097,8 +1147,7 @@ pub extern "C" fn monty_go_error_json(error: *const MontyGoError, out: *mut Mont
             || MontyGoBytes::from_vec(serde_json::to_vec(&panic_summary()).unwrap_or_default()),
             || {
                 serde_json::to_vec(&error.inner.summary())
-                    .map(MontyGoBytes::from_vec)
-                    .unwrap_or_else(|_| MontyGoBytes::empty())
+                    .map_or_else(|_| MontyGoBytes::empty(), MontyGoBytes::from_vec)
             },
         )
     };
@@ -1120,6 +1169,7 @@ pub extern "C" fn monty_go_error_display(
     } else {
         // SAFETY: caller passes a valid handle pointer
         let error = unsafe { &*error };
+        // SAFETY: the caller passes a NUL-terminated string, or null (which returns an error)
         let format = unsafe { string_from_cstr(format) }.unwrap_or("traceback");
         catch_or(
             || MontyGoBytes::from_vec(PANIC_RENDERING_ERROR.as_bytes().to_vec()),
@@ -1149,7 +1199,9 @@ pub extern "C" fn monty_go_runner_new(
     out: *mut MontyGoRunnerResult,
 ) {
     let result = catch_runner_result(|| {
+        // SAFETY: the caller passes a readable (ptr, len) pair; null or zero length yields an empty slice
         let code = unsafe { slice_from_raw(code_ptr, code_len) };
+        // SAFETY: the caller passes a readable (ptr, len) pair; null or zero length yields an empty slice
         let options = unsafe { slice_from_raw(options_ptr, options_len) };
 
         let code = match std::str::from_utf8(code) {
@@ -1172,7 +1224,7 @@ pub extern "C" fn monty_go_runner_new(
             let failure = TypingFailure {
                 source_code: code.clone(),
                 script_name: script_name.clone(),
-                stubs: options.type_check_stubs.clone(),
+                stubs: options.type_check_stubs,
             };
             let mut checker = TypeChecker::default();
             let source = SourceFile::new(&code, &script_name);
@@ -1214,16 +1266,8 @@ pub extern "C" fn monty_go_runner_load(
     out: *mut MontyGoRunnerResult,
 ) {
     let result = catch_runner_result(|| {
+        // SAFETY: the caller passes a readable (ptr, len) pair; null or zero length yields an empty slice
         let data = unsafe { slice_from_raw(data_ptr, data_len) };
-        // `MontyRun` is compiled code, not a session, so upstream has no
-        // `dump` framing for it: it is encoded directly as self-describing CBOR.
-        #[derive(serde::Deserialize)]
-        struct StoredRunner {
-            runner: MontyRun,
-            script_name: String,
-            input_names: Vec<String>,
-        }
-
         match minicbor_serde::from_slice::<StoredRunner>(data) {
             Ok(stored) => MontyGoRunnerResult::ok(MontyGoRunner {
                 runner: stored.runner,
@@ -1252,10 +1296,11 @@ pub extern "C" fn monty_go_runner_dump(
     let bytes = catch_bytes_result(error_out, || {
         if runner.is_null() {
             if !error_out.is_null() {
+                // SAFETY: the caller owns `error_out`, and it was null-checked just above
                 unsafe {
                     *error_out = Box::into_raw(Box::new(MontyGoError {
                         inner: FfiError::Api("runner handle is null".to_owned()),
-                    }))
+                    }));
                 };
             }
             return MontyGoBytes::empty();
@@ -1263,14 +1308,7 @@ pub extern "C" fn monty_go_runner_dump(
         // SAFETY: caller passes a valid handle pointer
         let runner = unsafe { &*runner };
 
-        #[derive(serde::Serialize)]
-        struct StoredRunner<'a> {
-            runner: &'a MontyRun,
-            script_name: &'a str,
-            input_names: &'a [String],
-        }
-
-        match minicbor_serde::to_vec(&StoredRunner {
+        match minicbor_serde::to_vec(&StoredRunnerRef {
             runner: &runner.runner,
             script_name: &runner.script_name,
             input_names: &runner.input_names,
@@ -1278,10 +1316,11 @@ pub extern "C" fn monty_go_runner_dump(
             Ok(bytes) => MontyGoBytes::from_vec(bytes),
             Err(error) => {
                 if !error_out.is_null() {
+                    // SAFETY: the caller owns `error_out`, and it was null-checked just above
                     unsafe {
                         *error_out = Box::into_raw(Box::new(MontyGoError {
                             inner: FfiError::Api(error.to_string()),
-                        }))
+                        }));
                     };
                 }
                 MontyGoBytes::empty()
@@ -1308,6 +1347,7 @@ pub extern "C" fn monty_go_runner_type_check(
         }
         // SAFETY: caller passes a valid handle pointer
         let runner = unsafe { &*runner };
+        // SAFETY: the caller passes a readable (ptr, len) pair; null or zero length yields an empty slice
         let prefix = unsafe { slice_from_raw(prefix_ptr, prefix_len) };
         let prefix = if prefix.is_empty() {
             None
@@ -1360,6 +1400,7 @@ pub extern "C" fn monty_go_runner_start(
         }
         // SAFETY: caller passes a valid handle pointer
         let runner = unsafe { &*runner };
+        // SAFETY: the caller passes a readable (ptr, len) pair; null or zero length yields an empty slice
         let options = unsafe { slice_from_raw(options_ptr, options_len) };
         let options: WireStartOptions = match decode_wire(options) {
             Ok(options) => options,
@@ -1383,6 +1424,7 @@ pub extern "C" fn monty_go_repl_new(
     out: *mut MontyGoReplResult,
 ) {
     let result = catch_repl_result(|| {
+        // SAFETY: the caller passes a readable (ptr, len) pair; null or zero length yields an empty slice
         let options = unsafe { slice_from_raw(options_ptr, options_len) };
         let options: WireReplOptions = match decode_wire(options) {
             Ok(options) => options,
@@ -1414,6 +1456,7 @@ pub extern "C" fn monty_go_repl_load(
     out: *mut MontyGoReplResult,
 ) {
     let result = catch_repl_result(|| {
+        // SAFETY: the caller passes a readable (ptr, len) pair; null or zero length yields an empty slice
         let data = unsafe { slice_from_raw(data_ptr, data_len) };
         match Dump::load(data) {
             Ok(Dump {
@@ -1443,26 +1486,30 @@ pub extern "C" fn monty_go_repl_dump(
     error_out: *mut *mut MontyGoError,
 ) {
     if !error_out.is_null() {
+        // SAFETY: the caller owns `error_out`, and it was null-checked just above
         unsafe { *error_out = ptr::null_mut() };
     }
     let bytes = catch_bytes_result(error_out, || {
         if repl.is_null() {
             if !error_out.is_null() {
+                // SAFETY: the caller owns `error_out`, and it was null-checked just above
                 unsafe {
                     *error_out = Box::into_raw(Box::new(MontyGoError {
                         inner: FfiError::Api("repl handle is null".to_owned()),
-                    }))
+                    }));
                 };
             }
             return MontyGoBytes::empty();
         }
+        // SAFETY: the caller passes a valid handle pointer
         let repl = unsafe { &*repl };
         let Some(inner) = &repl.inner else {
             if !error_out.is_null() {
+                // SAFETY: the caller owns `error_out`, and it was null-checked just above
                 unsafe {
                     *error_out = Box::into_raw(Box::new(MontyGoError {
                         inner: FfiError::Api("repl handle is not currently available".to_owned()),
-                    }))
+                    }));
                 };
             }
             return MontyGoBytes::empty();
@@ -1471,10 +1518,11 @@ pub extern "C" fn monty_go_repl_dump(
             Ok(bytes) => MontyGoBytes::from_vec(bytes),
             Err(error) => {
                 if !error_out.is_null() {
+                    // SAFETY: the caller owns `error_out`, and it was null-checked just above
                     unsafe {
                         *error_out = Box::into_raw(Box::new(MontyGoError {
                             inner: FfiError::Api(error.to_string()),
-                        }))
+                        }));
                     };
                 }
                 MontyGoBytes::empty()
@@ -1504,8 +1552,11 @@ pub extern "C" fn monty_go_repl_feed_start(
                 String::new(),
             );
         }
+        // SAFETY: the caller passes a valid handle pointer and does not use it concurrently (the Go wrapper enforces this with borrow())
         let repl = unsafe { &mut *repl };
+        // SAFETY: the caller passes a readable (ptr, len) pair; null or zero length yields an empty slice
         let code = unsafe { slice_from_raw(code_ptr, code_len) };
+        // SAFETY: the caller passes a readable (ptr, len) pair; null or zero length yields an empty slice
         let options = unsafe { slice_from_raw(options_ptr, options_len) };
         let options: WireFeedOptions = match decode_wire(options) {
             Ok(options) => options,
@@ -1529,26 +1580,30 @@ pub extern "C" fn monty_go_progress_describe(
     error_out: *mut *mut MontyGoError,
 ) {
     if !error_out.is_null() {
+        // SAFETY: the caller owns `error_out`, and it was null-checked just above
         unsafe { *error_out = ptr::null_mut() };
     }
     let bytes = catch_bytes_result(error_out, || {
         if progress.is_null() {
             if !error_out.is_null() {
+                // SAFETY: the caller owns `error_out`, and it was null-checked just above
                 unsafe {
                     *error_out = Box::into_raw(Box::new(MontyGoError {
                         inner: FfiError::Api("progress handle is null".to_owned()),
-                    }))
+                    }));
                 };
             }
             return MontyGoBytes::empty();
         }
+        // SAFETY: the caller passes a valid handle pointer
         let progress = unsafe { &*progress };
         let Some(inner) = &progress.inner else {
             if !error_out.is_null() {
+                // SAFETY: the caller owns `error_out`, and it was null-checked just above
                 unsafe {
                     *error_out = Box::into_raw(Box::new(MontyGoError {
                         inner: FfiError::Api("progress handle is no longer available".to_owned()),
-                    }))
+                    }));
                 };
             }
             return MontyGoBytes::empty();
@@ -1557,6 +1612,7 @@ pub extern "C" fn monty_go_progress_describe(
             Ok(bytes) => bytes,
             Err(error) => {
                 if !error_out.is_null() {
+                    // SAFETY: the caller owns `error_out`, and it was null-checked just above
                     unsafe { *error_out = Box::into_raw(Box::new(MontyGoError { inner: error })) };
                 }
                 MontyGoBytes::empty()
@@ -1576,26 +1632,30 @@ pub extern "C" fn monty_go_progress_dump(
     error_out: *mut *mut MontyGoError,
 ) {
     if !error_out.is_null() {
+        // SAFETY: the caller owns `error_out`, and it was null-checked just above
         unsafe { *error_out = ptr::null_mut() };
     }
     let bytes = catch_bytes_result(error_out, || {
         if progress.is_null() {
             if !error_out.is_null() {
+                // SAFETY: the caller owns `error_out`, and it was null-checked just above
                 unsafe {
                     *error_out = Box::into_raw(Box::new(MontyGoError {
                         inner: FfiError::Api("progress handle is null".to_owned()),
-                    }))
+                    }));
                 };
             }
             return MontyGoBytes::empty();
         }
+        // SAFETY: the caller passes a valid handle pointer
         let progress = unsafe { &*progress };
         let Some(inner) = &progress.inner else {
             if !error_out.is_null() {
+                // SAFETY: the caller owns `error_out`, and it was null-checked just above
                 unsafe {
                     *error_out = Box::into_raw(Box::new(MontyGoError {
                         inner: FfiError::Api("progress handle is no longer available".to_owned()),
-                    }))
+                    }));
                 };
             }
             return MontyGoBytes::empty();
@@ -1604,6 +1664,7 @@ pub extern "C" fn monty_go_progress_dump(
             Ok(bytes) => MontyGoBytes::from_vec(bytes),
             Err(error) => {
                 if !error_out.is_null() {
+                    // SAFETY: the caller owns `error_out`, and it was null-checked just above
                     unsafe { *error_out = Box::into_raw(Box::new(MontyGoError { inner: error })) };
                 }
                 MontyGoBytes::empty()
@@ -1623,6 +1684,7 @@ pub extern "C" fn monty_go_progress_load(
     out: *mut MontyGoOpResult,
 ) {
     let result = catch_op_result(|| {
+        // SAFETY: the caller passes a readable (ptr, len) pair; null or zero length yields an empty slice
         let data = unsafe { slice_from_raw(data_ptr, data_len) };
         let progress = match Dump::load(data) {
             Ok(Dump {
@@ -1669,6 +1731,7 @@ pub extern "C" fn monty_go_progress_take_repl(
         if progress.is_null() {
             return MontyGoReplResult::err(FfiError::Api("progress handle is null".to_owned()));
         }
+        // SAFETY: the caller passes a valid handle pointer and does not use it concurrently (the Go wrapper enforces this with borrow())
         let progress = unsafe { &mut *progress };
         let Some(inner) = progress.inner.take() else {
             return MontyGoReplResult::err(FfiError::Api(
@@ -1707,7 +1770,9 @@ pub extern "C" fn monty_go_progress_resume_call(
                 String::new(),
             );
         }
+        // SAFETY: the caller passes a valid handle pointer and does not use it concurrently (the Go wrapper enforces this with borrow())
         let progress = unsafe { &mut *progress };
+        // SAFETY: the caller passes a readable (ptr, len) pair; null or zero length yields an empty slice
         let result = unsafe { slice_from_raw(result_ptr, result_len) };
         let result: WireCallResult = match decode_wire(result) {
             Ok(result) => result,
@@ -1768,7 +1833,9 @@ pub extern "C" fn monty_go_progress_resume_lookup(
                 String::new(),
             );
         }
+        // SAFETY: the caller passes a valid handle pointer and does not use it concurrently (the Go wrapper enforces this with borrow())
         let progress = unsafe { &mut *progress };
+        // SAFETY: the caller passes a readable (ptr, len) pair; null or zero length yields an empty slice
         let result = unsafe { slice_from_raw(result_ptr, result_len) };
         let result: WireLookupResult = match decode_wire(result) {
             Ok(result) => result,
@@ -1829,7 +1896,9 @@ pub extern "C" fn monty_go_progress_resume_futures(
                 String::new(),
             );
         }
+        // SAFETY: the caller passes a valid handle pointer and does not use it concurrently (the Go wrapper enforces this with borrow())
         let progress = unsafe { &mut *progress };
+        // SAFETY: the caller passes a readable (ptr, len) pair; null or zero length yields an empty slice
         let results = unsafe { slice_from_raw(results_ptr, results_len) };
         let results: WireFutureResults = match decode_wire(results) {
             Ok(results) => results,
@@ -1879,7 +1948,7 @@ pub extern "C" fn monty_go_progress_resume_futures(
 mod panic_guard_tests {
     use super::*;
 
-    fn bytes_to_string(bytes: MontyGoBytes) -> String {
+    fn bytes_to_string(bytes: &MontyGoBytes) -> String {
         let text = if bytes.ptr.is_null() {
             String::new()
         } else {
@@ -1935,11 +2004,11 @@ mod panic_guard_tests {
         }));
         let mut json = MontyGoBytes::empty();
         monty_go_error_json(error, &raw mut json);
-        assert!(bytes_to_string(json).contains("hello"));
+        assert!(bytes_to_string(&json).contains("hello"));
 
         let mut shown = MontyGoBytes::empty();
         monty_go_error_display(error, c"msg".as_ptr(), false, &raw mut shown);
-        assert_eq!(bytes_to_string(shown), "hello");
+        assert_eq!(bytes_to_string(&shown), "hello");
         monty_go_error_free(error);
     }
 
