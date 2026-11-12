@@ -1,0 +1,11 @@
+# Provenance of the vendored monty.v1 protocol definition.
+#
+# Bump this together with the Monty pin in Cargo.toml (and the montyRevision
+# constant in dumpheader.go): TestProtoPinMatchesCargoPin fails if they drift,
+# and "make proto" regenerates remote/internal/montyv1 from the vendored file.
+source: https://github.com/pydantic/monty
+tag: v1.6.0
+commit: 3f89dcbf82071896efb5e3ded507db4191e8d829
+path: crates/monty-proto/proto/monty/v1/monty.proto
+sha256: 1085e1ba5a9a73019bdc5ff36a07fb0794d1e66d48fa999e5c614298d35dedee
+license: MIT (see LICENSE in this directory)

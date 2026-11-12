@@ -27,7 +27,7 @@ The tool description sent to the model spells out Monty's limits (the available 
 
 - **Failures go back to the model as retries.** A script error is returned as `ai.Retryf(...)`, not a hard failure, so the model can fix its code. A cumulative cap of 20 retries bounds a model stuck in a loop.
 - **Limits are set for the UI, not just safety.** The 5 s cap exists so a runaway script cannot stall the terminal.
-- **Telemetry content is opt-out.** sparktea wraps the OTel handler so one setting also suppresses `print()` events, which `otelmonty` records independently of `RecordArguments`/`RecordOutputs`.
+- **Telemetry content is opt-out.** sparktea wraps the OTel handler so one setting also suppresses `print()` events, which older gomonty releases recorded independently of `RecordArguments`/`RecordOutputs`. Current gomonty offers `TelemetryOptions.RecordPrint` (default false) with the same size cap as other telemetry content.
 - **Show the runtime version.** The header displays the linked gomonty version and its embedded Monty release (`codemode/version.go`), which must be updated when the gomonty pin moves to a different upstream Monty.
 
 ## Lessons for gomonty
@@ -36,7 +36,7 @@ Read from sparktea's workarounds; each is a candidate API improvement here.
 
 - **`Value` to JSON needs a helper.** `Value.MarshalJSON` wraps every scalar in a `{"kind", "value"}` envelope, and `Raw()` on a list returns still-wrapped `[]monty.Value`. sparktea wrote `flattenValue` (`codemode/flatten.go`) to recurse into plain Go types before returning results to the model.
 - **Kinds are compared as strings.** The `valueKind*` constants are unexported, so sparktea switches on `v.Kind()` against literals like `"list"` and `"none"`. Exporting the constants would remove that fragility.
-- **The print hook is separate from the content options.** A consumer that wants "no content in telemetry" has to wrap the handler, as sparktea does with `RecordPrint`.
+- **Print capture now has a content option.** sparktea had to wrap `RecordPrint` to suppress it; current gomonty gates it with `TelemetryOptions.RecordPrint` and caps the text with `MaxAttributeBytes`.
 - **Dependency management was awkward early on.** `MONTY-PLAN.md` records pinning a personal fork by commit through a `replace` directive, with native libraries rebuilt for only one of six platforms. sparktea now requires `github.com/mdfranz/gomonty` and `.../otelmonty` directly, which is the intended path (see [`RELEASING.md`](../RELEASING.md)).
 
 ## Next step for sparktea

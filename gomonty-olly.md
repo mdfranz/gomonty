@@ -75,12 +75,14 @@ Keep the three primary phases of execution time clearly distinguishable:
 
 On completion of the root span, record aggregate timing attributes, such as `monty.python_duration_ms` (calculated as `total_duration - callback_duration - wait_duration`), giving operators immediate visibility into Python compute time versus host I/O.
 
+Millisecond attributes use floating-point values to preserve sub-millisecond timings. This applies to both `otelmonty` and the default `SlogHandler`; consumers expecting integer millisecond attributes must accept floats. Explicit slog microsecond and nanosecond units remain integers.
+
 ### 4. Data sanitization, limits, and stdout multiplexing
 
 Python inputs, kwargs, returned values, and print streams can contain sensitive credentials or multi-megabyte payloads.
-- Make payload recording strictly opt-in via telemetry options (e.g. `RecordArguments`, `RecordOutputs`, defaulting to `false`).
-- Enforce size truncation limits on strings and collections (e.g., configurable `MaxAttributeBytes`, defaulting to 1024 bytes) similar to upstream’s `serialize_capped` and `length_limit_exceeded` flag.
-- When both `RunOptions.Print` and telemetry are active, multiplex output cleanly: stream text to `opts.Print` while also emitting structured `RecordPrint` events to the telemetry handler.
+- Make payload recording strictly opt-in via telemetry options (e.g. `RecordArguments`, `RecordOutputs`, `RecordPrint`, defaulting to `false`).
+- Enforce size truncation limits on strings and collections (e.g., configurable `MaxAttributeBytes`, defaulting to 4096 bytes) similar to upstream’s `serialize_capped` and `length_limit_exceeded` flag.
+- When both `RunOptions.Print` and telemetry are active, multiplex output cleanly: stream text to `opts.Print` while also emitting structured `RecordPrint` events when `TelemetryOptions.RecordPrint` is enabled. Cap each telemetry print chunk with `MaxAttributeBytes` at a UTF-8 boundary; the ordinary print callback receives the full text. The `RecordPrint(ctx, text)` signature stays unchanged, so it receives the capped string without a separate truncation flag.
 
 ### 5. Support local structured logging (`log/slog`)
 

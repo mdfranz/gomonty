@@ -36,7 +36,9 @@ type TelemetryHandler interface {
 
 	// RecordPrint reports captured Python print() output. It fires once
 	// per dispatch/resume step with whatever text was captured during that
-	// step, not once per print() call.
+	// step, not once per print() call. Called only when
+	// TelemetryOptions.RecordPrint is true; text is capped by
+	// TelemetryOptions.MaxAttributeBytes at a UTF-8 boundary.
 	RecordPrint(ctx context.Context, text string)
 }
 
@@ -157,9 +159,15 @@ type TelemetryOptions struct {
 	// ExecutionSpan.End / CallbackSpan.End. False by default, same
 	// rationale as RecordArguments.
 	RecordOutputs bool
-	// MaxAttributeBytes caps every rendered payload at this many bytes,
-	// truncating (at a valid UTF-8 boundary) and setting
-	// TruncatedPayload.Truncated when exceeded. Zero/negative means
+	// RecordPrint enables captured Python print() output in telemetry. False
+	// by default because printed text can carry credentials. Each captured
+	// dispatch/resume chunk is capped by MaxAttributeBytes. This does not
+	// affect RunOptions.Print or FeedOptions.Print, which receive full output.
+	RecordPrint bool
+	// MaxAttributeBytes caps every rendered payload and captured print chunk
+	// at this many bytes, truncating at a valid UTF-8 boundary. Argument and
+	// result payloads also set TruncatedPayload.Truncated when exceeded;
+	// RecordPrint receives only the capped text. Zero/negative means
 	// DefaultMaxAttributeBytes.
 	MaxAttributeBytes int
 }
@@ -205,11 +213,10 @@ func truncatedPayload(enabled bool, render func() string, maxBytes int) Truncate
 // necessary so it never splits a multi-byte UTF-8 sequence. At most 3 extra
 // bytes are trimmed (the longest UTF-8 sequence is 4 bytes).
 func truncateUTF8(s string, maxBytes int) string {
-	s = s[:maxBytes]
-	for len(s) > 0 && !utf8.RuneStart(s[len(s)-1]) {
-		s = s[:len(s)-1]
+	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
 	}
-	return s
+	return s[:maxBytes]
 }
 
 // renderInputs renders a name->Value map as "name=value, ..." in
@@ -271,11 +278,12 @@ type printTelemetry struct {
 }
 
 func recordPrint(ctx context.Context, pt printTelemetry, text string) {
-	if pt.handler == nil {
+	if pt.handler == nil || !pt.opts.RecordPrint {
 		return
 	}
+	payload := truncatedPayload(true, func() string { return text }, pt.opts.MaxAttributeBytes)
 	safeTelemetryCall(pt.opts.PanicHandler, func() {
-		pt.handler.RecordPrint(ctx, text)
+		pt.handler.RecordPrint(ctx, payload.Text)
 	})
 }
 

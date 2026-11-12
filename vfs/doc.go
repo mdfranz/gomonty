@@ -1,6 +1,7 @@
 // Package vfs adapts Go-defined filesystems and environments into Monty OS
 // handlers.
 //
-// It includes an in-memory filesystem for tests, examples, and applications
-// that want to keep Monty's file access fully inside Go-owned state.
+// MemoryFS keeps files in Go-owned memory. DirFS mounts a real directory with
+// optional read-only, byte-limit, and path policies. Overlay layers in-memory
+// edits over a stable lower filesystem and exposes a net diff for review.
 package vfs

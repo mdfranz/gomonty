@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"github.com/mdfranz/gomonty/internal/ffi"
 )
 
 var (
@@ -64,7 +62,7 @@ type Complete struct {
 
 type runnerState struct {
 	mu     sync.Mutex
-	handle *ffi.Runner
+	handle RunnerHandle
 	// scriptName is set once at construction and never mutated, so it's
 	// safe to read without holding mu.
 	scriptName string
@@ -72,7 +70,7 @@ type runnerState struct {
 
 type replState struct {
 	mu       sync.Mutex
-	handle   *ffi.Repl
+	handle   ReplHandle
 	inFlight bool
 	// scriptName is set once at construction and never mutated, so it's
 	// safe to read without holding mu.
@@ -81,7 +79,7 @@ type replState struct {
 
 type progressState struct {
 	mu     sync.Mutex
-	handle *ffi.Progress
+	handle ProgressHandle
 	owner  *replState
 }
 
@@ -93,65 +91,88 @@ type progressBase struct {
 
 // New compiles Monty code into a reusable runner.
 func New(code string, opts CompileOptions) (*Runner, error) {
-	payload, err := marshalWire(newWireCompileOptions(opts))
+	handle, err := backendOrDefault(opts.Backend).NewRunner(code, opts)
 	if err != nil {
 		return nil, err
 	}
-
-	result := ffi.NewRunner([]byte(code), payload)
-	if result.Error != nil {
-		return nil, newError(result.Error)
-	}
 	return &Runner{
-		state: &runnerState{handle: result.Runner, scriptName: opts.ScriptName},
+		state: &runnerState{handle: handle, scriptName: opts.ScriptName},
 	}, nil
 }
 
 // LoadRunner restores a serialized runner.
 func LoadRunner(data []byte) (*Runner, error) {
-	result := ffi.LoadRunner(data)
-	if result.Error != nil {
-		return nil, newError(result.Error)
+	return loadRunner(nil, data)
+}
+
+func loadRunner(b Backend, data []byte) (*Runner, error) {
+	data, err := stripDumpHeader(data)
+	if err != nil {
+		return nil, err
+	}
+	handle, err := backendOrDefault(b).LoadRunner(data)
+	if err != nil {
+		return nil, err
 	}
 	return &Runner{
-		state: &runnerState{handle: result.Runner},
+		state: &runnerState{handle: handle},
 	}, nil
 }
 
 // LoadSnapshot restores a serialized non-REPL or REPL snapshot without an owner REPL.
 func LoadSnapshot(data []byte) (Progress, error) {
-	result := ffi.LoadProgress(data)
-	if result.Error != nil {
-		return nil, newError(result.Error)
+	return loadSnapshot(nil, data)
+}
+
+func loadSnapshot(b Backend, data []byte) (Progress, error) {
+	data, err := stripDumpHeader(data)
+	if err != nil {
+		return nil, err
 	}
-	return progressFromResult(result.Progress, result.ProgressPayload, nil)
+	st := backendOrDefault(b).LoadProgress(data)
+	if st.Err != nil {
+		closeStep(st)
+		return nil, st.Err
+	}
+	return progressFromStep(st, nil)
 }
 
 // LoadReplSnapshot restores a serialized REPL snapshot and also returns a base
 // REPL handle that can be used to abandon the in-flight snippet.
 func LoadReplSnapshot(data []byte) (Progress, *Repl, error) {
+	return loadReplSnapshot(nil, data)
+}
+
+func loadReplSnapshot(b Backend, data []byte) (Progress, *Repl, error) {
+	data, err := stripDumpHeader(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	b = backendOrDefault(b)
 	owner := &Repl{state: &replState{}}
 
-	primary := ffi.LoadProgress(data)
-	if primary.Error != nil {
-		return nil, nil, newError(primary.Error)
+	primary := b.LoadProgress(data)
+	if primary.Err != nil {
+		closeStep(primary)
+		return nil, nil, primary.Err
 	}
 
-	backup := ffi.LoadProgress(data)
-	if backup.Error != nil {
-		primary.Progress.Close()
-		return nil, nil, newError(backup.Error)
+	backup := b.LoadProgress(data)
+	if backup.Err != nil {
+		closeStep(backup)
+		closeStep(primary)
+		return nil, nil, backup.Err
 	}
 
-	replResult := backup.Progress.TakeRepl()
+	repl, err := backup.Progress.TakeRepl()
 	backup.Progress.Close()
-	if replResult.Error != nil {
-		primary.Progress.Close()
-		return nil, nil, newError(replResult.Error)
+	if err != nil {
+		closeStep(primary)
+		return nil, nil, err
 	}
-	owner.state.restore(replResult.Repl)
+	owner.state.restore(repl)
 
-	progress, err := progressFromResult(primary.Progress, primary.ProgressPayload, owner.state)
+	progress, err := progressFromStep(primary, owner.state)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -160,17 +181,12 @@ func LoadReplSnapshot(data []byte) (Progress, *Repl, error) {
 
 // NewRepl constructs an empty REPL session.
 func NewRepl(opts ReplOptions) (*Repl, error) {
-	payload, err := marshalWire(newWireReplOptions(opts))
+	handle, err := backendOrDefault(opts.Backend).NewRepl(opts)
 	if err != nil {
 		return nil, err
 	}
-
-	result := ffi.NewRepl(payload)
-	if result.Error != nil {
-		return nil, newError(result.Error)
-	}
 	return &Repl{
-		state: &replState{handle: result.Repl, scriptName: opts.ScriptName},
+		state: &replState{handle: handle, scriptName: opts.ScriptName},
 	}, nil
 }
 
@@ -182,11 +198,11 @@ func (r *Runner) Dump() ([]byte, error) {
 	}
 	defer release()
 
-	data, ffiErr := handle.Dump()
-	if ffiErr != nil {
-		return nil, newError(ffiErr)
+	data, err := handle.Dump()
+	if err != nil {
+		return nil, err
 	}
-	return data, nil
+	return addDumpHeader(data), nil
 }
 
 // TypeCheck runs static type checking on the compiled runner.
@@ -197,10 +213,7 @@ func (r *Runner) TypeCheck(prefix string) error {
 	}
 	defer release()
 
-	if ffiErr := handle.TypeCheck([]byte(prefix)); ffiErr != nil {
-		return newError(ffiErr)
-	}
-	return nil
+	return handle.TypeCheck(prefix)
 }
 
 // Start begins low-level runner execution.
@@ -218,18 +231,7 @@ func (r *Runner) start(ctx context.Context, opts StartOptions, print PrintCallba
 	}
 	defer release()
 
-	wireOptions, err := newWireStartOptions(opts)
-	if err != nil {
-		return nil, err
-	}
-
-	payload, err := marshalWire(wireOptions)
-	if err != nil {
-		return nil, err
-	}
-
-	result := handle.Start(payload)
-	return consumeOpResult(ctx, result, nil, print, pt)
+	return consumeStep(ctx, handle.Start(ctx, opts), nil, print, pt)
 }
 
 // Run executes the runner through the high-level host callback loop.
@@ -275,11 +277,11 @@ func (r *Repl) Dump() ([]byte, error) {
 	}
 	defer release()
 
-	data, ffiErr := handle.Dump()
-	if ffiErr != nil {
-		return nil, newError(ffiErr)
+	data, err := handle.Dump()
+	if err != nil {
+		return nil, err
 	}
-	return data, nil
+	return addDumpHeader(data), nil
 }
 
 // FeedStart begins low-level REPL snippet execution.
@@ -296,24 +298,14 @@ func (r *Repl) feedStart(ctx context.Context, code string, opts FeedStartOptions
 		return nil, err
 	}
 
-	wireOptions, err := newWireFeedOptions(opts)
-	if err != nil {
-		return nil, err
-	}
-
-	payload, err := marshalWire(wireOptions)
-	if err != nil {
+	st := handle.FeedStart(ctx, code, opts)
+	if st.Retained {
+		// The options could not be encoded, so the session was not consumed.
 		r.state.restore(handle)
-		return nil, err
+		return nil, st.Err
 	}
-
-	result := handle.FeedStart([]byte(code), payload)
 	handle.Close()
-	progress, consumeErr := consumeOpResult(ctx, result, r.state, print, pt)
-	if consumeErr != nil {
-		return nil, consumeErr
-	}
-	return progress, nil
+	return consumeStep(ctx, st, r.state, print, pt)
 }
 
 // FeedRun executes a REPL snippet through the high-level host callback loop.
@@ -365,62 +357,27 @@ func (s *FutureSnapshot) Dump() ([]byte, error) {
 
 // ResumeReturn resumes a function or OS snapshot with a return value.
 func (s *Snapshot) ResumeReturn(ctx context.Context, value Value) (Progress, error) {
-	wireResult, err := newWireCallResult(Return(value))
-	if err != nil {
-		return nil, err
-	}
-
-	payload, err := marshalWire(wireResult)
-	if err != nil {
-		return nil, err
-	}
-	return s.progressBase.resumeCall(ctx, payload, nil, printTelemetry{})
+	return s.progressBase.resumeCall(ctx, Return(value), nil, printTelemetry{})
 }
 
 // ResumeException resumes a function or OS snapshot by raising an exception.
 func (s *Snapshot) ResumeException(ctx context.Context, exception Exception) (Progress, error) {
-	wireResult, err := newWireCallResult(Raise(exception))
-	if err != nil {
-		return nil, err
-	}
-
-	payload, err := marshalWire(wireResult)
-	if err != nil {
-		return nil, err
-	}
-	return s.progressBase.resumeCall(ctx, payload, nil, printTelemetry{})
+	return s.progressBase.resumeCall(ctx, Raise(exception), nil, printTelemetry{})
 }
 
 // ResumePending resumes a function or OS snapshot with a pending future.
 func (s *Snapshot) ResumePending(ctx context.Context) (Progress, error) {
-	payload, err := marshalWire(wireCallResult{Kind: wireCallResultPending})
-	if err != nil {
-		return nil, err
-	}
-	return s.progressBase.resumeCall(ctx, payload, nil, printTelemetry{})
+	return s.progressBase.resumeCall(ctx, Result{kind: resultKindPending}, nil, printTelemetry{})
 }
 
 // ResumeValue resumes a name lookup with a resolved value.
 func (s *NameLookupSnapshot) ResumeValue(ctx context.Context, value Value) (Progress, error) {
-	wireResult, err := newWireLookupResult(value)
-	if err != nil {
-		return nil, err
-	}
-
-	payload, err := marshalWire(wireResult)
-	if err != nil {
-		return nil, err
-	}
-	return s.progressBase.resumeLookup(ctx, payload, nil, printTelemetry{})
+	return s.progressBase.resumeLookup(ctx, value, true, nil, printTelemetry{})
 }
 
 // ResumeUndefined resumes a name lookup as undefined.
 func (s *NameLookupSnapshot) ResumeUndefined(ctx context.Context) (Progress, error) {
-	payload, err := marshalWire(wireLookupResult{Kind: wireLookupResultUndefined})
-	if err != nil {
-		return nil, err
-	}
-	return s.progressBase.resumeLookup(ctx, payload, nil, printTelemetry{})
+	return s.progressBase.resumeLookup(ctx, Value{}, false, nil, printTelemetry{})
 }
 
 // PendingCallIDs returns the unresolved call IDs for the future snapshot.
@@ -430,16 +387,7 @@ func (s *FutureSnapshot) PendingCallIDs() []uint32 {
 
 // ResumeResults resumes a future snapshot with zero or more resolved call IDs.
 func (s *FutureSnapshot) ResumeResults(ctx context.Context, results map[uint32]Result) (Progress, error) {
-	wireResults, err := newWireFutureResults(results)
-	if err != nil {
-		return nil, err
-	}
-
-	payload, err := marshalWire(wireResults)
-	if err != nil {
-		return nil, err
-	}
-	return s.progressBase.resumeFutures(ctx, payload, nil, printTelemetry{})
+	return s.progressBase.resumeFutures(ctx, results, nil, printTelemetry{})
 }
 
 func (s *Snapshot) isProgress()           {}
@@ -466,14 +414,29 @@ func (b *progressBase) dump() ([]byte, error) {
 	}
 	defer release()
 
-	bytes, ffiErr := handle.Dump()
-	if ffiErr != nil {
-		return nil, newError(ffiErr)
+	data, err := handle.Dump()
+	if err != nil {
+		return nil, err
 	}
-	return bytes, nil
+	return addDumpHeader(data), nil
 }
 
-func (b *progressBase) resumeCall(ctx context.Context, payload []byte, print PrintCallback, pt printTelemetry) (Progress, error) {
+func (b *progressBase) resumeCall(ctx context.Context, result Result, print PrintCallback, pt printTelemetry) (Progress, error) {
+	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeCall(ctx, result) })
+}
+
+func (b *progressBase) resumeLookup(ctx context.Context, value Value, found bool, print PrintCallback, pt printTelemetry) (Progress, error) {
+	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeLookup(ctx, value, found) })
+}
+
+func (b *progressBase) resumeFutures(ctx context.Context, results map[uint32]Result, print PrintCallback, pt printTelemetry) (Progress, error) {
+	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeFutures(ctx, results) })
+}
+
+// resume takes the paused handle, resumes it through call and consumes the
+// resulting Step. A Step that retained the handle (the answer could not be
+// encoded) puts it back, so the snapshot stays usable.
+func (b *progressBase) resume(ctx context.Context, print PrintCallback, pt printTelemetry, call func(ProgressHandle) Step) (Progress, error) {
 	if err := ctx.Err(); err != nil {
 		if restoreErr := b.restoreOwner(); restoreErr != nil {
 			return nil, errors.Join(err, restoreErr)
@@ -485,43 +448,14 @@ func (b *progressBase) resumeCall(ctx context.Context, payload []byte, print Pri
 	if err != nil {
 		return nil, err
 	}
-	defer handle.Close()
 
-	return consumeOpResult(ctx, handle.ResumeCall(payload), owner, print, pt)
-}
-
-func (b *progressBase) resumeLookup(ctx context.Context, payload []byte, print PrintCallback, pt printTelemetry) (Progress, error) {
-	if err := ctx.Err(); err != nil {
-		if restoreErr := b.restoreOwner(); restoreErr != nil {
-			return nil, errors.Join(err, restoreErr)
-		}
-		return nil, err
+	st := call(handle)
+	if st.Retained {
+		b.state.putBack(handle)
+		return nil, st.Err
 	}
-
-	handle, owner, err := b.state.take()
-	if err != nil {
-		return nil, err
-	}
-	defer handle.Close()
-
-	return consumeOpResult(ctx, handle.ResumeLookup(payload), owner, print, pt)
-}
-
-func (b *progressBase) resumeFutures(ctx context.Context, payload []byte, print PrintCallback, pt printTelemetry) (Progress, error) {
-	if err := ctx.Err(); err != nil {
-		if restoreErr := b.restoreOwner(); restoreErr != nil {
-			return nil, errors.Join(err, restoreErr)
-		}
-		return nil, err
-	}
-
-	handle, owner, err := b.state.take()
-	if err != nil {
-		return nil, err
-	}
-	defer handle.Close()
-
-	return consumeOpResult(ctx, handle.ResumeFutures(payload), owner, print, pt)
+	handle.Close()
+	return consumeStep(ctx, st, owner, print, pt)
 }
 
 func (b *progressBase) restoreOwner() error {
@@ -534,16 +468,16 @@ func (b *progressBase) restoreOwner() error {
 	if owner == nil {
 		return nil
 	}
-	result := handle.TakeRepl()
-	if result.Error != nil {
+	repl, err := handle.TakeRepl()
+	if err != nil {
 		owner.clear()
-		return newError(result.Error)
+		return err
 	}
-	owner.restore(result.Repl)
+	owner.restore(repl)
 	return nil
 }
 
-func (s *runnerState) borrow() (*ffi.Runner, func(), error) {
+func (s *runnerState) borrow() (RunnerHandle, func(), error) {
 	if s == nil || !s.mu.TryLock() {
 		return nil, nil, ErrConcurrentUse
 	}
@@ -554,7 +488,7 @@ func (s *runnerState) borrow() (*ffi.Runner, func(), error) {
 	return s.handle, s.mu.Unlock, nil
 }
 
-func (s *replState) borrow() (*ffi.Repl, func(), error) {
+func (s *replState) borrow() (ReplHandle, func(), error) {
 	if s == nil || !s.mu.TryLock() {
 		return nil, nil, ErrConcurrentUse
 	}
@@ -568,7 +502,7 @@ func (s *replState) borrow() (*ffi.Repl, func(), error) {
 	return s.handle, s.mu.Unlock, nil
 }
 
-func (s *replState) takeForExecution() (*ffi.Repl, error) {
+func (s *replState) takeForExecution() (ReplHandle, error) {
 	if s == nil || !s.mu.TryLock() {
 		return nil, ErrConcurrentUse
 	}
@@ -586,7 +520,7 @@ func (s *replState) takeForExecution() (*ffi.Repl, error) {
 	return handle, nil
 }
 
-func (s *replState) restore(handle *ffi.Repl) {
+func (s *replState) restore(handle ReplHandle) {
 	s.mu.Lock()
 	old := s.handle
 	s.handle = handle
@@ -608,7 +542,7 @@ func (s *replState) clear() {
 	}
 }
 
-func (s *progressState) borrow() (*ffi.Progress, func(), error) {
+func (s *progressState) borrow() (ProgressHandle, func(), error) {
 	if s == nil || !s.mu.TryLock() {
 		return nil, nil, ErrConcurrentUse
 	}
@@ -619,7 +553,7 @@ func (s *progressState) borrow() (*ffi.Progress, func(), error) {
 	return s.handle, s.mu.Unlock, nil
 }
 
-func (s *progressState) take() (*ffi.Progress, *replState, error) {
+func (s *progressState) take() (ProgressHandle, *replState, error) {
 	if s == nil || !s.mu.TryLock() {
 		return nil, nil, ErrConcurrentUse
 	}
@@ -633,60 +567,69 @@ func (s *progressState) take() (*ffi.Progress, *replState, error) {
 	return handle, s.owner, nil
 }
 
-func consumeOpResult(ctx context.Context, result ffi.OpResult, owner *replState, print PrintCallback, pt printTelemetry) (Progress, error) {
-	if result.Prints != "" {
+// putBack returns a handle that take removed but a resume did not consume.
+func (s *progressState) putBack(handle ProgressHandle) {
+	s.mu.Lock()
+	s.handle = handle
+	s.mu.Unlock()
+}
+
+// closeStep releases whatever handles a Step carries.
+func closeStep(st Step) {
+	if st.Progress != nil {
+		st.Progress.Close()
+	}
+	if st.Repl != nil {
+		st.Repl.Close()
+	}
+}
+
+func consumeStep(ctx context.Context, st Step, owner *replState, print PrintCallback, pt printTelemetry) (Progress, error) {
+	if st.Prints != "" {
 		if print != nil {
-			print("stdout", result.Prints)
+			print("stdout", st.Prints)
 		}
-		recordPrint(ctx, pt, result.Prints)
+		recordPrint(ctx, pt, st.Prints)
 	}
 
-	if result.Error != nil {
+	if st.Err != nil {
 		if owner != nil {
-			if result.Repl != nil {
-				owner.restore(result.Repl)
+			if st.Repl != nil {
+				owner.restore(st.Repl)
 			} else {
 				owner.clear()
 			}
-		} else if result.Repl != nil {
-			result.Repl.Close()
+		} else if st.Repl != nil {
+			st.Repl.Close()
 		}
-		if result.Progress != nil {
-			result.Progress.Close()
+		if st.Progress != nil {
+			st.Progress.Close()
 		}
-		return nil, newError(result.Error)
+		return nil, st.Err
 	}
 
-	if result.Progress == nil {
+	if st.Progress == nil {
 		if owner != nil {
 			owner.clear()
 		}
-		if result.Repl != nil {
-			result.Repl.Close()
+		if st.Repl != nil {
+			st.Repl.Close()
 		}
-		return nil, fmt.Errorf("monty ffi returned no progress handle")
+		return nil, fmt.Errorf("monty backend returned no progress handle")
 	}
 
-	return progressFromResult(result.Progress, result.ProgressPayload, owner)
+	return progressFromStep(st, owner)
 }
 
-func progressFromResult(handle *ffi.Progress, payload []byte, owner *replState) (Progress, error) {
-	if len(payload) == 0 {
-		handle.Close()
+func progressFromStep(st Step, owner *replState) (Progress, error) {
+	handle := st.Progress
+	if handle == nil {
 		if owner != nil {
 			owner.clear()
 		}
-		return nil, fmt.Errorf("monty ffi returned no progress payload")
+		return nil, fmt.Errorf("monty backend returned no progress handle")
 	}
-
-	var desc wireProgressPayload
-	if err := unmarshalWire(payload, &desc); err != nil {
-		handle.Close()
-		if owner != nil {
-			owner.clear()
-		}
-		return nil, fmt.Errorf("invalid progress payload: %w", err)
-	}
+	desc := st.Desc
 
 	state := &progressState{
 		handle: handle,
@@ -698,74 +641,43 @@ func progressFromResult(handle *ffi.Progress, payload []byte, owner *replState) 
 		isRepl:     desc.IsRepl,
 	}
 
-	switch desc.Variant {
-	case wireProgressFunctionCall:
-		args, err := valuesFromWire(desc.Args)
-		if err != nil {
-			handle.Close()
-			if owner != nil {
-				owner.clear()
-			}
-			return nil, err
-		}
-		kwargs, err := dictFromWirePairs(desc.Kwargs)
-		if err != nil {
-			handle.Close()
-			if owner != nil {
-				owner.clear()
-			}
-			return nil, err
-		}
+	switch desc.Kind {
+	case ProgressFunctionCall:
 		return &Snapshot{
 			progressBase: base,
 			FunctionName: desc.FunctionName,
-			Args:         args,
-			Kwargs:       kwargs,
+			Args:         desc.Args,
+			Kwargs:       desc.Kwargs,
 			CallID:       desc.CallID,
 			IsOSFunction: desc.IsOSFunction,
 			IsMethodCall: desc.IsMethodCall,
 		}, nil
-	case wireProgressNameLookup:
+	case ProgressNameLookup:
 		return &NameLookupSnapshot{
 			progressBase: base,
 			VariableName: desc.VariableName,
 		}, nil
-	case wireProgressFuture:
+	case ProgressFuture:
 		return &FutureSnapshot{
 			progressBase:   base,
-			pendingCallIDs: append([]uint32(nil), desc.PendingCallIDs...),
+			pendingCallIDs: desc.PendingCallIDs,
 		}, nil
-	case wireProgressComplete:
-		if desc.Output == nil {
-			handle.Close()
-			if owner != nil {
-				owner.clear()
-			}
-			return nil, fmt.Errorf("complete progress payload is missing output")
-		}
-		output, err := desc.Output.toPublic()
-		if err != nil {
-			handle.Close()
-			if owner != nil {
-				owner.clear()
-			}
-			return nil, err
-		}
+	case ProgressComplete:
 		if owner != nil {
-			result := handle.TakeRepl()
+			repl, err := handle.TakeRepl()
 			handle.Close()
 			state.handle = nil
-			if result.Error != nil {
+			if err != nil {
 				owner.clear()
-				return nil, newError(result.Error)
+				return nil, err
 			}
-			owner.restore(result.Repl)
+			owner.restore(repl)
 		} else {
 			handle.Close()
 			state.handle = nil
 		}
 		return &Complete{
-			Output:     output,
+			Output:     desc.Output,
 			ScriptName: desc.ScriptName,
 			IsRepl:     desc.IsRepl,
 		}, nil
@@ -774,7 +686,7 @@ func progressFromResult(handle *ffi.Progress, payload []byte, owner *replState) 
 		if owner != nil {
 			owner.clear()
 		}
-		return nil, fmt.Errorf("unknown progress variant %q", desc.Variant)
+		return nil, fmt.Errorf("unknown progress kind %d", desc.Kind)
 	}
 }
 

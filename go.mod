@@ -1,6 +1,6 @@
 module github.com/mdfranz/gomonty
 
-go 1.25.0
+go 1.27.4
 
 require (
 	github.com/ebitengine/purego v0.10.0

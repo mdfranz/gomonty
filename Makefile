@@ -1,4 +1,4 @@
-.PHONY: release publish-release shmonty repl shmonty-examples
+.PHONY: release publish-release shmonty repl shmonty-examples proto check-proto
 
 shmonty:
 	cd cmd/shmonty && CGO_ENABLED=0 go build -o ../../shmonty .
@@ -8,10 +8,17 @@ repl: shmonty
 	./shmonty
 
 shmonty-examples: shmonty
-	@set -e; for script in python-scripts/*.py; do \
+	@failed=0; for script in python-scripts/*.py; do \
 		echo "=== $$script ==="; \
-		./shmonty "$$script"; \
-	done
+		if ! ./shmonty "$$script"; then \
+			echo "FAILED: $$script" >&2; \
+			failed=$$((failed + 1)); \
+		fi; \
+	done; \
+	if [ "$$failed" -ne 0 ]; then \
+		echo "$$failed example(s) failed" >&2; \
+		exit 1; \
+	fi
 
 release:
 	@command -v gh >/dev/null 2>&1 || { echo "gh is required"; exit 1; }
@@ -50,3 +57,18 @@ publish-release:
 	@gh workflow run release.yml --ref main -f version="$(VERSION)"
 	@echo "Triggered release workflow for $(VERSION)."
 	@echo "Watch with: gh run list --workflow=release.yml --limit 1"
+
+# Regenerate the Go code for the vendored monty.v1 proto (remote/proto) into
+# remote/internal/montyv1. Needs protoc; the Go plugins are pinned and installed
+# into ./.bin by the script.
+proto:
+	scripts/gen-proto.sh
+
+# Fails if the checked-in generated code is not what the vendored proto
+# generates (run in CI).
+check-proto: proto
+	@if [ -n "$$(git status --porcelain -- remote/internal/montyv1)" ]; then \
+		echo "remote/internal/montyv1 is out of date; run 'make proto' and commit the result" >&2; \
+		git --no-pager diff --stat -- remote/internal/montyv1 >&2; \
+		exit 1; \
+	fi

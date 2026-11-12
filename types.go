@@ -269,8 +269,18 @@ const (
 	OSPathRename     OSFunction = "Path.rename"
 	OSPathResolve    OSFunction = "Path.resolve"
 	OSPathAbsolute   OSFunction = "Path.absolute"
-	OSGetenv         OSFunction = "os.getenv"
-	OSGetEnviron     OSFunction = "os.environ"
+	// OSPathCreateExclusive creates a new empty file, refusing every existing
+	// entry (open mode 'x'). Args are the path and the mode, with a
+	// permissions keyword argument. It must be answered with an open-file
+	// value, which gomonty cannot yet send back as a host result, so the
+	// vfs handlers answer it with NotImplementedError for now.
+	OSPathCreateExclusive OSFunction = "Path.create_exclusive"
+	// OSGetTypeHints asks for typing.get_type_hints of a host function
+	// (args "function", name) or host class (args "class", id). Reply with a
+	// dict of hints; with no handler the sandbox receives an empty dict.
+	OSGetTypeHints OSFunction = "typing.get_type_hints"
+	OSGetenv       OSFunction = "os.getenv"
+	OSGetEnviron   OSFunction = "os.environ"
 	// OSPathScan reads a bounded subtree in one call, for os.scandir,
 	// os.walk, Path.walk, Path.glob and Path.rglob. Args[0] is the root and
 	// the keyword arguments are max_depth, follow_symlinks, pattern,
@@ -326,6 +336,8 @@ const (
 	resultKindReturn resultKind = iota
 	resultKindException
 	resultKindPending
+	resultKindNotFound
+	resultKindModuleFile
 )
 
 // Result is the explicit host callback result union.
@@ -337,6 +349,17 @@ type Result struct {
 	value     Value
 	exception *Exception
 	waiter    Waiter
+	module    ModuleFile
+}
+
+// ModuleFile is a module's .py source found by the host. The sandbox compiles
+// and runs it as the module.
+type ModuleFile struct {
+	// Path is the virtual path the source was read from: the module's
+	// __file__. A path ending in /__init__.py makes the module a package.
+	Path string
+	// Source is the file's text.
+	Source string
 }
 
 // Return constructs a successful callback result.
@@ -353,6 +376,19 @@ func Raise(exception Exception) Result {
 		kind:      resultKindException,
 		exception: &exception,
 	}
+}
+
+// NotFound answers a lookup the host does not have. For an import it raises
+// ModuleNotFoundError, or the ImportError a from-import of a missing submodule
+// raises, which a plain Raise cannot reproduce.
+func NotFound() Result {
+	return Result{kind: resultKindNotFound}
+}
+
+// ImportFile answers an OSImport call with the module's .py source. It is only
+// valid for an import whose search path was not empty.
+func ImportFile(file ModuleFile) Result {
+	return Result{kind: resultKindModuleFile, module: file}
 }
 
 // Pending constructs a callback result backed by a waiter.
@@ -386,6 +422,10 @@ type CompileOptions struct {
 	Inputs         []string
 	TypeCheck      bool
 	TypeCheckStubs string
+
+	// Backend selects what runs the interpreter; nil means the native library.
+	// The Backend API is experimental; see Backend.
+	Backend Backend
 }
 
 // StartOptions configures low-level runner execution.
@@ -398,6 +438,10 @@ type StartOptions struct {
 type ReplOptions struct {
 	ScriptName string
 	Limits     *ResourceLimits
+
+	// Backend selects what runs the interpreter; nil means the native library.
+	// The Backend API is experimental; see Backend.
+	Backend Backend
 }
 
 // FeedStartOptions configures low-level REPL snippet execution.

@@ -23,3 +23,9 @@ except ModuleNotFoundError as e:
     print("ModuleNotFoundError:", e)
 
 z
+
+assert z == complex(4, 2)
+assert a + b == 3
+assert xs == [1, 9, 4]
+assert bisect.bisect_left([1, 3, 5, 7], 5) == 2
+assert hashlib.sha256(b"monty").hexdigest()[:16] == "f8eb31164222d734"

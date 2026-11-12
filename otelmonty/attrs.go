@@ -1,6 +1,8 @@
 package otelmonty
 
 import (
+	"time"
+
 	monty "github.com/mdfranz/gomonty"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -63,14 +65,14 @@ func waitAttrs(info monty.WaitInfo) []attribute.KeyValue {
 }
 
 // timingAttrs renders an ExecutionTiming's breakdown as root-span-only
-// attributes, in milliseconds to match SlogHandler's default unit and
+// attributes, in fractional milliseconds to match SlogHandler's default unit and
 // gomonty-olly.md's own monty.python_duration_ms naming. Total isn't
 // included: the span's own start/end timestamps already carry it.
 func timingAttrs(t monty.ExecutionTiming) []attribute.KeyValue {
 	return []attribute.KeyValue{
-		attribute.Int64(attrCallbackDuration, t.Callback.Milliseconds()),
-		attribute.Int64(attrWaitDuration, t.Wait.Milliseconds()),
-		attribute.Int64(attrPythonDuration, t.Python().Milliseconds()),
+		attribute.Float64(attrCallbackDuration, float64(t.Callback)/float64(time.Millisecond)),
+		attribute.Float64(attrWaitDuration, float64(t.Wait)/float64(time.Millisecond)),
+		attribute.Float64(attrPythonDuration, float64(t.Python())/float64(time.Millisecond)),
 	}
 }
 

@@ -11,3 +11,9 @@ print("lookup:", lookup)
 print("point:", point)
 
 sum(squares)
+
+assert squares == [1, 4, 9, 16, 25]
+assert evens == {2, 4}
+assert lookup == {1: 1, 2: 4, 3: 9, 4: 16, 5: 25}
+assert point == (3, 4)
+assert sum(squares) == 55

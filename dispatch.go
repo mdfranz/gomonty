@@ -54,27 +54,14 @@ func dispatchLoop(ctx context.Context, progress Progress, cfg dispatchConfig) (V
 				return Value{}, restoreProgressOwner(current, err), timing
 			}
 
-			switch {
-			case result.wirePending():
+			if result.wirePending() {
 				waiter := result.waiterValue()
 				if waiter == nil {
 					return Value{}, restoreProgressOwner(current, fmt.Errorf("pending result for call %d is missing a waiter", current.CallID)), timing
 				}
 				waiters[current.CallID] = waiter
-				progress, err = current.progressBase.resumeCall(ctx, mustMarshalCallResult(callResultPayload{Kind: "pending"}), cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
-			case result.wireException() != nil:
-				exception := result.wireException()
-				progress, err = current.progressBase.resumeCall(ctx, mustMarshalCallResult(callResultPayload{
-					Kind: "exception",
-					Type: exception.Type,
-					Arg:  exception.Arg,
-				}), cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
-			default:
-				progress, err = current.progressBase.resumeCall(ctx, mustMarshalCallResult(callResultPayload{
-					Kind:  "return",
-					Value: result.wireValue(),
-				}), cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
 			}
+			progress, err = current.progressBase.resumeCall(ctx, result, cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
 			if err != nil {
 				return Value{}, err, timing
 			}
@@ -91,7 +78,7 @@ func dispatchLoop(ctx context.Context, progress Progress, cfg dispatchConfig) (V
 			if err != nil {
 				return Value{}, restoreProgressOwner(current, err), timing
 			}
-			progress, err = current.progressBase.resumeFutures(ctx, mustMarshalFutureResults(results), cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
+			progress, err = current.progressBase.resumeFutures(ctx, results, cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
 			if err != nil {
 				return Value{}, err, timing
 			}
@@ -112,6 +99,10 @@ func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfi
 		osHandler := cfg.os
 		if snapshot.FunctionName == string(OSImport) || snapshot.FunctionName == string(OSImportStubs) {
 			osHandler = importHandler(cfg.modules, cfg.os)
+		}
+		if osHandler == nil && snapshot.FunctionName == string(OSGetTypeHints) {
+			// A host that does not handle type hints gives {}.
+			return Return(DictValue(nil)), nil
 		}
 		if osHandler == nil {
 			// No call was actually attempted (no OS handler configured at
@@ -173,17 +164,13 @@ func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfi
 }
 
 func dispatchNameLookup(ctx context.Context, lookup *NameLookupSnapshot, cfg dispatchConfig) (Progress, error) {
+	pt := printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions}
 	if handler, ok := cfg.functions[lookup.VariableName]; ok && handler != nil {
 		value := FunctionValue(Function{Name: lookup.VariableName})
-		return lookup.progressBase.resumeLookup(ctx, mustMarshalLookupResult(lookupResultPayload{
-			Kind:  "value",
-			Value: value,
-		}), cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
+		return lookup.progressBase.resumeLookup(ctx, value, true, cfg.print, pt)
 	}
 
-	return lookup.progressBase.resumeLookup(ctx, mustMarshalLookupResult(lookupResultPayload{
-		Kind: "undefined",
-	}), cfg.print, printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions})
+	return lookup.progressBase.resumeLookup(ctx, Value{}, false, cfg.print, pt)
 }
 
 func waitForFutureResults(ctx context.Context, pending []uint32, waiters map[uint32]Waiter, cfg dispatchConfig) (map[uint32]Result, error) {
@@ -261,42 +248,6 @@ func restoreProgressOwner(progress Progress, err error) error {
 	return err
 }
 
-func mustMarshalCallResult(payload callResultPayload) []byte {
-	wireResult, err := payload.toWire()
-	if err != nil {
-		panic(err)
-	}
-	bytes, err := marshalWire(wireResult)
-	if err != nil {
-		panic(err)
-	}
-	return bytes
-}
-
-func mustMarshalLookupResult(payload lookupResultPayload) []byte {
-	wireResult, err := payload.toWire()
-	if err != nil {
-		panic(err)
-	}
-	bytes, err := marshalWire(wireResult)
-	if err != nil {
-		panic(err)
-	}
-	return bytes
-}
-
-func mustMarshalFutureResults(results map[uint32]Result) []byte {
-	payload, err := newWireFutureResults(results)
-	if err != nil {
-		panic(err)
-	}
-	bytes, err := marshalWire(payload)
-	if err != nil {
-		panic(err)
-	}
-	return bytes
-}
-
 // importHandler answers the OS calls the sandbox makes for host modules:
 // OSImport asks for a module by top-level name and OSImportStubs for the type
 // stubs of names about to be type-checked. modules is consulted first, then
@@ -314,8 +265,7 @@ func importHandler(modules map[string]Module, fallback OSHandler) OSHandler {
 			if fallback != nil {
 				return fallback(ctx, call)
 			}
-			message := fmt.Sprintf("No module named '%s'", name)
-			return Raise(Exception{Type: "ModuleNotFoundError", Arg: &message}), nil
+			return NotFound(), nil
 		case OSImportStubs:
 			var names []Value
 			if len(call.Args) > 0 {

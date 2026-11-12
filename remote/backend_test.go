@@ -1,0 +1,546 @@
+package remote_test
+
+import (
+	"context"
+	"errors"
+	"math"
+	"math/big"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	monty "github.com/mdfranz/gomonty"
+	"github.com/mdfranz/gomonty/remote"
+	"github.com/mdfranz/gomonty/remote/internal/fakeworker"
+	montyv1 "github.com/mdfranz/gomonty/remote/internal/montyv1"
+)
+
+const token = "test-token"
+
+// serve answers Configure with Ok, then calls onFeed for each Feed, numbering
+// them from 1, until the client closes the stream.
+func serve(onFeed func(s *fakeworker.Stream, n int, feed *montyv1.Feed)) fakeworker.Handler {
+	return func(s *fakeworker.Stream) {
+		if s.RecvConfigure() == nil {
+			return
+		}
+		s.Send(fakeworker.Ok())
+		for n := 1; ; n++ {
+			feed := s.RecvFeed()
+			if feed == nil {
+				return
+			}
+			onFeed(s, n, feed)
+		}
+	}
+}
+
+func newRepl(t *testing.T, handler fakeworker.Handler) *monty.Repl {
+	t.Helper()
+	conn := fakeworker.Start(t, handler)
+	backend := remote.NewBackend(remote.NewGRPCTransport(conn, token))
+	repl, err := monty.NewRepl(monty.ReplOptions{ScriptName: "remote_test.py", Backend: backend})
+	if err != nil {
+		t.Fatalf("NewRepl: %v", err)
+	}
+	return repl
+}
+
+func feed(t *testing.T, repl *monty.Repl, code string, opts monty.FeedOptions) (monty.Value, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return repl.FeedRun(ctx, code, opts)
+}
+
+func wantInt(t *testing.T, got monty.Value, err error, want int64) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("FeedRun: %v", err)
+	}
+	if got.Raw() != want {
+		t.Fatalf("result = %#v, want %d", got.Raw(), want)
+	}
+}
+
+// recorder keeps what the worker saw, for the test goroutine to read.
+type recorder struct {
+	mu     sync.Mutex
+	token  string
+	config *montyv1.Configure
+	codes  []string
+}
+
+func (r *recorder) set(f func(*recorder)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	f(r)
+}
+
+func TestSessionIsConfiguredAndReused(t *testing.T) {
+	rec := &recorder{}
+	handler := func(s *fakeworker.Stream) {
+		cfg := s.RecvConfigure()
+		if cfg == nil {
+			return
+		}
+		rec.set(func(r *recorder) { r.token, r.config = s.Token(), cfg })
+		s.Send(fakeworker.Ok())
+		for {
+			f := s.RecvFeed()
+			if f == nil {
+				return
+			}
+			rec.set(func(r *recorder) { r.codes = append(r.codes, f.GetCode()) })
+			s.Send(fakeworker.Printed("hi\n"))
+			s.Send(fakeworker.Complete(0, fakeworker.Int(42)))
+		}
+	}
+
+	conn := fakeworker.Start(t, handler)
+	limits := &monty.ResourceLimits{MaxDuration: 2 * time.Second, MaxMemory: 1 << 20, MaxRecursionDepth: 50, MaxSuspensions: 7}
+	repl, err := monty.NewRepl(monty.ReplOptions{
+		ScriptName: "session.py",
+		Limits:     limits,
+		Backend:    remote.NewBackend(remote.NewGRPCTransport(conn, token)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var printed string
+	opts := monty.FeedOptions{Print: func(_, text string) { printed += text }}
+	got, err := feed(t, repl, "first", opts)
+	wantInt(t, got, err, 42)
+	got, err = feed(t, repl, "second", opts)
+	wantInt(t, got, err, 42)
+
+	if printed != "hi\nhi\n" {
+		t.Fatalf("printed %q, want the worker's output from both feeds", printed)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if rec.token != token {
+		t.Errorf("worker saw token %q, want %q", rec.token, token)
+	}
+	cfg := rec.config
+	if cfg.GetScriptName() != "session.py" {
+		t.Errorf("script name = %q", cfg.GetScriptName())
+	}
+	if cfg.GetProtocolVersion() != 8 {
+		t.Errorf("protocol version = %d, want 8 (a worker rejects 0)", cfg.GetProtocolVersion())
+	}
+	l := cfg.GetLimits()
+	if l.GetMaxFeedDurationMicros() != 2_000_000 || l.GetMaxMemoryBytes() != 1<<20 ||
+		l.GetMaxRecursionDepth() != 50 || l.GetMaxSuspensions() != 7 {
+		t.Errorf("limits = %v", l)
+	}
+	if strings.Join(rec.codes, ",") != "first,second" {
+		t.Errorf("worker was fed %v", rec.codes)
+	}
+}
+
+func TestInputsAndResultsRoundTripThroughTheArena(t *testing.T) {
+	// The worker echoes the first input back, so what reaches the client has
+	// been encoded and decoded.
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, f *montyv1.Feed) {
+		s.Send(fakeworker.CompleteWith(f.GetInputs()[0].GetValue(), f.GetValues()))
+	}))
+
+	huge := new(big.Int).Lsh(big.NewInt(1), 100)
+	text := "héllo"
+	cases := map[string]monty.Value{
+		"none":       monty.None(),
+		"ellipsis":   monty.Ellipsis(),
+		"true":       monty.Bool(true),
+		"zero":       monty.Int(0),
+		"negative":   monty.Int(-7),
+		"max":        monty.Int(math.MaxInt64),
+		"min":        monty.Int(math.MinInt64),
+		"big":        monty.BigInt(huge),
+		"negbig":     monty.BigInt(new(big.Int).Neg(huge)),
+		"float":      monty.Float(1.5),
+		"complex":    monty.Complex(complex(1, -2)),
+		"string":     monty.String(text),
+		"bytes":      monty.Bytes([]byte{0, 1, 255}),
+		"list":       monty.List(monty.Int(1), monty.String("two"), monty.List(monty.None())),
+		"tuple":      monty.TupleValue(monty.Int(1), monty.Int(2)),
+		"set":        monty.SetValue(monty.Set{monty.Int(3)}),
+		"frozenset":  monty.FrozenSetValue(monty.FrozenSet{monty.String("a")}),
+		"decimal":    monty.DecimalValue("1.20"),
+		"path":       monty.PathValue("/tmp/x"),
+		"exception":  monty.ExceptionValue(monty.Exception{Type: "ValueError", Arg: &text}),
+		"emptylist":  monty.List(),
+		"nestedlist": monty.List(monty.List(monty.List(monty.Int(1)))),
+		"dict": monty.DictValue(monty.Dict{
+			{Key: monty.String("b"), Value: monty.Int(2)},
+			{Key: monty.String("a"), Value: monty.List(monty.Int(1))},
+			{Key: monty.Int(3), Value: monty.None()},
+		}),
+	}
+	for name, want := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := feed(t, repl, "x", monty.FeedOptions{Inputs: map[string]monty.Value{"x": want}})
+			if err != nil {
+				t.Fatalf("FeedRun: %v", err)
+			}
+			if got.Kind() != want.Kind() || got.String() != want.String() {
+				t.Fatalf("got %s %s, want %s %s", got.Kind(), got, want.Kind(), want)
+			}
+		})
+	}
+
+	t.Run("negative zero keeps its sign", func(t *testing.T) {
+		got, err := feed(t, repl, "x", monty.FeedOptions{Inputs: map[string]monty.Value{"x": monty.Float(math.Copysign(0, -1))}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f, _ := got.Raw().(float64); !math.Signbit(f) {
+			t.Fatalf("-0.0 came back as %v", f)
+		}
+	})
+}
+
+// The worker builds results in post-order and may share a child between
+// holders, which the client's own encoder never does.
+func TestWorkerResultsMayShareNodes(t *testing.T) {
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.Complete(3, fakeworker.Int(1), fakeworker.Int(2), fakeworker.Str("x"), fakeworker.List(0, 1, 0, 2)))
+	}))
+	got, err := feed(t, repl, "x", monty.FeedOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := monty.List(monty.Int(1), monty.Int(2), monty.Int(1), monty.String("x")); got.String() != want.String() {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestPythonErrorLeavesTheSessionUsable(t *testing.T) {
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, n int, _ *montyv1.Feed) {
+		s.Send(fakeworker.Printed("before the error\n"))
+		if n == 1 {
+			s.Send(fakeworker.Raised("ValueError", "boom"))
+			return
+		}
+		s.Send(fakeworker.Complete(0, fakeworker.Int(1)))
+	}))
+
+	var printed string
+	_, err := feed(t, repl, "bad", monty.FeedOptions{Print: func(_, text string) { printed += text }})
+	var pyErr *remote.PythonError
+	if !errors.As(err, &pyErr) || pyErr.Type != "ValueError" || pyErr.Message != "boom" {
+		t.Fatalf("err = %v, want a ValueError(boom)", err)
+	}
+	if pyErr.Error() != "ValueError: boom" {
+		t.Fatalf("message = %q", pyErr.Error())
+	}
+	if printed != "before the error\n" {
+		t.Fatalf("printed %q, want the output that preceded the error", printed)
+	}
+
+	got, err := feed(t, repl, "good", monty.FeedOptions{})
+	wantInt(t, got, err, 1)
+}
+
+func TestTypeCheckFailureLeavesTheSessionUsable(t *testing.T) {
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, n int, _ *montyv1.Feed) {
+		if n == 1 {
+			s.Send(fakeworker.TypeCheckFailed("error[invalid-argument-type]"))
+			return
+		}
+		s.Send(fakeworker.Complete(0, fakeworker.Int(2)))
+	}))
+	_, err := feed(t, repl, "bad", monty.FeedOptions{})
+	var typing *remote.TypingError
+	if !errors.As(err, &typing) || !strings.Contains(typing.Diagnostics, "invalid-argument-type") {
+		t.Fatalf("err = %v, want a TypingError", err)
+	}
+	got, err := feed(t, repl, "good", monty.FeedOptions{})
+	wantInt(t, got, err, 2)
+}
+
+func TestRefusedSessionFailsNewRepl(t *testing.T) {
+	conn := fakeworker.Start(t, func(s *fakeworker.Stream) {
+		if s.RecvConfigure() != nil {
+			s.Send(fakeworker.Refused("unknown profile: x"))
+		}
+	})
+	_, err := monty.NewRepl(monty.ReplOptions{Backend: remote.NewBackend(remote.NewGRPCTransport(conn, ""))})
+	var refused *remote.SessionRefusedError
+	if !errors.As(err, &refused) || refused.Reason != "unknown profile: x" {
+		t.Fatalf("err = %v, want a SessionRefusedError", err)
+	}
+}
+
+func TestFatalErrorEndsTheSession(t *testing.T) {
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.Fatal("frame desync"))
+	}))
+	_, err := feed(t, repl, "x", monty.FeedOptions{})
+	if err == nil || !strings.Contains(err.Error(), "frame desync") {
+		t.Fatalf("err = %v, want the worker's message", err)
+	}
+	if _, err := feed(t, repl, "x", monty.FeedOptions{}); !errors.Is(err, monty.ErrClosed) {
+		t.Fatalf("a dead session should be closed, got %v", err)
+	}
+}
+
+// A worker that exits without a FatalError crashed; the client must not wait
+// for it.
+func TestWorkerCrashIsReported(t *testing.T) {
+	repl := newRepl(t, func(s *fakeworker.Stream) {
+		if s.RecvConfigure() == nil {
+			return
+		}
+		s.Send(fakeworker.Ok())
+		s.RecvFeed()
+		// Return without answering, which ends the stream: the worker died.
+	})
+	_, err := feed(t, repl, "x", monty.FeedOptions{})
+	if err == nil || !strings.Contains(err.Error(), "closed the stream") {
+		t.Fatalf("err = %v, want a closed-stream error", err)
+	}
+}
+
+func TestPingIsAnswered(t *testing.T) {
+	answered := make(chan bool, 1)
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.Ping())
+		req := s.Recv()
+		answered <- req != nil && req.GetPong() != nil
+		s.Send(fakeworker.Complete(0, fakeworker.Int(5)))
+	}))
+	got, err := feed(t, repl, "x", monty.FeedOptions{})
+	wantInt(t, got, err, 5)
+	if !<-answered {
+		t.Fatal("the client did not answer Ping with Pong")
+	}
+}
+
+// A script that needs the host cannot be served yet. The feed is aborted, so
+// the session survives, and the caller gets an error naming the cause.
+func TestHostCallsAreAbortedNotLeftHanging(t *testing.T) {
+	var abortedWith string
+	var mu sync.Mutex
+	repl := newRepl(t, func(s *fakeworker.Stream) {
+		if s.RecvConfigure() == nil {
+			return
+		}
+		s.Send(fakeworker.Ok())
+		if s.RecvFeed() == nil {
+			return
+		}
+		s.Send(fakeworker.CallsHost("lookup"))
+		req := s.Recv()
+		if req == nil || req.GetAbortFeed() == nil {
+			t.Errorf("worker expected AbortFeed, got %v", req)
+			return
+		}
+		mu.Lock()
+		abortedWith = req.GetAbortFeed().GetException().GetExcType()
+		mu.Unlock()
+		s.Send(fakeworker.Raised("RuntimeError", "aborted"))
+		if s.RecvFeed() != nil {
+			s.Send(fakeworker.Complete(0, fakeworker.Int(9)))
+		}
+	})
+
+	_, err := feed(t, repl, "lookup()", monty.FeedOptions{})
+	if !errors.Is(err, remote.ErrUnsupported) || !strings.Contains(err.Error(), "host function call") {
+		t.Fatalf("err = %v, want ErrUnsupported naming the host call", err)
+	}
+	got, err := feed(t, repl, "1", monty.FeedOptions{})
+	wantInt(t, got, err, 9)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if abortedWith != "RuntimeError" {
+		t.Fatalf("abort exception = %q", abortedWith)
+	}
+}
+
+func TestUnsendableInputIsRejectedBeforeAnythingIsSent(t *testing.T) {
+	feeds := 0
+	var mu sync.Mutex
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		mu.Lock()
+		feeds++
+		mu.Unlock()
+		s.Send(fakeworker.Complete(0, fakeworker.Int(3)))
+	}))
+
+	bad := monty.DateValue(monty.Date{Year: 2026, Month: 1, Day: 2})
+	_, err := feed(t, repl, "x", monty.FeedOptions{Inputs: map[string]monty.Value{"when": bad}})
+	if err == nil || !strings.Contains(err.Error(), `input "when"`) {
+		t.Fatalf("err = %v, want the input named", err)
+	}
+	got, err := feed(t, repl, "x", monty.FeedOptions{})
+	wantInt(t, got, err, 3)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if feeds != 1 {
+		t.Fatalf("the worker saw %d feeds, want 1: the bad input must not be sent", feeds)
+	}
+}
+
+func TestMalformedResultIsAnErrorNotAPanic(t *testing.T) {
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, n int, _ *montyv1.Feed) {
+		switch n {
+		case 1: // root outside the arena
+			s.Send(fakeworker.Complete(5, fakeworker.Int(1)))
+		case 2: // a child that does not precede its holder
+			s.Send(fakeworker.Complete(0, fakeworker.List(0)))
+		default:
+			s.Send(fakeworker.Complete(0, fakeworker.Int(4)))
+		}
+	}))
+	for i := 0; i < 2; i++ {
+		if _, err := feed(t, repl, "x", monty.FeedOptions{}); err == nil {
+			t.Fatalf("malformed result %d was accepted", i+1)
+		}
+	}
+	got, err := feed(t, repl, "x", monty.FeedOptions{})
+	wantInt(t, got, err, 4)
+}
+
+func TestUnsupportedOperations(t *testing.T) {
+	conn := fakeworker.Start(t, func(*fakeworker.Stream) {})
+	backend := remote.NewBackend(remote.NewGRPCTransport(conn, ""))
+
+	if _, err := monty.New("1", monty.CompileOptions{Backend: backend}); !errors.Is(err, remote.ErrUnsupported) {
+		t.Errorf("a runner: err = %v, want ErrUnsupported", err)
+	}
+	if _, err := backend.LoadRunner(nil); !errors.Is(err, remote.ErrUnsupported) {
+		t.Errorf("LoadRunner: err = %v", err)
+	}
+	if step := backend.LoadProgress(nil); !errors.Is(step.Err, remote.ErrUnsupported) {
+		t.Errorf("LoadProgress: err = %v", step.Err)
+	}
+}
+
+func TestReplDumpIsNotSupportedYet(t *testing.T) {
+	repl := newRepl(t, serve(func(*fakeworker.Stream, int, *montyv1.Feed) {}))
+	if _, err := repl.Dump(); !errors.Is(err, remote.ErrUnsupported) {
+		t.Fatalf("Dump: err = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestDialGRPCRefusesATokenWithoutTLS(t *testing.T) {
+	_, err := remote.DialGRPC("localhost:1", remote.GRPCConfig{Insecure: true, Token: "secret"})
+	if err == nil || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("err = %v, want a refusal that does not echo the token", err)
+	}
+}
+
+// A worker that stops answering must not hang the caller. Cancelling the
+// context ends the call and, since one turn cannot be abandoned without losing
+// the stream, the session.
+func TestCancellingAStalledFeedReturnsAndEndsTheSession(t *testing.T) {
+	repl := newRepl(t, func(s *fakeworker.Stream) {
+		if s.RecvConfigure() == nil {
+			return
+		}
+		s.Send(fakeworker.Ok())
+		if s.RecvFeed() == nil {
+			return
+		}
+		<-s.Context().Done() // never answers
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := repl.FeedRun(ctx, "stalls", monty.FeedOptions{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the context's deadline error", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("took %v: the call did not return when the context ended", elapsed)
+	}
+
+	// The session went with it.
+	if _, err := feed(t, repl, "again", monty.FeedOptions{}); !errors.Is(err, monty.ErrClosed) {
+		t.Fatalf("after cancelling a feed, err = %v, want the REPL to be closed", err)
+	}
+}
+
+// Cancelling after a feed has finished must not touch the session.
+func TestCancelledContextAfterTheFeedLeavesTheSessionAlone(t *testing.T) {
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.Complete(0, fakeworker.Int(6)))
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	got, err := repl.FeedRun(ctx, "x", monty.FeedOptions{})
+	wantInt(t, got, err, 6)
+	cancel() // after the call returned
+
+	time.Sleep(50 * time.Millisecond) // let any stray cancellation land
+	got, err = feed(t, repl, "x", monty.FeedOptions{})
+	wantInt(t, got, err, 6)
+}
+
+// A context that has ended before the call fails without sending anything, and
+// the session stays usable.
+func TestAlreadyCancelledContextSendsNothing(t *testing.T) {
+	feeds := 0
+	var mu sync.Mutex
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		mu.Lock()
+		feeds++
+		mu.Unlock()
+		s.Send(fakeworker.Complete(0, fakeworker.Int(8)))
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := repl.FeedRun(ctx, "x", monty.FeedOptions{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	got, err := feed(t, repl, "x", monty.FeedOptions{})
+	wantInt(t, got, err, 8)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if feeds != 1 {
+		t.Fatalf("the worker saw %d feeds, want 1", feeds)
+	}
+}
+
+func TestOpeningASessionTimesOut(t *testing.T) {
+	conn := fakeworker.Start(t, func(s *fakeworker.Stream) {
+		s.RecvConfigure()
+		<-s.Context().Done() // never replies to Configure
+	})
+	backend := remote.NewBackend(remote.NewGRPCTransport(conn, ""), remote.WithOpenTimeout(200*time.Millisecond))
+
+	start := time.Now()
+	_, err := monty.NewRepl(monty.ReplOptions{Backend: backend})
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("err = %v, want a timeout", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("took %v: opening did not time out", elapsed)
+	}
+}
+
+// The open timeout only covers opening. It must not end a session that opened
+// in time.
+func TestOpenTimeoutDoesNotEndAnOpenSession(t *testing.T) {
+	conn := fakeworker.Start(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.Complete(0, fakeworker.Int(2)))
+	}))
+	backend := remote.NewBackend(remote.NewGRPCTransport(conn, ""), remote.WithOpenTimeout(150*time.Millisecond))
+	repl, err := monty.NewRepl(monty.ReplOptions{Backend: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(400 * time.Millisecond) // well past the open timeout
+	got, err := feed(t, repl, "x", monty.FeedOptions{})
+	wantInt(t, got, err, 2)
+}

@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	monty "github.com/mdfranz/gomonty"
 )
@@ -308,8 +311,8 @@ func TestTelemetryExecutionSpanReflectsContextCancellation(t *testing.T) {
 	}
 }
 
-// panickingHandler panics in exactly one of its four Run-reachable methods
-// (StartExecution, ExecutionSpan.End, StartCallback, CallbackSpan.End —
+// panickingHandler panics in exactly one of its Run-reachable methods
+// (StartExecution, ExecutionSpan.End, StartCallback, CallbackSpan.End, RecordPrint —
 // StartWait/WaitSpan.End are covered directly in dispatch_test.go, since
 // this codebase has no verified live-script trigger for the future-wait
 // path). Every other method behaves normally, so the script still runs to
@@ -337,7 +340,11 @@ func (h panickingHandler) StartWait(ctx context.Context, _ monty.WaitInfo) (cont
 	return ctx, nil
 }
 
-func (h panickingHandler) RecordPrint(context.Context, string) {}
+func (h panickingHandler) RecordPrint(context.Context, string) {
+	if h.panicIn == "RecordPrint" {
+		panic("boom: RecordPrint")
+	}
+}
 
 type panickingExecutionSpan panickingHandler
 
@@ -356,9 +363,9 @@ func (s panickingCallbackSpan) End(monty.Result, error, monty.TruncatedPayload) 
 }
 
 func TestTelemetryPanicNeverBreaksScriptExecution(t *testing.T) {
-	for _, panicIn := range []string{"StartExecution", "End", "StartCallback", "CallbackEnd"} {
+	for _, panicIn := range []string{"StartExecution", "End", "StartCallback", "CallbackEnd", "RecordPrint"} {
 		t.Run(panicIn, func(t *testing.T) {
-			runner, err := monty.New(`host_value()`, monty.CompileOptions{ScriptName: "panic.py"})
+			runner, err := monty.New("print('hello')\nhost_value()", monty.CompileOptions{ScriptName: "panic.py"})
 			if err != nil {
 				t.Fatalf("compile: %v", err)
 			}
@@ -376,7 +383,7 @@ func TestTelemetryPanicNeverBreaksScriptExecution(t *testing.T) {
 
 			value, runErr := runner.Run(context.Background(), monty.RunOptions{
 				Telemetry:        handler,
-				TelemetryOptions: monty.TelemetryOptions{PanicHandler: handler.onPanic},
+				TelemetryOptions: monty.TelemetryOptions{PanicHandler: handler.onPanic, RecordPrint: true},
 				Functions: map[string]monty.ExternalFunction{
 					"host_value": func(context.Context, monty.Call) (monty.Result, error) {
 						return monty.Return(monty.Int(1)), nil
@@ -509,7 +516,8 @@ print("after")
 	var printed []string
 	handler := &recordingHandler{}
 	_, runErr := runner.Run(context.Background(), monty.RunOptions{
-		Telemetry: handler,
+		Telemetry:        handler,
+		TelemetryOptions: monty.TelemetryOptions{RecordPrint: true},
 		Print: func(stream, text string) {
 			printed = append(printed, text)
 		},
@@ -552,5 +560,80 @@ print("after")
 	}
 	if !(firstPrintIdx < callbackIdx && callbackIdx < lastPrintIdx) {
 		t.Errorf("expected print, then callback, then print order; got indices print=%d callback=%d print=%d", firstPrintIdx, callbackIdx, lastPrintIdx)
+	}
+}
+
+func TestTelemetryPrintOptions(t *testing.T) {
+	for _, replMode := range []bool{false, true} {
+		mode := "runner"
+		if replMode {
+			mode = "repl"
+		}
+		t.Run(mode, func(t *testing.T) {
+			for _, tc := range []struct {
+				name string
+				text string
+				opts monty.TelemetryOptions
+				want string
+			}{
+				{name: "default off", text: "secret"},
+				{name: "other content options do not enable print", text: "secret", opts: monty.TelemetryOptions{RecordArguments: true, RecordOutputs: true}},
+				{name: "enabled", text: "hello", opts: monty.TelemetryOptions{RecordPrint: true}, want: "hello"},
+				{name: "ascii cap", text: "secret", opts: monty.TelemetryOptions{RecordPrint: true, MaxAttributeBytes: 3}, want: "sec"},
+				{name: "default cap", text: strings.Repeat("x", monty.DefaultMaxAttributeBytes+1), opts: monty.TelemetryOptions{RecordPrint: true}, want: strings.Repeat("x", monty.DefaultMaxAttributeBytes)},
+				{name: "negative cap uses default", text: strings.Repeat("x", monty.DefaultMaxAttributeBytes+1), opts: monty.TelemetryOptions{RecordPrint: true, MaxAttributeBytes: -1}, want: strings.Repeat("x", monty.DefaultMaxAttributeBytes)},
+				{name: "complete utf8 boundary", text: "é日🙂!", opts: monty.TelemetryOptions{RecordPrint: true, MaxAttributeBytes: 5}, want: "é日"},
+				{name: "inside utf8 rune", text: "é日🙂!", opts: monty.TelemetryOptions{RecordPrint: true, MaxAttributeBytes: 7}, want: "é日"},
+				{name: "cap shorter than rune", text: "é", opts: monty.TelemetryOptions{RecordPrint: true, MaxAttributeBytes: 1}},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					// A host call splits output into an initial and resumed chunk.
+					code := fmt.Sprintf("print(%q, end='')\nhost_value()\nprint(%q, end='')", tc.text, tc.text)
+					handler := &recordingHandler{}
+					var stdout strings.Builder
+					functions := map[string]monty.ExternalFunction{
+						"host_value": func(context.Context, monty.Call) (monty.Result, error) { return monty.Return(monty.None()), nil },
+					}
+					if replMode {
+						repl, err := monty.NewRepl(monty.ReplOptions{})
+						if err != nil {
+							t.Fatal(err)
+						}
+						_, err = repl.FeedRun(context.Background(), code, monty.FeedOptions{
+							Telemetry: handler, TelemetryOptions: tc.opts, Print: monty.WriterPrintCallback(&stdout), Functions: functions,
+						})
+						if err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						runner, err := monty.New(code, monty.CompileOptions{})
+						if err != nil {
+							t.Fatal(err)
+						}
+						_, err = runner.Run(context.Background(), monty.RunOptions{
+							Telemetry: handler, TelemetryOptions: tc.opts, Print: monty.WriterPrintCallback(&stdout), Functions: functions,
+						})
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					if got := stdout.String(); got != tc.text+tc.text {
+						t.Errorf("Print callback got %q, want full output", got)
+					}
+					var want []string
+					if tc.opts.RecordPrint {
+						want = []string{tc.want, tc.want}
+					}
+					if !reflect.DeepEqual(handler.prints, want) {
+						t.Errorf("telemetry prints = %q, want %q", handler.prints, want)
+					}
+					for _, text := range handler.prints {
+						if !utf8.ValidString(text) {
+							t.Errorf("invalid UTF-8 in telemetry print: %q", text)
+						}
+					}
+				})
+			}
+		})
 	}
 }
