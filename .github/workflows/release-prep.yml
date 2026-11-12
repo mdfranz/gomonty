@@ -93,7 +93,7 @@ jobs:
             artifact_name: ffi-linux-arm64
             artifact_path: internal/ffi/lib/linux_arm64/libmonty_go_ffi.so
           - name: darwin-arm64
-            runner: macos-14
+            runner: macos-15
             rust_target: aarch64-apple-darwin
             artifact_name: ffi-darwin-arm64
             artifact_path: internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib
