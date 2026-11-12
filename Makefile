@@ -1,4 +1,4 @@
-.PHONY: release publish-release shmonty repl shmonty-examples proto check-proto
+.PHONY: release publish-release shmonty repl shmonty-examples proto check-proto remote-realworker
 
 shmonty:
 	cd cmd/shmonty && CGO_ENABLED=0 go build -o ../../shmonty .
@@ -57,6 +57,11 @@ publish-release:
 	@gh workflow run release.yml --ref main -f version="$(VERSION)"
 	@echo "Triggered release workflow for $(VERSION)."
 	@echo "Watch with: gh run list --workflow=release.yml --limit 1"
+
+# Run remote/realworker_test.go against a real local Monty worker (builds
+# the pinned upstream monty once; needs git, cargo and uv).
+remote-realworker:
+	scripts/remote-realworker.sh
 
 # Regenerate the Go code for the vendored monty.v1 proto (remote/proto) into
 # remote/internal/montyv1. Needs protoc; the Go plugins are pinned and installed
