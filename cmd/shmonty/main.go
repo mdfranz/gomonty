@@ -626,7 +626,7 @@ func (m model) runCode(display, code string) entry {
 	switch {
 	case m.otelHandler != nil:
 		opts.Telemetry = m.otelHandler
-		// RecordArguments/RecordOutputs stay at their false default here,
+		// Content recording options stay at their false default here,
 		// unlike the /debug branch below: this leaves the process for an
 		// external OTel backend, and call payloads can carry credentials
 		// (gomonty-olly.md §4) — nothing opts a live export target into
@@ -635,13 +635,14 @@ func (m model) runCode(display, code string) entry {
 		// Shmonty's own operations are often sub-millisecond, so keep
 		// microsecond precision in the local telemetry pane.
 		opts.Telemetry = monty.SlogHandler{Logger: m.logger, DurationUnit: monty.DurationMicroseconds}
-		// RecordArguments/RecordOutputs default to false so a production
+		// Content recording defaults to false so a production
 		// host doesn't leak call payloads that might carry credentials —
 		// shmonty is a local debug REPL with nothing to protect, so seeing
-		// full arguments/results is exactly the point of turning /debug on.
+		// arguments, results, and prints is the point of turning /debug on.
 		opts.TelemetryOptions = monty.TelemetryOptions{
 			RecordArguments: true,
 			RecordOutputs:   true,
+			RecordPrint:     true,
 		}
 	}
 	value, err := m.repl.FeedRun(context.Background(), code, opts)
@@ -805,14 +806,15 @@ func runScript(path string) {
 		Functions: hostFunctions(),
 	}
 	if otelHandler != nil {
-		// See runCode's otelHandler branch: RecordArguments/RecordOutputs
-		// stay off, unlike the local-only SlogHandler case below.
+		// See runCode's otelHandler branch: content recording stays off,
+		// unlike the local-only SlogHandler case below.
 		opts.Telemetry = otelHandler
 	} else {
 		opts.Telemetry = monty.SlogHandler{Logger: logger, DurationUnit: monty.DurationMicroseconds}
 		opts.TelemetryOptions = monty.TelemetryOptions{
 			RecordArguments: true,
 			RecordOutputs:   true,
+			RecordPrint:     true,
 		}
 	}
 

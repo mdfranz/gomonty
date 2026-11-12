@@ -13,12 +13,10 @@ import (
 //
 // Execution start/finish log at Info/Error, callback invocation/return log
 // at Debug/Info, wait spans (blocked resolving pending futures) log at
-// Debug/Error, and captured print() output logs at Debug. Argument and
-// output content is only included when the corresponding TelemetryOptions
-// (RecordArguments/RecordOutputs) was enabled on the call — this handler
-// logs exactly what it's handed (via ExecutionInfo.Inputs,
-// CallbackInfo.Arguments, and each End's output TruncatedPayload) and never
-// second-guesses that opt-in itself.
+// Debug/Error, and captured print() output logs at Debug. Argument, result,
+// and print content is included only when enabled through TelemetryOptions
+// (RecordArguments/RecordOutputs/RecordPrint). This handler logs the
+// size-limited content it receives from gomonty.
 //
 // The zero value is ready to use: Logger defaults to slog.Default() and
 // DurationUnit defaults to DurationMilliseconds.

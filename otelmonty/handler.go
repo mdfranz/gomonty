@@ -73,6 +73,9 @@ func (h Handler) StartWait(ctx context.Context, info monty.WaitInfo) (context.Co
 // log-record primitive tied to a span the way log/slog does, so captured
 // print() output becomes a span event on whatever span is active in ctx
 // (per gomonty-olly.md §3, monty.print is a log event, not its own span).
+// Runner.Run and Repl.FeedRun invoke this only when
+// TelemetryOptions.RecordPrint is enabled, with text already size-limited.
+// Direct calls to this method record the supplied text as-is.
 // If ctx carries no recording span — not expected in normal use, since
 // StartExecution always runs first — the event is silently skipped rather
 // than fabricating a span for it.

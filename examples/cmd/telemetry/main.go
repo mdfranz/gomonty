@@ -36,9 +36,10 @@ result
 		TelemetryOptions: monty.TelemetryOptions{
 			// Off by default in real usage — turned on here only to show
 			// what recorded payloads look like in the log output. Argument/
-			// result content can carry secrets; opt in deliberately.
+			// result/print content can carry secrets; opt in deliberately.
 			RecordArguments: true,
 			RecordOutputs:   true,
+			RecordPrint:     true,
 		},
 		Functions: map[string]monty.ExternalFunction{
 			"host_double": func(_ context.Context, call monty.Call) (monty.Result, error) {
