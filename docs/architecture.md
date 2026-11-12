@@ -55,7 +55,7 @@ Handlers return a `Result`: `Return(value)`, `Raise(exception)` (surfaced as a P
 
 ## Telemetry
 
-Telemetry is off unless `RunOptions.Telemetry` is set. `dispatchLoop` records a root span (`monty.run`, or `monty.feed` for the REPL) with child spans for host callbacks (`monty.call`) and future waits (`monty.wait`) and accumulates callback/wait timing. Argument, result, and print recording are separate opt-ins (`TelemetryOptions.RecordArguments`, `RecordOutputs`, and `RecordPrint`) because those values may carry secrets, and handler panics are isolated from the run. `SlogHandler` is built in; `otelmonty/` maps the same events to OpenTelemetry. The design is in [`gomonty-olly.md`](../gomonty-olly.md).
+Telemetry is off unless `RunOptions.Telemetry` is set. `dispatchLoop` records a root span (`monty.run`, or `monty.feed` for the REPL) with child spans for host callbacks (`monty.call`) and future waits (`monty.wait`) and accumulates callback/wait timing. Argument, result, and print recording are separate opt-ins (`TelemetryOptions.RecordArguments`, `RecordOutputs`, and `RecordPrint`) because those values may carry secrets, and handler panics are isolated from the run. Under upstream's default sleep policy, `time.sleep` and `asyncio.sleep` (`system.sleep`, `system.async_sleep`) are handled by gomonty itself and never reach the `OS` handler; a blocking sleep is recorded as a `monty.call` span, and an async sleep as a brief `monty.call` span plus a `monty.wait` span while it is pending. `SlogHandler` is built in; `otelmonty/` maps the same events to OpenTelemetry. The design is in [`gomonty-olly.md`](../gomonty-olly.md).
 
 ## Repository modules
 
