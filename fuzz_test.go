@@ -1,6 +1,7 @@
 package monty
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
@@ -103,29 +104,40 @@ func FuzzLoadRunner(f *testing.F) {
 	addSerializedRunnerSeed(f, "def fib(n):\n    if n <= 1:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nfib(10)")
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		runner, err := LoadRunner(data)
-		if err != nil {
-			return
+		// Mutated inputs rarely keep a valid gomonty header, so most would be
+		// rejected before reaching Monty's decoder. Try the input as given, which
+		// exercises header validation, and behind a valid header, which exercises
+		// the native decoder.
+		fuzzLoadRunner(t, data)
+		if !bytes.HasPrefix(data, dumpHeader) {
+			fuzzLoadRunner(t, addDumpHeader(data))
 		}
-		defer closeTestRunner(runner)
-
-		dump, err := runner.Dump()
-		if err != nil {
-			t.Fatalf("Dump loaded runner: %v", err)
-		}
-
-		loaded, err := LoadRunner(dump)
-		if err != nil {
-			t.Fatalf("LoadRunner(normalized dump): %v", err)
-		}
-		defer closeTestRunner(loaded)
-
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		defer cancel()
-
-		_, _ = runner.Run(ctx, RunOptions{Limits: fuzzRunLimits})
-		_, _ = loaded.Run(ctx, RunOptions{Limits: fuzzRunLimits})
 	})
+}
+
+func fuzzLoadRunner(t *testing.T, data []byte) {
+	runner, err := LoadRunner(data)
+	if err != nil {
+		return
+	}
+	defer closeTestRunner(runner)
+
+	dump, err := runner.Dump()
+	if err != nil {
+		t.Fatalf("Dump loaded runner: %v", err)
+	}
+
+	loaded, err := LoadRunner(dump)
+	if err != nil {
+		t.Fatalf("LoadRunner(normalized dump): %v", err)
+	}
+	defer closeTestRunner(loaded)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, _ = runner.Run(ctx, RunOptions{Limits: fuzzRunLimits})
+	_, _ = loaded.Run(ctx, RunOptions{Limits: fuzzRunLimits})
 }
 
 func addSerializedRunnerSeed(f *testing.F, code string) {
@@ -140,4 +152,5 @@ func addSerializedRunnerSeed(f *testing.F, code string) {
 		return
 	}
 	f.Add(dump)
+	f.Add(dump[dumpHeaderLen:]) // payload without a header; the fuzz body adds one
 }
