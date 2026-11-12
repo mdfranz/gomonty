@@ -113,6 +113,31 @@ jobs:
           CGO_ENABLED=0 go vet ./...
           CGO_ENABLED=0 go test ./...
 
+  # The remote module's generated protobuf/gRPC code must match the vendored
+  # monty.v1 proto, and the proto pin must match the FFI pin. No native build.
+  check-proto:
+    name: check generated proto
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: remote/go.sum
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler
+
+      - name: Generated code is up to date
+        run: make check-proto
+
+      - name: Test remote module
+        run: cd remote && go test ./...
+
   platform-verify:
     name: verify ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
