@@ -90,7 +90,7 @@ pub struct WireValue {
     #[serde(default, skip_serializing_if = "Vec::is_empty", with = "serde_bytes")]
     pub bytes: Vec<u8>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub items: Vec<WireValue>,
+    pub items: Vec<Self>,
     #[serde(
         default,
         skip_serializing_if = "String::is_empty",
@@ -100,7 +100,7 @@ pub struct WireValue {
     #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "field_names")]
     pub field_names: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub values: Vec<WireValue>,
+    pub values: Vec<Self>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pairs: Vec<WirePair>,
     #[serde(default, skip_serializing_if = "String::is_empty", rename = "exc_type")]
@@ -614,7 +614,7 @@ pub struct WireResourceLimits {
 
 impl From<WireResourceLimits> for ResourceLimits {
     fn from(value: WireResourceLimits) -> Self {
-        let mut limits = ResourceLimits::default();
+        let mut limits = Self::default();
         // Upstream split one overall duration budget into a per-feed and a
         // per-turn budget. gomonty's wire format still exposes a single
         // knob, so both budgets get the same value — matching the old
@@ -738,10 +738,10 @@ impl From<&StackFrame> for WireFrame {
     fn from(value: &StackFrame) -> Self {
         Self {
             filename: value.filename.clone(),
-            line: u32::from(value.start.line),
-            column: u32::from(value.start.column),
-            end_line: u32::from(value.end.line),
-            end_column: u32::from(value.end.column),
+            line: value.start.line,
+            column: value.start.column,
+            end_line: value.end.line,
+            end_column: value.end.column,
             function_name: value.frame_name.clone(),
             source_line: value.preview_line.as_deref().map(str::to_owned),
         }
@@ -782,32 +782,60 @@ pub const fn default_wire_version() -> u32 {
     WIRE_VERSION
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if requires fn(&T)"
+)]
 const fn is_false(value: &bool) -> bool {
     !*value
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if requires fn(&T)"
+)]
 const fn is_zero_u32(value: &u32) -> bool {
     *value == 0
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if requires fn(&T)"
+)]
 const fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if requires fn(&T)"
+)]
 const fn is_zero_i64(value: &i64) -> bool {
     *value == 0
 }
 
 /// True only for positive zero. `-0.0 == 0.0`, so comparing by value would
 /// skip a negative zero and it would decode as `+0.0`.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if requires fn(&T)"
+)]
 fn is_zero_f64(value: &f64) -> bool {
     value.to_bits() == 0
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if requires fn(&T)"
+)]
 const fn is_zero_i32(value: &i32) -> bool {
     *value == 0
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if requires fn(&T)"
+)]
 const fn is_zero_u8(value: &u8) -> bool {
     *value == 0
 }
@@ -1118,7 +1146,7 @@ mod tests {
             MontyUuid::from_u128(0x1234_5678_9abc_def0_1234_5678_9abc_def0),
             vec![
                 (MontyObject::string("answer"), MontyObject::int(42)),
-                (MontyObject::string("pi"), MontyObject::float(3.14)),
+                (MontyObject::string("pi"), MontyObject::float(3.25)),
             ],
         );
 
