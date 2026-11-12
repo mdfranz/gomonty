@@ -39,25 +39,38 @@ var errOutsideRoot = fmt.Errorf("resolves outside the mounted directory: %w", st
 // numbers are not exposed in Stat results.
 //
 // DirFS does not defend against another host process that rewrites the
-// directory concurrently beyond keeping operations inside the mount. It does
-// not yet support read-only mode or size limits.
+// directory concurrently beyond keeping operations inside the mount. Policies
+// and size limits coordinate only operations through this instance.
 //
 // A DirFS is safe for concurrent use. Call Close when finished.
 //
-// Operations that change the directory (writes, Mkdir, Unlink, Rmdir and
-// Rename) are serialized with a mutex. os.Root.WriteFile can fail with a
-// spurious ENOENT when several goroutines create the same new file at once
-// (seen with Go 1.27 on macOS), and the sandbox can issue overlapping host
-// calls. Reads run concurrently.
+// Mutating operations and their policy checks are serialized. Reads run
+// concurrently with one another and wait for mutations, so staged files and
+// intermediate policy checks are not visible through this instance.
 type DirFS struct {
-	root *os.Root
-	mu   sync.Mutex // serializes mutating operations
+	root    *os.Root
+	options DirFSOptions
+	mu      sync.RWMutex // coordinates policy checks and mutations
 }
 
 var _ FileSystem = (*DirFS)(nil)
 
-// NewDirFS mounts the host directory dir as the sandbox's "/".
-func NewDirFS(dir string) (*DirFS, error) {
+// NewDirFS mounts the host directory dir as the sandbox's "/". Optional
+// DirFSOptions restrict writes, byte sizes, and allowed paths; omitted options
+// leave the mount unrestricted.
+func NewDirFS(dir string, options ...DirFSOptions) (*DirFS, error) {
+	var opts DirFSOptions
+	if len(options) > 1 {
+		return nil, fmt.Errorf("vfs: expected at most one DirFSOptions")
+	}
+	if len(options) == 1 {
+		opts = options[0]
+	}
+	if err := validateDirFSOptions(opts); err != nil {
+		return nil, err
+	}
+	opts.Allow = append([]string(nil), opts.Allow...)
+	opts.Deny = append([]string(nil), opts.Deny...)
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, err
@@ -71,7 +84,7 @@ func NewDirFS(dir string) (*DirFS, error) {
 		_ = root.Close()
 		return nil, fmt.Errorf("vfs: %s is not a directory", dir)
 	}
-	return &DirFS{root: root}, nil
+	return &DirFS{root: root, options: opts}, nil
 }
 
 // Close releases the directory handle. The DirFS must not be used afterwards.
@@ -132,11 +145,14 @@ func (d *DirFS) WriteBytes(p string, data []byte) (int, error) {
 
 // Mkdir creates a directory.
 func (d *DirFS) Mkdir(p string, parents bool, existOK bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := d.checkAccess("mkdir", p, true, true); err != nil {
+		return err
+	}
 	if normalizePath(p) == "/" {
 		return nil
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
 	rel := d.rel(p)
 	info, err := d.root.Stat(rel)
 	switch {
@@ -161,6 +177,9 @@ func (d *DirFS) Mkdir(p string, parents bool, existOK bool) error {
 func (d *DirFS) Unlink(p string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if err := d.checkAccess("unlink", p, true, false); err != nil {
+		return err
+	}
 	info, err := d.root.Lstat(d.rel(p))
 	if err != nil {
 		return d.wrap("unlink", p, err)
@@ -173,11 +192,14 @@ func (d *DirFS) Unlink(p string) error {
 
 // Rmdir removes an empty directory. The mount root cannot be removed.
 func (d *DirFS) Rmdir(p string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := d.checkAccess("rmdir", p, true, false); err != nil {
+		return err
+	}
 	if normalizePath(p) == "/" {
 		return &stdfs.PathError{Op: "rmdir", Path: p, Err: stdfs.ErrPermission}
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
 	info, err := d.root.Lstat(d.rel(p))
 	if err != nil {
 		return d.wrap("rmdir", p, err)
@@ -190,6 +212,11 @@ func (d *DirFS) Rmdir(p string) error {
 
 // Iterdir lists the direct children of a directory as sandbox paths.
 func (d *DirFS) Iterdir(p string) ([]string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if err := d.checkAccess("iterdir", p, false, true); err != nil {
+		return nil, err
+	}
 	rel := d.rel(p)
 	info, err := d.root.Stat(rel)
 	if err != nil {
@@ -210,7 +237,10 @@ func (d *DirFS) Iterdir(p string) ([]string, error) {
 	base := normalizePath(p)
 	children := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		children = append(children, path.Join(base, entry.Name()))
+		child := path.Join(base, entry.Name())
+		if d.checkAccess("iterdir", child, false, true) == nil {
+			children = append(children, child)
+		}
 	}
 	sort.Strings(children)
 	return children, nil
@@ -218,6 +248,11 @@ func (d *DirFS) Iterdir(p string) ([]string, error) {
 
 // Stat returns stat metadata for a path, following symlinks.
 func (d *DirFS) Stat(p string) (monty.StatResult, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if err := d.checkAccess("stat", p, false, true); err != nil {
+		return monty.StatResult{}, err
+	}
 	info, err := d.root.Stat(d.rel(p))
 	if err != nil {
 		return monty.StatResult{}, d.wrap("stat", p, err)
@@ -231,11 +266,17 @@ func (d *DirFS) Stat(p string) (monty.StatResult, error) {
 
 // Rename renames a file or directory. It fails if the destination exists.
 func (d *DirFS) Rename(oldPath string, newPath string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := d.checkAccess("rename", oldPath, true, false); err != nil {
+		return err
+	}
+	if err := d.checkAccess("rename", newPath, true, false); err != nil {
+		return err
+	}
 	if normalizePath(oldPath) == "/" || normalizePath(newPath) == "/" {
 		return &stdfs.PathError{Op: "rename", Path: oldPath, Err: stdfs.ErrPermission}
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
 	if _, err := d.root.Lstat(d.rel(oldPath)); err != nil {
 		return d.wrap("rename", oldPath, err)
 	}
@@ -246,6 +287,9 @@ func (d *DirFS) Rename(oldPath string, newPath string) error {
 	case isEscape(err):
 		return d.wrap("rename", newPath, err)
 	}
+	if err := d.checkRenameTree(oldPath, newPath); err != nil {
+		return err
+	}
 	return d.wrap("rename", oldPath, d.root.Rename(d.rel(oldPath), d.rel(newPath)))
 }
 
@@ -253,6 +297,11 @@ func (d *DirFS) Rename(oldPath string, newPath string) error {
 // repeatedly. Like MemoryFS, it resolves only the last path component. A link
 // that points outside the mount fails with fs.ErrPermission.
 func (d *DirFS) Resolve(p string) (string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if err := d.checkAccess("resolve", p, false, true); err != nil {
+		return "", err
+	}
 	current := normalizePath(p)
 	for range maxSymlinkDepth {
 		if current == "/" {
@@ -277,10 +326,20 @@ func (d *DirFS) Resolve(p string) (string, error) {
 
 // Absolute normalizes the path into Monty's absolute POSIX form.
 func (d *DirFS) Absolute(p string) (string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if err := d.checkAccess("absolute", p, false, false); err != nil {
+		return "", err
+	}
 	return normalizePath(p), nil
 }
 
 func (d *DirFS) readFile(op, p string) ([]byte, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if err := d.checkAccess(op, p, false, true); err != nil {
+		return nil, err
+	}
 	rel := d.rel(p)
 	info, err := d.root.Stat(rel)
 	if err != nil {
@@ -301,34 +360,20 @@ func (d *DirFS) readFile(op, p string) ([]byte, error) {
 }
 
 func (d *DirFS) writeFile(p string, data []byte) (int, error) {
-	if normalizePath(p) == "/" {
-		return 0, &stdfs.PathError{Op: "write", Path: p, Err: syscall.EISDIR}
-	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	rel := d.rel(p)
-	info, err := d.root.Stat(rel)
-	switch {
-	case err == nil:
-		if info.IsDir() {
-			return 0, &stdfs.PathError{Op: "write", Path: p, Err: syscall.EISDIR}
-		}
-		if !info.Mode().IsRegular() {
-			return 0, &stdfs.PathError{Op: "write", Path: p, Err: syscall.EINVAL}
-		}
-	case isEscape(err):
-		return 0, d.wrap("write", p, err)
-	}
-	if err := d.root.WriteFile(rel, data, 0o644); err != nil {
-		return 0, d.wrap("write", p, err)
-	}
-	return len(data), nil
+	return d.writeLimited(p, data)
 }
 
 // statIfPresent stats the path. A path that is missing, has a non-directory
 // component, or loops reports found=false with no error, matching pathlib's
 // exists(); every other failure, including an escape, is returned.
 func (d *DirFS) statIfPresent(p string, follow bool) (info stdfs.FileInfo, found bool, err error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if err := d.checkAccess("stat", p, false, follow); err != nil {
+		return nil, false, err
+	}
 	if follow {
 		info, err = d.root.Stat(d.rel(p))
 	} else {

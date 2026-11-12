@@ -79,7 +79,7 @@ Run it from a checkout with `cd examples && CGO_ENABLED=0 go run ./cmd/example`.
 | --- | --- | --- |
 | External functions | Python code calls Go functions you register; execution pauses while Go runs. | `RunOptions.Functions`, [`go/README.md`](./go/README.md) |
 | Host modules | `import name` in the sandbox resolves to a Go-defined `Module`; unknown imports still raise `ModuleNotFoundError`. | `RunOptions.Modules`, `Module` |
-| Virtual filesystem | `pathlib` and `os.getenv` calls are served by a Go-owned filesystem and environment, never the host disk. | [`vfs/`](./vfs) |
+| Virtual filesystem | `pathlib` and `os.getenv` use a Go-owned filesystem and environment: memory, a confined disk mount with policies, or an in-memory edit overlay. | [`vfs/`](./vfs), [policies and overlays](./vfs/README.md) |
 | Async results | Host calls can return `Pending(waiter)` and resolve later. | `Pending`, `FutureSnapshot` |
 | Pause/resume | Step through execution with `Start`, and serialize snapshots with `Dump`/`Load*`. | `Runner.Start`, `Snapshot` |
 | REPL | Feed successive snippets into one persistent interpreter. | `NewRepl`, `Repl.FeedRun` |
