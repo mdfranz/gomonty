@@ -4,7 +4,7 @@
 // screen buffer (like vim/less): the screen clears on start and the
 // original scrollback is restored on exit, so nothing it prints lingers
 // afterward. State persists across inputs like a real Python REPL (via
-// monty.Repl.FeedRun), one external function (host_time) is registered so
+// monty.Repl.FeedRun), host callbacks and a memory filesystem are registered so
 // callback spans have something to exercise, and typing /debug toggles
 // monty.SlogHandler logging for subsequent FeedRun calls, shown in a
 // dedicated pane along the bottom of the screen (roughly a quarter of the
@@ -111,6 +111,7 @@ func (b *logBuffer) drain() []string {
 
 type model struct {
 	textInput textinput.Model
+	sandbox   *sandbox
 	repl      *monty.Repl
 	logger    *slog.Logger
 	logs      *logBuffer
@@ -159,7 +160,7 @@ func newModel(repl *monty.Repl, logger *slog.Logger, logs *logBuffer) model {
 	ti.CharLimit = 2000
 	ti.Width = 70
 	ti.PromptStyle = promptStyle
-	return model{textInput: ti, repl: repl, logger: logger, logs: logs, logFollowing: true}
+	return model{sandbox: newSandbox(), textInput: ti, repl: repl, logger: logger, logs: logs, logFollowing: true}
 }
 
 // debugStatusEntry reports the new /debug state as a pseudo-entry so it
@@ -570,6 +571,7 @@ func (m model) rewind() model {
 		return m
 	}
 	m.repl = repl
+	m.sandbox = newSandbox()
 
 	m.entries = nil
 	for _, code := range m.history {
@@ -604,10 +606,13 @@ func (m model) executeFile(display, path string) entry {
 }
 
 // hostFunctions returns the external functions registered for every run,
-// interactive or not, so callback spans (and scripts that just want a
-// clock) have something to exercise.
+// interactive or not, demonstrating arguments, structured results, and
+// Python exceptions as well as a host clock.
 func hostFunctions() map[string]monty.ExternalFunction {
 	return map[string]monty.ExternalFunction{
+		"host_calc": hostCalc,
+		"host_echo": hostEcho,
+		"host_fail": hostFail,
 		"host_time": func(context.Context, monty.Call) (monty.Result, error) {
 			return monty.Return(monty.String(time.Now().Format(time.RFC3339))), nil
 		},
@@ -620,6 +625,8 @@ func hostFunctions() map[string]monty.ExternalFunction {
 func (m model) runCode(display, code string) entry {
 	var stdout strings.Builder
 	opts := monty.FeedOptions{
+		OS:        m.sandbox.os,
+		Modules:   m.sandbox.modules,
 		Print:     monty.WriterPrintCallback(&stdout),
 		Functions: hostFunctions(),
 	}
@@ -801,7 +808,10 @@ func runScript(path string) {
 		os.Exit(1)
 	}
 
+	sandbox := newSandbox()
 	opts := monty.RunOptions{
+		OS:        sandbox.os,
+		Modules:   sandbox.modules,
 		Print:     monty.WriterPrintCallback(os.Stdout),
 		Functions: hostFunctions(),
 	}
