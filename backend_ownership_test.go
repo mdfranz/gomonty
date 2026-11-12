@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // These tests pin down who owns which handle when something goes wrong. They
@@ -32,12 +33,12 @@ type retainingRepl struct {
 	failures int
 }
 
-func (r *retainingRepl) FeedStart(code string, opts FeedStartOptions) Step {
+func (r *retainingRepl) FeedStart(ctx context.Context, code string, opts FeedStartOptions) Step {
 	if r.failures > 0 {
 		r.failures--
 		return Step{Err: errors.New("cannot encode the inputs"), Retained: true}
 	}
-	return r.fakeRepl.FeedStart(code, opts)
+	return r.fakeRepl.FeedStart(ctx, code, opts)
 }
 
 type retainingBackend struct {
@@ -178,4 +179,62 @@ func TestLoadReplSnapshotClosesTheRecoveryCopy(t *testing.T) {
 			t.Fatalf("closed %d handles, want the first load released", closes)
 		}
 	})
+}
+
+// stalledBackend stands in for a backend talking to a worker that has stopped
+// answering: its calls return only when the caller's context ends.
+type stalledBackend struct {
+	*fakeBackend
+	stallOn string // "feed" or "resume"
+}
+
+func (b *stalledBackend) NewRepl(ReplOptions) (ReplHandle, error) {
+	return &stalledRepl{fakeRepl: &fakeRepl{b: b.fakeBackend}, stallOn: b.stallOn, backend: b.fakeBackend}, nil
+}
+
+type stalledRepl struct {
+	*fakeRepl
+	stallOn string
+	backend *fakeBackend
+}
+
+func (r *stalledRepl) FeedStart(ctx context.Context, code string, opts FeedStartOptions) Step {
+	if r.stallOn == "feed" {
+		<-ctx.Done()
+		return Step{Err: ctx.Err()}
+	}
+	return Step{Progress: &stalledProgress{fakeProgress: &fakeProgress{b: r.backend}}, Desc: pausedCall()}
+}
+
+type stalledProgress struct{ *fakeProgress }
+
+func (p *stalledProgress) ResumeCall(ctx context.Context, _ Result) Step {
+	<-ctx.Done()
+	return Step{Err: ctx.Err()}
+}
+
+// The caller's context reaches the backend, so a backend that can stop waiting
+// does, both when a feed starts and when it is resumed after a host call.
+func TestCallerContextReachesTheBackend(t *testing.T) {
+	for _, stallOn := range []string{"feed", "resume"} {
+		t.Run(stallOn, func(t *testing.T) {
+			repl, err := NewRepl(ReplOptions{Backend: &stalledBackend{fakeBackend: &fakeBackend{}, stallOn: stallOn}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+
+			start := time.Now()
+			_, err = repl.FeedRun(ctx, "ignored", FeedOptions{
+				Functions: map[string]ExternalFunction{"double": doubleFunction},
+			})
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("err = %v, want the context's deadline error", err)
+			}
+			if elapsed := time.Since(start); elapsed > 5*time.Second {
+				t.Fatalf("took %v: the call did not return when the context ended", elapsed)
+			}
+		})
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync/atomic"
+	"time"
 
 	monty "github.com/mdfranz/gomonty"
 	montyv1 "github.com/mdfranz/gomonty/remote/internal/montyv1"
@@ -20,14 +21,38 @@ import (
 // not supported yet, and a script that calls a host function, reads a name from
 // the host or makes an OS call is stopped with ErrUnsupported; those arrive
 // with the work tracked in #86 and #87.
+//
+// A call's context bounds it: if the context ends while a feed is waiting on the
+// worker, the call returns the context's error and the session is closed,
+// because there is no way to stop one turn and keep the session. NewRepl takes
+// no context, so opening a session is bounded by WithOpenTimeout instead.
 type Backend struct {
-	transport Transport
+	transport   Transport
+	openTimeout time.Duration
 }
 
 var _ monty.Backend = (*Backend)(nil)
 
+// defaultOpenTimeout bounds connecting and configuring a session.
+const defaultOpenTimeout = 30 * time.Second
+
+// Option configures a Backend.
+type Option func(*Backend)
+
+// WithOpenTimeout bounds how long NewRepl may take to open and configure a
+// session. The default is 30 seconds; zero or a negative value means no limit.
+func WithOpenTimeout(d time.Duration) Option {
+	return func(b *Backend) { b.openTimeout = d }
+}
+
 // NewBackend returns a Backend that opens its sessions over t.
-func NewBackend(t Transport) *Backend { return &Backend{transport: t} }
+func NewBackend(t Transport, opts ...Option) *Backend {
+	b := &Backend{transport: t, openTimeout: defaultOpenTimeout}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
+}
 
 func (b *Backend) NewRunner(string, monty.CompileOptions) (monty.RunnerHandle, error) {
 	return nil, fmt.Errorf("%w: runners (use a REPL)", ErrUnsupported)
@@ -44,11 +69,31 @@ func (b *Backend) LoadProgress([]byte) monty.Step {
 // NewRepl opens a session and configures it. It fails if the worker cannot be
 // reached or refuses the session.
 func (b *Backend) NewRepl(opts monty.ReplOptions) (monty.ReplHandle, error) {
+	// The session lives as long as this context. The open timeout cancels it
+	// only until the session is configured.
 	ctx, cancel := context.WithCancel(context.Background())
+	var timedOut atomic.Bool
+	var timer *time.Timer
+	if b.openTimeout > 0 {
+		timer = time.AfterFunc(b.openTimeout, func() {
+			timedOut.Store(true)
+			cancel()
+		})
+	}
+	openErr := func(err error) error {
+		if timedOut.Load() {
+			return fmt.Errorf("remote: opening a session timed out after %v", b.openTimeout)
+		}
+		return err
+	}
+
 	stream, err := b.transport.Open(ctx)
 	if err != nil {
+		if timer != nil {
+			timer.Stop()
+		}
 		cancel()
-		return nil, err
+		return nil, openErr(err)
 	}
 	sess := &session{stream: stream, cancel: cancel}
 
@@ -58,10 +103,19 @@ func (b *Backend) NewRepl(opts monty.ReplOptions) (monty.ReplHandle, error) {
 		MontyVersion:    "gomonty",
 		ProtocolVersion: protocolVersion,
 	}
-	t, err := sess.call(&montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Configure{Configure: configure}})
+	t, err := sess.call(context.Background(), &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Configure{Configure: configure}})
 	if err != nil {
+		if timer != nil {
+			timer.Stop()
+		}
 		sess.close()
-		return nil, err
+		return nil, openErr(err)
+	}
+	if timer != nil && !timer.Stop() {
+		// The timeout fired just as the reply arrived, which cancelled the
+		// session's context.
+		sess.close()
+		return nil, openErr(errors.New("remote: the session was cancelled while opening"))
 	}
 	switch k := t.end.GetKind().(type) {
 	case *montyv1.WorkerEvent_Ok:
@@ -128,27 +182,27 @@ func (h *replHandle) Dump() ([]byte, error) {
 	return nil, fmt.Errorf("%w: Dump", ErrUnsupported)
 }
 
-func (h *replHandle) FeedStart(code string, opts monty.FeedStartOptions) monty.Step {
+func (h *replHandle) FeedStart(ctx context.Context, code string, opts monty.FeedStartOptions) monty.Step {
 	refs, arena, err := encodeInputs(opts.Inputs)
 	if err != nil {
 		// Nothing was sent, so the handle is still good.
 		return monty.Step{Err: err, Retained: true}
 	}
 	feed := &montyv1.Feed{Code: code, Inputs: refs, Values: arena}
-	t, err := h.sess.call(&montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Feed{Feed: feed}})
+	t, err := h.sess.call(ctx, &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Feed{Feed: feed}})
 
 	h.consumed.Store(true)
 	if err != nil {
 		// The session is gone, so there is nothing to hand back.
 		return monty.Step{Err: err}
 	}
-	return newReplHandle(h.sess, h.scriptName).stepFor(t)
+	return newReplHandle(h.sess, h.scriptName).stepFor(ctx, t)
 }
 
 // stepFor turns the event that ended a feed into a Step. The session is ready
 // for another feed after every outcome except a fatal one, which call has
 // already handled.
-func (h *replHandle) stepFor(t turn) monty.Step {
+func (h *replHandle) stepFor(ctx context.Context, t turn) monty.Step {
 	switch k := t.end.GetKind().(type) {
 	case *montyv1.WorkerEvent_Complete:
 		value, err := decodeValue(k.Complete.GetValues(), k.Complete.GetValue())
@@ -170,15 +224,15 @@ func (h *replHandle) stepFor(t turn) monty.Step {
 	case *montyv1.WorkerEvent_TypingError:
 		return monty.Step{Err: &TypingError{Diagnostics: k.TypingError.GetDiagnostics()}, Repl: h, Prints: t.prints}
 	case *montyv1.WorkerEvent_FunctionCall:
-		return h.abortFeed("a host function call", t.prints)
+		return h.abortFeed(ctx, "a host function call", t.prints)
 	case *montyv1.WorkerEvent_OsCall:
-		return h.abortFeed("an OS call", t.prints)
+		return h.abortFeed(ctx, "an OS call", t.prints)
 	case *montyv1.WorkerEvent_NameLookup:
-		return h.abortFeed("a name from the host", t.prints)
+		return h.abortFeed(ctx, "a name from the host", t.prints)
 	case *montyv1.WorkerEvent_ResolveFutures:
-		return h.abortFeed("a future from the host", t.prints)
+		return h.abortFeed(ctx, "a future from the host", t.prints)
 	case *montyv1.WorkerEvent_StreamedCalls:
-		return h.abortFeed("a streamed host call", t.prints)
+		return h.abortFeed(ctx, "a streamed host call", t.prints)
 	default:
 		h.sess.fail(fmt.Errorf("remote: unexpected event ending a feed: %T", k))
 		return monty.Step{Err: h.sess.dead, Prints: t.prints}
@@ -188,11 +242,11 @@ func (h *replHandle) stepFor(t turn) monty.Step {
 // abortFeed ends a feed that is suspended on something this backend cannot
 // answer. The worker raises the exception where the script was waiting, the
 // feed ends in an Error event, and the session stays usable.
-func (h *replHandle) abortFeed(what, prints string) monty.Step {
+func (h *replHandle) abortFeed(ctx context.Context, what, prints string) monty.Step {
 	cause := fmt.Errorf("%w: the script needed %s", ErrUnsupported, what)
 	message := "the remote backend cannot answer " + what + " yet"
 	abort := &montyv1.AbortFeed{Exception: &montyv1.RaisedException{ExcType: "RuntimeError", Message: &message}}
-	t, err := h.sess.call(&montyv1.ClientRequest{Kind: &montyv1.ClientRequest_AbortFeed{AbortFeed: abort}})
+	t, err := h.sess.call(ctx, &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_AbortFeed{AbortFeed: abort}})
 	if err != nil {
 		return monty.Step{Err: errors.Join(cause, err), Prints: prints}
 	}
@@ -221,14 +275,14 @@ func (p *completedProgress) TakeRepl() (monty.ReplHandle, error) { return p.repl
 
 var errCompleted = errors.New("remote: a completed execution cannot be resumed")
 
-func (p *completedProgress) ResumeCall(monty.Result) monty.Step {
+func (p *completedProgress) ResumeCall(context.Context, monty.Result) monty.Step {
 	return monty.Step{Err: errCompleted}
 }
 
-func (p *completedProgress) ResumeLookup(monty.Value, bool) monty.Step {
+func (p *completedProgress) ResumeLookup(context.Context, monty.Value, bool) monty.Step {
 	return monty.Step{Err: errCompleted}
 }
 
-func (p *completedProgress) ResumeFutures(map[uint32]monty.Result) monty.Step {
+func (p *completedProgress) ResumeFutures(context.Context, map[uint32]monty.Result) monty.Step {
 	return monty.Step{Err: errCompleted}
 }

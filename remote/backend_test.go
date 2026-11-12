@@ -435,3 +435,112 @@ func TestDialGRPCRefusesATokenWithoutTLS(t *testing.T) {
 		t.Fatalf("err = %v, want a refusal that does not echo the token", err)
 	}
 }
+
+// A worker that stops answering must not hang the caller. Cancelling the
+// context ends the call and, since one turn cannot be abandoned without losing
+// the stream, the session.
+func TestCancellingAStalledFeedReturnsAndEndsTheSession(t *testing.T) {
+	repl := newRepl(t, func(s *fakeworker.Stream) {
+		if s.RecvConfigure() == nil {
+			return
+		}
+		s.Send(fakeworker.Ok())
+		if s.RecvFeed() == nil {
+			return
+		}
+		<-s.Context().Done() // never answers
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := repl.FeedRun(ctx, "stalls", monty.FeedOptions{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the context's deadline error", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("took %v: the call did not return when the context ended", elapsed)
+	}
+
+	// The session went with it.
+	if _, err := feed(t, repl, "again", monty.FeedOptions{}); !errors.Is(err, monty.ErrClosed) {
+		t.Fatalf("after cancelling a feed, err = %v, want the REPL to be closed", err)
+	}
+}
+
+// Cancelling after a feed has finished must not touch the session.
+func TestCancelledContextAfterTheFeedLeavesTheSessionAlone(t *testing.T) {
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.Complete(0, fakeworker.Int(6)))
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	got, err := repl.FeedRun(ctx, "x", monty.FeedOptions{})
+	wantInt(t, got, err, 6)
+	cancel() // after the call returned
+
+	time.Sleep(50 * time.Millisecond) // let any stray cancellation land
+	got, err = feed(t, repl, "x", monty.FeedOptions{})
+	wantInt(t, got, err, 6)
+}
+
+// A context that has ended before the call fails without sending anything, and
+// the session stays usable.
+func TestAlreadyCancelledContextSendsNothing(t *testing.T) {
+	feeds := 0
+	var mu sync.Mutex
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		mu.Lock()
+		feeds++
+		mu.Unlock()
+		s.Send(fakeworker.Complete(0, fakeworker.Int(8)))
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := repl.FeedRun(ctx, "x", monty.FeedOptions{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	got, err := feed(t, repl, "x", monty.FeedOptions{})
+	wantInt(t, got, err, 8)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if feeds != 1 {
+		t.Fatalf("the worker saw %d feeds, want 1", feeds)
+	}
+}
+
+func TestOpeningASessionTimesOut(t *testing.T) {
+	conn := fakeworker.Start(t, func(s *fakeworker.Stream) {
+		s.RecvConfigure()
+		<-s.Context().Done() // never replies to Configure
+	})
+	backend := remote.NewBackend(remote.NewGRPCTransport(conn, ""), remote.WithOpenTimeout(200*time.Millisecond))
+
+	start := time.Now()
+	_, err := monty.NewRepl(monty.ReplOptions{Backend: backend})
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("err = %v, want a timeout", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("took %v: opening did not time out", elapsed)
+	}
+}
+
+// The open timeout only covers opening. It must not end a session that opened
+// in time.
+func TestOpenTimeoutDoesNotEndAnOpenSession(t *testing.T) {
+	conn := fakeworker.Start(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.Complete(0, fakeworker.Int(2)))
+	}))
+	backend := remote.NewBackend(remote.NewGRPCTransport(conn, ""), remote.WithOpenTimeout(150*time.Millisecond))
+	repl, err := monty.NewRepl(monty.ReplOptions{Backend: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(400 * time.Millisecond) // well past the open timeout
+	got, err := feed(t, repl, "x", monty.FeedOptions{})
+	wantInt(t, got, err, 2)
+}

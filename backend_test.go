@@ -34,12 +34,12 @@ func (f *fakeBackend) LoadProgress([]byte) Step {
 func (r *fakeRunner) Close()                        { r.b.closes.Add(1) }
 func (r *fakeRunner) Dump() ([]byte, error)         { return []byte("runner"), nil }
 func (r *fakeRunner) TypeCheck(prefix string) error { return nil }
-func (r *fakeRunner) Start(opts StartOptions) Step {
+func (r *fakeRunner) Start(_ context.Context, opts StartOptions) Step {
 	return pausedAtDouble(r.b, opts.Inputs["x"], false)
 }
 func (r *fakeRepl) Close()                { r.b.closes.Add(1) }
 func (r *fakeRepl) Dump() ([]byte, error) { return []byte("repl"), nil }
-func (r *fakeRepl) FeedStart(_ string, opts FeedStartOptions) Step {
+func (r *fakeRepl) FeedStart(_ context.Context, _ string, opts FeedStartOptions) Step {
 	return pausedAtDouble(r.b, opts.Inputs["x"], true)
 }
 
@@ -64,7 +64,7 @@ func (p *fakeProgress) TakeRepl() (ReplHandle, error) {
 	return &fakeRepl{b: p.b}, nil
 }
 
-func (p *fakeProgress) ResumeCall(result Result) Step {
+func (p *fakeProgress) ResumeCall(_ context.Context, result Result) Step {
 	value, ok := result.Value().Raw().(int64)
 	if !ok {
 		// Like a backend that cannot encode the answer: nothing was sent.
@@ -76,8 +76,10 @@ func (p *fakeProgress) ResumeCall(result Result) Step {
 	}
 }
 
-func (p *fakeProgress) ResumeLookup(Value, bool) Step { return Step{Err: errors.New("unused")} }
-func (p *fakeProgress) ResumeFutures(map[uint32]Result) Step {
+func (p *fakeProgress) ResumeLookup(context.Context, Value, bool) Step {
+	return Step{Err: errors.New("unused")}
+}
+func (p *fakeProgress) ResumeFutures(context.Context, map[uint32]Result) Step {
 	return Step{Err: errors.New("unused")}
 }
 

@@ -34,7 +34,7 @@ type externalRepl struct{}
 
 func (*externalRepl) Close()                {}
 func (*externalRepl) Dump() ([]byte, error) { return nil, errExternalUnsupported }
-func (r *externalRepl) FeedStart(string, monty.FeedStartOptions) monty.Step {
+func (r *externalRepl) FeedStart(context.Context, string, monty.FeedStartOptions) monty.Step {
 	return monty.Step{
 		Progress: &externalProgress{repl: r},
 		Prints:   "started\n",
@@ -55,7 +55,7 @@ func (*externalProgress) Dump() ([]byte, error) { return nil, errExternalUnsuppo
 func (p *externalProgress) TakeRepl() (monty.ReplHandle, error) {
 	return p.repl, nil
 }
-func (p *externalProgress) ResumeCall(result monty.Result) monty.Step {
+func (p *externalProgress) ResumeCall(_ context.Context, result monty.Result) monty.Step {
 	answer, ok := result.Value().Raw().(int64)
 	if !ok {
 		return monty.Step{Err: errors.New("twice must return an int"), Retained: true}
@@ -65,10 +65,10 @@ func (p *externalProgress) ResumeCall(result monty.Result) monty.Step {
 		Desc:     monty.ProgressDesc{Kind: monty.ProgressComplete, IsRepl: true, Output: monty.Int(answer)},
 	}
 }
-func (*externalProgress) ResumeLookup(monty.Value, bool) monty.Step {
+func (*externalProgress) ResumeLookup(context.Context, monty.Value, bool) monty.Step {
 	return monty.Step{Err: errExternalUnsupported}
 }
-func (*externalProgress) ResumeFutures(map[uint32]monty.Result) monty.Step {
+func (*externalProgress) ResumeFutures(context.Context, map[uint32]monty.Result) monty.Step {
 	return monty.Step{Err: errExternalUnsupported}
 }
 
