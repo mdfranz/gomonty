@@ -1189,8 +1189,8 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "1.5.0"
-source = "git+https://github.com/pydantic/monty.git?rev=c707204276f017ce683061e9b8f5ee2b05243359#c707204276f017ce683061e9b8f5ee2b05243359"
+version = "1.6.0"
+source = "git+https://github.com/pydantic/monty.git?rev=3f89dcbf82071896efb5e3ded507db4191e8d829#3f89dcbf82071896efb5e3ded507db4191e8d829"
 dependencies = [
  "ahash",
  "chrono",
@@ -1246,8 +1246,8 @@ dependencies = [
 
 [[package]]
 name = "monty-macros"
-version = "1.5.0"
-source = "git+https://github.com/pydantic/monty.git?rev=c707204276f017ce683061e9b8f5ee2b05243359#c707204276f017ce683061e9b8f5ee2b05243359"
+version = "1.6.0"
+source = "git+https://github.com/pydantic/monty.git?rev=3f89dcbf82071896efb5e3ded507db4191e8d829#3f89dcbf82071896efb5e3ded507db4191e8d829"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1256,8 +1256,8 @@ dependencies = [
 
 [[package]]
 name = "monty-type-checking"
-version = "1.5.0"
-source = "git+https://github.com/pydantic/monty.git?rev=c707204276f017ce683061e9b8f5ee2b05243359#c707204276f017ce683061e9b8f5ee2b05243359"
+version = "1.6.0"
+source = "git+https://github.com/pydantic/monty.git?rev=3f89dcbf82071896efb5e3ded507db4191e8d829#3f89dcbf82071896efb5e3ded507db4191e8d829"
 dependencies = [
  "monty-types",
  "monty-typeshed",
@@ -1274,8 +1274,8 @@ dependencies = [
 
 [[package]]
 name = "monty-types"
-version = "1.5.0"
-source = "git+https://github.com/pydantic/monty.git?rev=c707204276f017ce683061e9b8f5ee2b05243359#c707204276f017ce683061e9b8f5ee2b05243359"
+version = "1.6.0"
+source = "git+https://github.com/pydantic/monty.git?rev=3f89dcbf82071896efb5e3ded507db4191e8d829#3f89dcbf82071896efb5e3ded507db4191e8d829"
 dependencies = [
  "chrono",
  "jiff",
@@ -1293,8 +1293,8 @@ dependencies = [
 
 [[package]]
 name = "monty-typeshed"
-version = "1.5.0"
-source = "git+https://github.com/pydantic/monty.git?rev=c707204276f017ce683061e9b8f5ee2b05243359#c707204276f017ce683061e9b8f5ee2b05243359"
+version = "1.6.0"
+source = "git+https://github.com/pydantic/monty.git?rev=3f89dcbf82071896efb5e3ded507db4191e8d829#3f89dcbf82071896efb5e3ded507db4191e8d829"
 dependencies = [
  "path-slash",
  "ruff_db",
