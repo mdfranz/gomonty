@@ -95,6 +95,9 @@ func dispatchLoop(ctx context.Context, progress Progress, cfg dispatchConfig) (V
 }
 
 func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfig) (Result, error) {
+	if snapshot.IsOSFunction && isSystemSleep(snapshot.FunctionName) {
+		return dispatchSystemSleep(ctx, snapshot, cfg)
+	}
 	if snapshot.IsOSFunction {
 		osHandler := cfg.os
 		if snapshot.FunctionName == string(OSImport) || snapshot.FunctionName == string(OSImportStubs) {
@@ -161,6 +164,92 @@ func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfi
 	}))
 	endCallbackSpan(span, result, err, cfg.telemetryOptions)
 	return result, err
+}
+
+// OS function names for sleeps under upstream's default SleepMode::System.
+// The host waits itself and never involves its OS handler.
+const (
+	osSystemSleep      = "system.sleep"
+	osSystemAsyncSleep = "system.async_sleep"
+)
+
+func isSystemSleep(name string) bool {
+	return name == osSystemSleep || name == osSystemAsyncSleep
+}
+
+// sleepWaiter resolves with None once its delay has elapsed.
+// The deadline is fixed when the call arrives, so repeated Waits (the loop
+// re-waits after another future resolves first) never restart the delay.
+type sleepWaiter struct{ deadline time.Time }
+
+func (w sleepWaiter) Wait(ctx context.Context) Result {
+	if err := sleepContext(ctx, time.Until(w.deadline)); err != nil {
+		return Raise(exceptionFromError(err))
+	}
+	return Return(None())
+}
+
+// sleepContext waits for d, or until ctx ends, whichever comes first.
+func sleepContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// sleepDuration reads the delay in seconds that upstream sends as the only
+// argument, treating missing, negative and NaN values as zero. Upstream has
+// already capped it.
+func sleepDuration(args []Value) time.Duration {
+	if len(args) == 0 {
+		return 0
+	}
+	seconds, ok := args[0].Raw().(float64)
+	if !ok || !(seconds > 0) {
+		return 0
+	}
+	const maxSeconds = float64(1<<62) / float64(time.Second)
+	if seconds > maxSeconds {
+		seconds = maxSeconds
+	}
+	return time.Duration(seconds * float64(time.Second))
+}
+
+// dispatchSystemSleep answers system.sleep by waiting and system.async_sleep
+// with a pending future that resolves after the delay, so other tasks run
+// meanwhile. Both are recorded as OS callback spans; for the async form the
+// span covers only scheduling, and the wait shows up as a monty.wait span.
+// Upstream does not charge sleeping against MaxDuration.
+func dispatchSystemSleep(ctx context.Context, snapshot *Snapshot, cfg dispatchConfig) (Result, error) {
+	callCtx, span := startCallbackSpan(ctx, cfg.telemetry, CallbackInfo{
+		FunctionName: snapshot.FunctionName,
+		IsOSFunction: true,
+		IsMethodCall: snapshot.IsMethodCall,
+		CallID:       snapshot.CallID,
+		Arguments: truncatedPayload(cfg.telemetryOptions.RecordArguments, func() string {
+			return renderArguments(snapshot.Args, snapshot.Kwargs)
+		}, cfg.telemetryOptions.MaxAttributeBytes),
+	}, cfg.telemetryOptions)
+	delay := sleepDuration(snapshot.Args)
+	if snapshot.FunctionName == osSystemAsyncSleep {
+		result := Pending(sleepWaiter{deadline: time.Now().Add(delay)})
+		endCallbackSpan(span, result, nil, cfg.telemetryOptions)
+		return result, nil
+	}
+	if err := sleepContext(callCtx, delay); err != nil {
+		endCallbackSpan(span, Result{}, err, cfg.telemetryOptions)
+		return Result{}, err
+	}
+	result := Return(None())
+	endCallbackSpan(span, result, nil, cfg.telemetryOptions)
+	return result, nil
 }
 
 func dispatchNameLookup(ctx context.Context, lookup *NameLookupSnapshot, cfg dispatchConfig) (Progress, error) {
