@@ -41,7 +41,7 @@ I know of no other breaking changes. The module path differs from the original (
 go get github.com/mdfranz/gomonty@latest
 ```
 
-Requires Go 1.25+ and `CGO_ENABLED=0`. Tagged versions ship the native shared libraries for darwin/arm64, linux/amd64, linux/arm64 and windows/amd64. On Alpine or other musl Linux, build with `-tags musl`.
+Requires Go 1.27.4+ and `CGO_ENABLED=0`. Tagged versions ship the native shared libraries for darwin/arm64, linux/amd64, linux/arm64 and windows/amd64. On Alpine or other musl Linux, build with `-tags musl`.
 
 ## Quick start
 

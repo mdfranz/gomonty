@@ -33,7 +33,7 @@ CGO_ENABLED=0 go test ./...
 
 Requirements:
 
-- Go 1.25+
+- Go 1.27.4+
 - Rust toolchain
 - Python available on `PATH`, or `PYO3_PYTHON` set explicitly
 - `cbindgen` only when regenerating `internal/ffi/include/monty_go_ffi.h`

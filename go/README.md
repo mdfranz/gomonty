@@ -26,7 +26,7 @@ If the shared library for your target is missing from the source tree, builds fo
 
 ## Requirements
 
-- Go 1.25+
+- Go 1.27.4+
 - `CGO_ENABLED=0`
 - a repo/tag that includes the native shared library for your target
 - `-tags musl` when building on Alpine or another musl-based Linux environment
