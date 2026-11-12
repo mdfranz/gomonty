@@ -371,7 +371,11 @@ impl WireValue {
                 position: handle.position,
                 ..Self::default()
             },
-            MontyNode::Function { name, docstring } => Self {
+            MontyNode::Function {
+                name,
+                docstring,
+                is_async: _,
+            } => Self {
                 kind: WIRE_VALUE_FUNCTION,
                 name: name.clone(),
                 docstring: docstring.clone(),
