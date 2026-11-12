@@ -14,7 +14,7 @@ I forked it on 2026-09-05 and have maintained this fork since. The motive was pr
 
 Changes since the fork (releases `v0.0.15` to `v0.0.17`, plus the docs on the unreleased `docs/update-documentation` branch):
 
-- **Newer Monty.** Refreshed the pinned upstream Monty several times, most recently to v1.2.0, and updated the wire format and Go types for the upstream changes (see [docs/UPSTREAM-REFRESH-PLAN.md](./docs/UPSTREAM-REFRESH-PLAN.md) and the `upstream-refresh` skill).
+- **Newer Monty.** Refreshed the pinned upstream Monty several times, most recently to v1.6.0, and updated the wire format and Go types for the upstream changes (see [docs/UPSTREAM-REFRESH-PLAN.md](./docs/UPSTREAM-REFRESH-PLAN.md) and the `upstream-refresh` skill).
 - **Complex numbers and host modules.** `Complex` carries Python `complex` values as `complex128`. `RunOptions.Modules` and `FeedOptions.Modules` let sandbox code `import` a module you define in Go, and `vfs.Handler` now serves `os.scandir`, `os.walk` and `Path.glob`.
 - **Telemetry.** An opt-in `TelemetryHandler` API with a `log/slog` adapter, plus `otelmonty`, a separate module that exports OpenTelemetry traces.
 - **`shmonty`.** An interactive REPL and script runner, with history, rewind, a telemetry pane and OTLP export.
