@@ -14,6 +14,18 @@ cargo test -p monty-go-ffi --locked
 
 The first build compiles all of upstream Monty and takes several minutes. Do not commit locally built shared libraries; see [`RELEASING.md`](../RELEASING.md).
 
+## Testing the remote client against a real worker
+
+The `remote/` tests normally run against an in-process fake worker. `remote/realworker_test.go` runs the same kinds of scenarios (host functions, OS calls, name lookups, futures, large values, cancellation) against a real Monty worker. Run it with:
+
+```bash
+make remote-realworker
+```
+
+The script builds `monty` from the upstream commit pinned in `Cargo.toml` (cached under `~/.cache/gomonty`; the first build takes several minutes), starts upstream's `scripts/grpc_relay.py` from that commit on a localhost port, runs the tests and stops the relay. It needs `git`, `cargo` and `uv`. Run it after bumping the upstream pin.
+
+The tests skip unless `MONTY_REMOTE_ENDPOINT` is set, so `go test ./...` is unaffected. To point them at another worker, set `MONTY_REMOTE_ENDPOINT` (and `MONTY_REMOTE_TOKEN` for a TLS endpoint, or `MONTY_REMOTE_INSECURE=1` for a plain local one) and run `go test -run RealWorker ./remote`. The local relay covers protocol handling only: it has no TLS, authentication or capacity limits.
+
 ## Build Notes
 
 The Go package is cgo-free. It uses `purego` to load a bundled shared library for the current target from `internal/ffi/lib/<target>`.
