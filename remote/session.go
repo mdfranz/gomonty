@@ -39,22 +39,34 @@ type turn struct {
 // call sends one request and reads until the turn ends. Print events are
 // gathered, and Ping is answered with Pong. If the worker reports a fatal
 // error, or the stream ends without one, the session is dead afterwards.
-func (s *session) call(req *montyv1.ClientRequest) (turn, error) {
+//
+// If ctx ends first, the call returns ctx's error and the session is dead
+// afterwards: a blocked send or receive can only be stopped by ending the
+// stream, and a session cannot carry on after one of its turns is abandoned.
+// A context that has already ended fails before anything is sent, and leaves
+// the session usable.
+func (s *session) call(ctx context.Context, req *montyv1.ClientRequest) (turn, error) {
 	if s.dead != nil {
 		return turn{}, s.dead
 	}
+	if err := ctx.Err(); err != nil {
+		return turn{}, err
+	}
+	stop := context.AfterFunc(ctx, s.cancel)
+	defer stop()
+
 	if err := s.stream.Send(req); err != nil {
-		return turn{}, s.fail(fmt.Errorf("remote: send: %w", err))
+		return turn{}, s.fail(callError(ctx, "send", err))
 	}
 	var prints strings.Builder
 	for {
 		event, err := s.stream.Recv()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			if errors.Is(err, io.EOF) && ctx.Err() == nil {
 				// A worker that exits without a FatalError crashed.
 				err = errors.New("the worker closed the stream without finishing the turn")
 			}
-			return turn{}, s.fail(fmt.Errorf("remote: receive: %w", err))
+			return turn{}, s.fail(callError(ctx, "receive", err))
 		}
 		switch kind := event.GetKind().(type) {
 		case *montyv1.WorkerEvent_Print:
@@ -64,7 +76,7 @@ func (s *session) call(req *montyv1.ClientRequest) (turn, error) {
 		case *montyv1.WorkerEvent_Ping:
 			pong := &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Pong{Pong: &montyv1.Pong{}}}
 			if err := s.stream.Send(pong); err != nil {
-				return turn{}, s.fail(fmt.Errorf("remote: answer ping: %w", err))
+				return turn{}, s.fail(callError(ctx, "answer ping", err))
 			}
 		case *montyv1.WorkerEvent_FatalError:
 			return turn{}, s.fail(fmt.Errorf("remote: the worker failed: %s", kind.FatalError.GetMessage()))
@@ -72,6 +84,15 @@ func (s *session) call(req *montyv1.ClientRequest) (turn, error) {
 			return turn{prints: prints.String(), end: event}, nil
 		}
 	}
+}
+
+// callError reports a failed send or receive. If the caller's context ended,
+// that is the cause, whatever error the cancelled stream returned.
+func callError(ctx context.Context, op string, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return fmt.Errorf("remote: %s: %w", op, err)
 }
 
 func (s *session) fail(err error) error {

@@ -1,6 +1,7 @@
 package monty
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -65,7 +66,7 @@ func (r *ffiRunner) TypeCheck(prefix string) error {
 	return newError(r.h.TypeCheck([]byte(prefix)))
 }
 
-func (r *ffiRunner) Start(opts StartOptions) Step {
+func (r *ffiRunner) Start(_ context.Context, opts StartOptions) Step {
 	wireOptions, err := newWireStartOptions(opts)
 	if err != nil {
 		return Step{Err: err, Retained: true}
@@ -87,7 +88,7 @@ func (r *ffiRepl) Dump() ([]byte, error) {
 	return data, nil
 }
 
-func (r *ffiRepl) FeedStart(code string, opts FeedStartOptions) Step {
+func (r *ffiRepl) FeedStart(_ context.Context, code string, opts FeedStartOptions) Step {
 	wireOptions, err := newWireFeedOptions(opts)
 	if err != nil {
 		return Step{Err: err, Retained: true}
@@ -117,7 +118,7 @@ func (p *ffiProgress) TakeRepl() (ReplHandle, error) {
 	return &ffiRepl{h: result.Repl}, nil
 }
 
-func (p *ffiProgress) ResumeCall(result Result) Step {
+func (p *ffiProgress) ResumeCall(_ context.Context, result Result) Step {
 	wireResult, err := newWireCallResult(result)
 	if err != nil {
 		return Step{Err: err, Retained: true}
@@ -129,7 +130,7 @@ func (p *ffiProgress) ResumeCall(result Result) Step {
 	return stepFromOp(p.h.ResumeCall(payload))
 }
 
-func (p *ffiProgress) ResumeLookup(value Value, found bool) Step {
+func (p *ffiProgress) ResumeLookup(_ context.Context, value Value, found bool) Step {
 	var wireResult wireLookupResult
 	if found {
 		var err error
@@ -146,7 +147,7 @@ func (p *ffiProgress) ResumeLookup(value Value, found bool) Step {
 	return stepFromOp(p.h.ResumeLookup(payload))
 }
 
-func (p *ffiProgress) ResumeFutures(results map[uint32]Result) Step {
+func (p *ffiProgress) ResumeFutures(_ context.Context, results map[uint32]Result) Step {
 	wireResults, err := newWireFutureResults(results)
 	if err != nil {
 		return Step{Err: err, Retained: true}

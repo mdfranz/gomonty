@@ -1,5 +1,7 @@
 package monty
 
+import "context"
+
 // Backend is the seam between the host-facing API (Runner, Repl, the progress
 // snapshots and the dispatch loop) and whatever actually runs the interpreter.
 // The default backend (backend_ffi.go) drives the native library in-process;
@@ -12,6 +14,13 @@ package monty
 // such as the remote worker client. It may change before it is declared
 // stable. Set CompileOptions.Backend or ReplOptions.Backend to use one; the
 // zero value means the native library.
+//
+// Calls that can run for a while take the caller's context: Start, FeedStart
+// and the resumes. A backend that can stop the work should return, with the
+// context's error, once it is done. The native-library backend cannot interrupt
+// a running script and relies on resource limits instead. A remote backend
+// cannot tell a stalled worker from a slow one, so cancelling the context ends
+// its session.
 //
 // Ownership rules every backend must follow, because the host-facing layer
 // (runnerState, replState, progressState) relies on them:
@@ -35,7 +44,7 @@ type RunnerHandle interface {
 	Dump() ([]byte, error)
 	TypeCheck(prefix string) error
 	// Start begins one execution. It does not consume the runner.
-	Start(opts StartOptions) Step
+	Start(ctx context.Context, opts StartOptions) Step
 }
 
 // ReplHandle is a REPL session.
@@ -44,7 +53,7 @@ type ReplHandle interface {
 	Dump() ([]byte, error)
 	// FeedStart begins one snippet. It consumes the handle; the session comes
 	// back through the returned Step or through ProgressHandle.TakeRepl.
-	FeedStart(code string, opts FeedStartOptions) Step
+	FeedStart(ctx context.Context, code string, opts FeedStartOptions) Step
 }
 
 // ProgressHandle is an execution paused at a call, name lookup or future.
@@ -53,10 +62,10 @@ type ProgressHandle interface {
 	Dump() ([]byte, error)
 	// TakeRepl returns the REPL session a paused snippet belongs to.
 	TakeRepl() (ReplHandle, error)
-	ResumeCall(result Result) Step
+	ResumeCall(ctx context.Context, result Result) Step
 	// ResumeLookup answers a name lookup; found is false for "undefined".
-	ResumeLookup(value Value, found bool) Step
-	ResumeFutures(results map[uint32]Result) Step
+	ResumeLookup(ctx context.Context, value Value, found bool) Step
+	ResumeFutures(ctx context.Context, results map[uint32]Result) Step
 }
 
 // Step is the outcome of starting or resuming an execution.
