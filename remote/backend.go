@@ -17,10 +17,16 @@ import (
 //
 //	repl, err := monty.NewRepl(monty.ReplOptions{Backend: remote.NewBackend(transport)})
 //
-// Each REPL is one session on its own stream. Runners, dumps and snapshots are
-// not supported yet, and a script that calls a host function, reads a name from
-// the host or makes an OS call is stopped with ErrUnsupported; those arrive
-// with the work tracked in #86 and #87.
+// Each REPL is one session on its own stream. A script can call the host's
+// functions, read names from it, make OS calls (answered by the OSHandler, so
+// vfs filesystems work unchanged) and wait on its futures, exactly as it can
+// locally. Blocking sleeps are served by the backend itself.
+//
+// Not supported yet: runners, Dump and snapshots (#87); methods and attributes
+// of host objects, which stop the script with ErrUnsupported; async host calls
+// started without waiting for the host, and asyncio sleeps. OS calls with no
+// gomonty equivalent (appending to files, open and exclusive creation) are
+// answered "not handled", so the script gets an ordinary Python error.
 //
 // A call's context bounds it: if the context ends while a feed is waiting on the
 // worker, the call returns the context's error and the session is closed,
@@ -224,14 +230,15 @@ func (h *replHandle) stepFor(ctx context.Context, t turn) monty.Step {
 	case *montyv1.WorkerEvent_TypingError:
 		return monty.Step{Err: &TypingError{Diagnostics: k.TypingError.GetDiagnostics()}, Repl: h, Prints: t.prints}
 	case *montyv1.WorkerEvent_FunctionCall:
-		return h.abortFeed(ctx, "a host function call", t.prints)
+		return h.pauseOnCall(ctx, k.FunctionCall, t.prints)
 	case *montyv1.WorkerEvent_OsCall:
-		return h.abortFeed(ctx, "an OS call", t.prints)
+		return h.pauseOnOS(ctx, k.OsCall, t.prints)
 	case *montyv1.WorkerEvent_NameLookup:
-		return h.abortFeed(ctx, "a name from the host", t.prints)
+		return h.pauseOnName(ctx, k.NameLookup, t.prints)
 	case *montyv1.WorkerEvent_ResolveFutures:
-		return h.abortFeed(ctx, "a future from the host", t.prints)
+		return h.pauseOnFutures(k.ResolveFutures, t.prints)
 	case *montyv1.WorkerEvent_StreamedCalls:
+		// Only sent to a client that asked for them, which this one does not.
 		return h.abortFeed(ctx, "a streamed host call", t.prints)
 	default:
 		h.sess.fail(fmt.Errorf("remote: unexpected event ending a feed: %T", k))
@@ -239,22 +246,48 @@ func (h *replHandle) stepFor(ctx context.Context, t turn) monty.Step {
 	}
 }
 
-// abortFeed ends a feed that is suspended on something this backend cannot
-// answer. The worker raises the exception where the script was waiting, the
-// feed ends in an Error event, and the session stays usable.
-func (h *replHandle) abortFeed(ctx context.Context, what, prints string) monty.Step {
-	cause := fmt.Errorf("%w: the script needed %s", ErrUnsupported, what)
-	message := "the remote backend cannot answer " + what + " yet"
-	abort := &montyv1.AbortFeed{Exception: &montyv1.RaisedException{ExcType: "RuntimeError", Message: &message}}
-	t, err := h.sess.call(ctx, &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_AbortFeed{AbortFeed: abort}})
+// proceed sends the host's answer to a pause and turns the worker's next event
+// into a Step.
+func (h *replHandle) proceed(ctx context.Context, req *montyv1.ClientRequest) monty.Step {
+	t, err := h.sess.call(ctx, req)
 	if err != nil {
-		return monty.Step{Err: errors.Join(cause, err), Prints: prints}
+		return monty.Step{Err: err}
+	}
+	return h.stepFor(ctx, t)
+}
+
+// abort ends a feed that is suspended. The worker raises the exception where
+// the script was waiting, the feed ends in an Error event, and the session
+// stays usable. It returns what the script printed on the way out.
+func (h *replHandle) abort(ctx context.Context, message string) (string, error) {
+	exc := &montyv1.RaisedException{ExcType: "RuntimeError", Message: &message}
+	t, err := h.sess.call(ctx, &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_AbortFeed{
+		AbortFeed: &montyv1.AbortFeed{Exception: exc},
+	}})
+	if err != nil {
+		return "", err
 	}
 	if _, ok := t.end.GetKind().(*montyv1.WorkerEvent_Error); !ok {
 		h.sess.fail(fmt.Errorf("remote: unexpected reply to AbortFeed: %T", t.end.GetKind()))
-		return monty.Step{Err: errors.Join(cause, h.sess.dead), Prints: prints}
+		return "", h.sess.dead
 	}
-	return monty.Step{Err: cause, Repl: h, Prints: prints + t.prints}
+	return t.prints, nil
+}
+
+// abortFeedWith gives up on a suspended feed because of cause, and reports
+// cause to the caller. The session survives.
+func (h *replHandle) abortFeedWith(ctx context.Context, cause error, message, prints string) monty.Step {
+	more, err := h.abort(ctx, message)
+	if err != nil {
+		return monty.Step{Err: errors.Join(cause, err), Prints: prints}
+	}
+	return monty.Step{Err: cause, Repl: h, Prints: prints + more}
+}
+
+// abortFeed gives up on a feed that needs something this backend cannot answer.
+func (h *replHandle) abortFeed(ctx context.Context, what, prints string) monty.Step {
+	cause := fmt.Errorf("%w: the script needed %s", ErrUnsupported, what)
+	return h.abortFeedWith(ctx, cause, "the remote backend cannot answer "+what+" yet", prints)
 }
 
 // completedProgress is the state after a snippet finished. The host layer takes

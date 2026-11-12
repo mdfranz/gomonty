@@ -187,13 +187,110 @@ func Ping() *montyv1.WorkerEvent {
 	return &montyv1.WorkerEvent{Kind: &montyv1.WorkerEvent_Ping{Ping: &montyv1.Ping{}}}
 }
 
-// CallsHost suspends the feed on a host function call.
+// CallsHost suspends the feed on a host function call with no arguments.
 func CallsHost(name string) *montyv1.WorkerEvent {
+	return FunctionCall(name, 1, nil, nil)
+}
+
+// FunctionCall suspends the feed on a host function call. args and kwargs
+// index into nodes, which are the call's arena.
+func FunctionCall(name string, callID uint32, args []uint32, kwargs []*montyv1.NodePair, nodes ...*montyv1.MontyNode) *montyv1.WorkerEvent {
 	return &montyv1.WorkerEvent{Kind: &montyv1.WorkerEvent_FunctionCall{FunctionCall: &montyv1.FunctionCall{
 		FunctionName: name,
-		CallId:       1,
+		Args:         args,
+		Kwargs:       kwargs,
+		CallId:       callID,
+		Values:       &montyv1.Arena{NodeCount: uint32(len(nodes)), Nodes: nodes},
+	}}}
+}
+
+// MethodCall is a call on a host object, which the receiver's id names.
+func MethodCall(name string, callID uint32) *montyv1.WorkerEvent {
+	return &montyv1.WorkerEvent{Kind: &montyv1.WorkerEvent_FunctionCall{FunctionCall: &montyv1.FunctionCall{
+		FunctionName: name,
+		CallId:       callID,
+		ObjectId:     &montyv1.Uuid{Data: make([]byte, 16)},
 		Values:       &montyv1.Arena{},
 	}}}
+}
+
+// OS suspends the feed on an OS call. call.Values may carry the arena that
+// argument indexes (such as os.getenv's default) point into.
+func OS(callID uint32, call *montyv1.OsCall) *montyv1.WorkerEvent {
+	call.CallId = callID
+	if call.Values == nil {
+		call.Values = &montyv1.Arena{}
+	}
+	return &montyv1.WorkerEvent{Kind: &montyv1.WorkerEvent_OsCall{OsCall: call}}
+}
+
+// NameLookup suspends the feed on a name the host should supply.
+func NameLookup(name string) *montyv1.WorkerEvent {
+	return &montyv1.WorkerEvent{Kind: &montyv1.WorkerEvent_NameLookup{NameLookup: &montyv1.NameLookup{Name: name}}}
+}
+
+// ResolveFutures suspends the feed until the host resolves these calls.
+func ResolveFutures(ids ...uint32) *montyv1.WorkerEvent {
+	return &montyv1.WorkerEvent{Kind: &montyv1.WorkerEvent_ResolveFutures{ResolveFutures: &montyv1.ResolveFutures{PendingCallIds: ids}}}
+}
+
+// Request readers. Each fails the test, and returns nil, if the client sent
+// something else.
+
+// RecvResumeCall reads the client's answer to a call.
+func (s *Stream) RecvResumeCall() *montyv1.ResumeCall {
+	s.t.Helper()
+	req := s.Recv()
+	if req == nil {
+		return nil
+	}
+	r := req.GetResumeCall()
+	if r == nil {
+		s.t.Errorf("fakeworker: request was %T, want ResumeCall", req.GetKind())
+	}
+	return r
+}
+
+// RecvResumeNameLookup reads the client's answer to a name lookup.
+func (s *Stream) RecvResumeNameLookup() *montyv1.ResumeNameLookup {
+	s.t.Helper()
+	req := s.Recv()
+	if req == nil {
+		return nil
+	}
+	r := req.GetResumeNameLookup()
+	if r == nil {
+		s.t.Errorf("fakeworker: request was %T, want ResumeNameLookup", req.GetKind())
+	}
+	return r
+}
+
+// RecvResumeFutures reads the client's answer to a wait on futures.
+func (s *Stream) RecvResumeFutures() *montyv1.ResumeFutures {
+	s.t.Helper()
+	req := s.Recv()
+	if req == nil {
+		return nil
+	}
+	r := req.GetResumeFutures()
+	if r == nil {
+		s.t.Errorf("fakeworker: request was %T, want ResumeFutures", req.GetKind())
+	}
+	return r
+}
+
+// RecvAbortFeed reads the client giving up on the feed.
+func (s *Stream) RecvAbortFeed() *montyv1.AbortFeed {
+	s.t.Helper()
+	req := s.Recv()
+	if req == nil {
+		return nil
+	}
+	a := req.GetAbortFeed()
+	if a == nil {
+		s.t.Errorf("fakeworker: request was %T, want AbortFeed", req.GetKind())
+	}
+	return a
 }
 
 // Node constructors.

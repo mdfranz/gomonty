@@ -11,11 +11,12 @@
 // Each REPL is one session on its own stream. Closing the transport ends every
 // session; a REPL that becomes unreachable is also released by a finalizer.
 //
-// The Backend API it implements is experimental (see monty.Backend). This
-// version supports REPLs only, and runs scripts that need nothing from the
-// host: a script that calls a host function, reads a name from the host or
-// makes an OS call is stopped with ErrUnsupported. Runners, Dump and snapshots
-// are not supported yet.
+// The Backend API it implements is experimental (see monty.Backend). Scripts
+// can call host functions, read names from the host, make OS calls through the
+// host's OSHandler and wait on futures, as they can locally. This version
+// supports REPLs only: runners, Dump and snapshots are not supported yet, and a
+// script that uses a method or attribute of a host object is stopped with
+// ErrUnsupported.
 //
 // The vendored protocol definition is in proto/ and the Go code generated from
 // it is in internal/montyv1; see proto/UPSTREAM for the pinned upstream
