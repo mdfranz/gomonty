@@ -13,12 +13,12 @@ import (
 // in order.
 type scriptedLoads struct {
 	*fakeBackend
-	loads []step
+	loads []Step
 }
 
-func (s *scriptedLoads) loadProgress([]byte) step {
+func (s *scriptedLoads) LoadProgress([]byte) Step {
 	if len(s.loads) == 0 {
-		return step{err: errors.New("no scripted load")}
+		return Step{Err: errors.New("no scripted load")}
 	}
 	next := s.loads[0]
 	s.loads = s.loads[1:]
@@ -32,10 +32,10 @@ type retainingRepl struct {
 	failures int
 }
 
-func (r *retainingRepl) FeedStart(code string, opts FeedStartOptions) step {
+func (r *retainingRepl) FeedStart(code string, opts FeedStartOptions) Step {
 	if r.failures > 0 {
 		r.failures--
-		return step{err: errors.New("cannot encode the inputs"), retained: true}
+		return Step{Err: errors.New("cannot encode the inputs"), Retained: true}
 	}
 	return r.fakeRepl.FeedStart(code, opts)
 }
@@ -45,18 +45,18 @@ type retainingBackend struct {
 	failures int
 }
 
-func (b *retainingBackend) newRepl(ReplOptions) (replHandle, error) {
+func (b *retainingBackend) NewRepl(ReplOptions) (ReplHandle, error) {
 	return &retainingRepl{fakeRepl: &fakeRepl{b: b.fakeBackend}, failures: b.failures}, nil
 }
 
-func pausedCall() progressDesc {
-	return progressDesc{
-		kind:         progressFunctionCall,
-		scriptName:   "fake.py",
-		isRepl:       true,
-		functionName: "double",
-		args:         []Value{Int(1)},
-		callID:       1,
+func pausedCall() ProgressDesc {
+	return ProgressDesc{
+		Kind:         ProgressFunctionCall,
+		ScriptName:   "fake.py",
+		IsRepl:       true,
+		FunctionName: "double",
+		Args:         []Value{Int(1)},
+		CallID:       1,
 	}
 }
 
@@ -91,7 +91,7 @@ func TestReplSurvivesInputsItCannotEncode(t *testing.T) {
 // The same rule at the host layer, over a backend that reports it.
 func TestReplKeepsSessionWhenTheBackendRetainsIt(t *testing.T) {
 	fake := &fakeBackend{}
-	repl, err := NewRepl(ReplOptions{backend: &retainingBackend{fakeBackend: fake, failures: 2}})
+	repl, err := NewRepl(ReplOptions{Backend: &retainingBackend{fakeBackend: fake, failures: 2}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestReplKeepsSessionWhenTheBackendRetainsIt(t *testing.T) {
 func TestLoadSnapshotClosesTheHandleOnFailure(t *testing.T) {
 	fake := &fakeBackend{}
 	leaky := &fakeProgress{b: fake}
-	b := &scriptedLoads{fakeBackend: fake, loads: []step{{progress: leaky, err: errors.New("bad payload")}}}
+	b := &scriptedLoads{fakeBackend: fake, loads: []Step{{Progress: leaky, Err: errors.New("bad payload")}}}
 
 	if _, err := loadSnapshot(b, addDumpHeader([]byte("snapshot"))); err == nil {
 		t.Fatal("expected an error")
@@ -132,7 +132,7 @@ func TestLoadSnapshotClosesTheHandleOnFailure(t *testing.T) {
 
 	// A backend that reports success without a handle must produce an error,
 	// not a panic.
-	b = &scriptedLoads{fakeBackend: fake, loads: []step{{}}}
+	b = &scriptedLoads{fakeBackend: fake, loads: []Step{{}}}
 	if _, err := loadSnapshot(b, addDumpHeader([]byte("snapshot"))); err == nil {
 		t.Fatal("expected an error for a missing handle")
 	}
@@ -146,9 +146,9 @@ func TestLoadReplSnapshotClosesTheRecoveryCopy(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		fake := &fakeBackend{}
-		b := &scriptedLoads{fakeBackend: fake, loads: []step{
-			{progress: &fakeProgress{b: fake}, desc: pausedCall()},
-			{progress: &fakeProgress{b: fake}, desc: pausedCall()},
+		b := &scriptedLoads{fakeBackend: fake, loads: []Step{
+			{Progress: &fakeProgress{b: fake}, Desc: pausedCall()},
+			{Progress: &fakeProgress{b: fake}, Desc: pausedCall()},
 		}}
 		progress, owner, err := loadReplSnapshot(b, data)
 		if err != nil {
@@ -167,9 +167,9 @@ func TestLoadReplSnapshotClosesTheRecoveryCopy(t *testing.T) {
 
 	t.Run("second load fails", func(t *testing.T) {
 		fake := &fakeBackend{}
-		b := &scriptedLoads{fakeBackend: fake, loads: []step{
-			{progress: &fakeProgress{b: fake}, desc: pausedCall()},
-			{err: errors.New("second load failed")},
+		b := &scriptedLoads{fakeBackend: fake, loads: []Step{
+			{Progress: &fakeProgress{b: fake}, Desc: pausedCall()},
+			{Err: errors.New("second load failed")},
 		}}
 		if _, _, err := loadReplSnapshot(b, data); err == nil {
 			t.Fatal("expected an error")
