@@ -6,7 +6,7 @@ gomonty is the cgo-free Go binding for [pydantic/monty](https://github.com/pydan
 
 ## Layout
 
-There are four Go modules, connected with `replace` directives. Run `go test` in each one separately:
+There are five Go modules, connected with `replace` directives. Run `go test` in each one separately:
 
 | Module | Path |
 | --- | --- |
@@ -14,6 +14,7 @@ There are four Go modules, connected with `replace` directives. Run `go test` in
 | examples | `examples/` |
 | OpenTelemetry bridge | `otelmonty/` |
 | REPL (`shmonty`) | `cmd/shmonty/` |
+| remote worker client (vendored `monty.v1` proto + generated gRPC code) | `remote/` |
 
 - Architecture, upstream context and a learning path are in `docs/` (start with `docs/architecture.md`).
 - Values cross the boundary as MessagePack. Changes flow top-down: upstream `MontyObject` → `crates/monty-go-ffi/src/wire.rs` → `wire.go` → `types.go`. The `upstream-refresh` skill covers this in detail.
@@ -37,6 +38,7 @@ cargo test -p monty-go-ffi --locked
 
 - **Don't commit locally built shared libraries** (`internal/ffi/lib/**`), the header, or `internal/ffi/checksums.txt` in feature PRs. CI rebuilds the libraries for each platform, and only the `release-prep` workflow commits them. See `RELEASING.md`.
 - The upstream pin in `Cargo.toml` (`monty`, `monty_type_checking`, `monty_types`) must use one full 40-character commit hash for all three entries.
+- The vendored proto in `remote/proto/` must come from the same upstream commit as the `Cargo.toml` pin. When you bump the pin, copy `crates/monty-proto/proto/monty/v1/monty.proto` from the new tag unchanged, update `remote/proto/UPSTREAM` (tag, commit, sha256), run `make proto` and commit the regenerated `remote/internal/montyv1`. `make check-proto` and `remote`'s tests catch drift. `make proto` needs `protoc`.
 - Never renumber `WIRE_VALUE_*` constants; Go uses `iota`, so their order must match the Rust values.
 - `verify.yml` runs only when a PR is first opened. To recheck later pushes, run `gh workflow run verify.yml --ref <branch>`.
 - Releases: `make release` opens a release-prep PR. After it merges, run `make publish-release VERSION=vX.Y.Z`.
