@@ -38,6 +38,24 @@ type Backend interface {
 	LoadProgress(data []byte) Step
 }
 
+// ReplLoader is implemented by a backend that can restore an idle REPL from
+// the bytes its ReplHandle.Dump produced. LoadRepl uses it. data is the
+// backend's own dump, without the gomonty header. opts is what the caller
+// passed to LoadRepl; a backend whose dumps record their own configuration
+// may ignore it.
+type ReplLoader interface {
+	LoadRepl(data []byte, opts ReplOptions) (ReplHandle, error)
+}
+
+// ReplResetter is implemented by a ReplHandle that can discard its state and
+// start over cheaply, for example by reusing the connection to a remote worker.
+// Like FeedStart it consumes the handle it is called on and returns the empty
+// session in a new one. Repl.Reset falls back to closing the handle and
+// opening a new REPL for a handle that does not implement it.
+type ReplResetter interface {
+	Reset(ctx context.Context) (ReplHandle, error)
+}
+
 // RunnerHandle is a compiled runner.
 type RunnerHandle interface {
 	Close()

@@ -421,10 +421,25 @@ func TestUnsupportedOperations(t *testing.T) {
 	}
 }
 
-func TestReplDumpIsNotSupportedYet(t *testing.T) {
-	repl := newRepl(t, serve(func(*fakeworker.Stream, int, *montyv1.Feed) {}))
-	if _, err := repl.Dump(); !errors.Is(err, remote.ErrUnsupported) {
-		t.Fatalf("Dump: err = %v, want ErrUnsupported", err)
+// Only an idle REPL can be dumped; a snippet that is paused on the host has no
+// remote snapshot yet.
+func TestSnapshotOfAPausedSnippetIsNotSupportedYet(t *testing.T) {
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.CallsHost("later"))
+		s.Recv()
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	progress, err := repl.FeedStart(ctx, "later()", monty.FeedStartOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, ok := progress.(*monty.Snapshot)
+	if !ok {
+		t.Fatalf("progress is %T, want a call snapshot", progress)
+	}
+	if _, err := snapshot.Dump(); !errors.Is(err, remote.ErrUnsupported) {
+		t.Fatalf("Dump of a paused snippet: err = %v, want ErrUnsupported", err)
 	}
 }
 
@@ -773,5 +788,247 @@ func TestStreamedPrintIsNotRepeatedAcrossAPause(t *testing.T) {
 	}
 	if len(got) != 2 || got[0] != "stdout:before\n" || got[1] != "stderr:after\n" {
 		t.Fatalf("got %v", got)
+	}
+}
+
+// connect returns a backend whose sessions are served by handler.
+func connect(t *testing.T, handler fakeworker.Handler) *remote.Backend {
+	t.Helper()
+	conn := fakeworker.Start(t, handler)
+	return remote.NewBackend(remote.NewGRPCTransport(conn, token))
+}
+
+// A dump is the worker's snapshot, and loading it opens a new session that
+// starts from it.
+func TestReplDumpAndLoadRoundTrip(t *testing.T) {
+	var mu sync.Mutex
+	streams := 0
+	loaded := make(chan *montyv1.Configure, 1)
+	backend := connect(t, func(s *fakeworker.Stream) {
+		mu.Lock()
+		streams++
+		n := streams
+		mu.Unlock()
+		cfg := s.RecvConfigure()
+		if cfg == nil {
+			return
+		}
+		if n == 1 {
+			if cfg.GetLoad() != nil {
+				t.Errorf("a new session asked to load")
+			}
+			s.Send(fakeworker.Ok())
+			if s.RecvDump() == nil {
+				return
+			}
+			s.Send(fakeworker.Dumped([]byte("worker-state")))
+			// The session carries on after a dump.
+			if feed := s.RecvFeed(); feed != nil {
+				s.Send(fakeworker.Complete(0, fakeworker.Int(1)))
+			}
+			return
+		}
+		loaded <- cfg
+		s.Send(fakeworker.Restored("original.py"))
+		if feed := s.RecvFeed(); feed != nil {
+			s.Send(fakeworker.Complete(0, fakeworker.Int(42)))
+		}
+	})
+
+	repl, err := monty.NewRepl(monty.ReplOptions{ScriptName: "original.py", Backend: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := repl.Dump()
+	if err != nil {
+		t.Fatalf("Dump: %v", err)
+	}
+	got, err := feed(t, repl, "x", monty.FeedOptions{})
+	wantInt(t, got, err, 1)
+
+	restored, err := monty.LoadRepl(data, monty.ReplOptions{ScriptName: "original.py", Backend: backend})
+	if err != nil {
+		t.Fatalf("LoadRepl: %v", err)
+	}
+	cfg := <-loaded
+	if string(cfg.GetLoad().GetState()) != "worker-state" {
+		t.Fatalf("the worker was asked to load %q, want the dumped state", cfg.GetLoad().GetState())
+	}
+	if cfg.GetScriptName() != "original.py" || cfg.GetProtocolVersion() == 0 {
+		t.Fatalf("configure = %v", cfg)
+	}
+	got, err = feed(t, restored, "x", monty.FeedOptions{})
+	wantInt(t, got, err, 42)
+}
+
+// A worker with no session storage refuses a Dump; the session carries on.
+func TestDumpRefusedByTheWorkerLeavesTheSessionUsable(t *testing.T) {
+	repl := newRepl(t, func(s *fakeworker.Stream) {
+		if s.RecvConfigure() == nil {
+			return
+		}
+		s.Send(fakeworker.Ok())
+		if s.RecvDump() == nil {
+			return
+		}
+		s.Send(fakeworker.Raised("RuntimeError", "no session storage"))
+		if feed := s.RecvFeed(); feed != nil {
+			s.Send(fakeworker.Complete(0, fakeworker.Int(5)))
+		}
+	})
+	_, err := repl.Dump()
+	var pyErr *remote.PythonError
+	if !errors.As(err, &pyErr) || pyErr.Message != "no session storage" {
+		t.Fatalf("Dump err = %v, want the worker's refusal", err)
+	}
+	got, err := feed(t, repl, "x", monty.FeedOptions{})
+	wantInt(t, got, err, 5)
+}
+
+func TestLoadRefusedByTheWorker(t *testing.T) {
+	backend := connect(t, func(s *fakeworker.Stream) {
+		if s.RecvConfigure() == nil {
+			return
+		}
+		s.Send(fakeworker.Raised("RuntimeError", "unknown session"))
+	})
+	data := sealedDump(t, backend)
+	_, err := monty.LoadRepl(data, monty.ReplOptions{Backend: backend})
+	var pyErr *remote.PythonError
+	if !errors.As(err, &pyErr) || pyErr.Message != "unknown session" {
+		t.Fatalf("LoadRepl err = %v, want the worker's refusal", err)
+	}
+}
+
+// sealedDump is a Dump taken from a throwaway worker, for tests that only need
+// valid bytes to load.
+func sealedDump(t *testing.T, _ *remote.Backend) []byte {
+	t.Helper()
+	repl := newRepl(t, func(s *fakeworker.Stream) {
+		if s.RecvConfigure() == nil {
+			return
+		}
+		s.Send(fakeworker.Ok())
+		if s.RecvDump() != nil {
+			s.Send(fakeworker.Dumped([]byte("state")))
+		}
+	})
+	data, err := repl.Dump()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// A dump from the native library is not a remote dump, and the other way round.
+func TestDumpsAreNotInterchangeableBetweenBackends(t *testing.T) {
+	native, err := monty.NewRepl(monty.ReplOptions{})
+	if err != nil {
+		t.Skipf("no native library: %v", err)
+	}
+	nativeDump, err := native.Dump()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := connect(t, func(s *fakeworker.Stream) {
+		t.Errorf("a native dump reached the worker")
+	})
+	if _, err := monty.LoadRepl(nativeDump, monty.ReplOptions{Backend: backend}); !errors.Is(err, monty.ErrIncompatibleDump) {
+		t.Fatalf("loading a native dump remotely: %v, want ErrIncompatibleDump", err)
+	}
+
+	remoteDump := sealedDump(t, nil)
+	if _, err := monty.LoadRepl(remoteDump, monty.ReplOptions{}); err == nil {
+		t.Fatal("the native library accepted a remote dump")
+	}
+}
+
+// Reset drops the session's state on the worker and configures it again on the
+// same stream.
+func TestReplResetReconfiguresTheSession(t *testing.T) {
+	var mu sync.Mutex
+	streams := 0
+	seen := make(chan *montyv1.Configure, 2)
+	backend := connect(t, func(s *fakeworker.Stream) {
+		mu.Lock()
+		streams++
+		mu.Unlock()
+		cfg := s.RecvConfigure()
+		if cfg == nil {
+			return
+		}
+		seen <- cfg
+		s.Send(fakeworker.Ok())
+		if s.RecvFeed() == nil {
+			return
+		}
+		s.Send(fakeworker.Complete(0, fakeworker.Int(1)))
+		if s.RecvReset() == nil {
+			return
+		}
+		s.Send(fakeworker.Ok())
+		cfg = s.RecvConfigure()
+		if cfg == nil {
+			return
+		}
+		seen <- cfg
+		s.Send(fakeworker.Ok())
+		if s.RecvFeed() != nil {
+			s.Send(fakeworker.Raised("NameError", "name 'x' is not defined"))
+		}
+	})
+	repl, err := monty.NewRepl(monty.ReplOptions{ScriptName: "reset.py", Backend: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := feed(t, repl, "x = 1", monty.FeedOptions{})
+	wantInt(t, got, err, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := repl.Reset(ctx); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	if _, err := feed(t, repl, "x", monty.FeedOptions{}); err == nil {
+		t.Fatal("x survived a reset")
+	}
+
+	first, second := <-seen, <-seen
+	if second.GetScriptName() != first.GetScriptName() || second.GetLoad() != nil || second.GetFeed() != nil {
+		t.Fatalf("the second Configure = %v, want the first without a first request", second)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if streams != 1 {
+		t.Fatalf("a reset opened %d streams, want the same one reused", streams)
+	}
+}
+
+// A worker that will not accept the new Configure ends the session; the REPL
+// then reports itself closed instead of pretending to be empty.
+func TestResetRefusedEndsTheSession(t *testing.T) {
+	repl := newRepl(t, func(s *fakeworker.Stream) {
+		if s.RecvConfigure() == nil {
+			return
+		}
+		s.Send(fakeworker.Ok())
+		if s.RecvReset() == nil {
+			return
+		}
+		s.Send(fakeworker.Ok())
+		if s.RecvConfigure() == nil {
+			return
+		}
+		s.Send(fakeworker.Refused("no more sessions"))
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := repl.Reset(ctx)
+	var refused *remote.SessionRefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("Reset err = %v, want SessionRefusedError", err)
+	}
+	if _, err := feed(t, repl, "1", monty.FeedOptions{}); !errors.Is(err, monty.ErrClosed) {
+		t.Fatalf("feeding after a failed reset: %v, want ErrClosed", err)
 	}
 }

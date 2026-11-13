@@ -10,6 +10,7 @@ import (
 
 	monty "github.com/mdfranz/gomonty"
 	montyv1 "github.com/mdfranz/gomonty/remote/internal/montyv1"
+	"google.golang.org/protobuf/proto"
 )
 
 // Backend runs REPL sessions on a remote Monty worker. Pass it as
@@ -22,7 +23,10 @@ import (
 // vfs filesystems work unchanged) and wait on its futures, exactly as it can
 // locally. Blocking sleeps are served by the backend itself.
 //
-// Not supported yet: runners, Dump and snapshots (#87); methods and attributes
+// A REPL can be dumped and restored with monty.LoadRepl, and reset in place; see
+// replHandle.Dump for what a snapshot is good for. Not supported yet: runners,
+// and snapshots of a snippet that is paused (a dump is only of an idle REPL);
+// methods and attributes
 // of host objects, which stop the script with ErrUnsupported; async host calls
 // started without waiting for the host, and asyncio sleeps. OS calls with no
 // gomonty equivalent (appending to files, open and exclusive creation) are
@@ -75,6 +79,26 @@ func (b *Backend) LoadProgress([]byte) monty.Step {
 // NewRepl opens a session and configures it. It fails if the worker cannot be
 // reached or refuses the session.
 func (b *Backend) NewRepl(opts monty.ReplOptions) (monty.ReplHandle, error) {
+	return b.open(opts, nil)
+}
+
+var _ monty.ReplLoader = (*Backend)(nil)
+
+// LoadRepl restores an idle REPL from the bytes of a remote handle's Dump. The
+// worker decides whether it accepts them: a snapshot is opaque, and only valid
+// on a worker running a compatible Monty. A dump written by the native library
+// is refused here.
+func (b *Backend) LoadRepl(data []byte, opts monty.ReplOptions) (monty.ReplHandle, error) {
+	state, err := openDump(data)
+	if err != nil {
+		return nil, err
+	}
+	return b.open(opts, &montyv1.Load{State: state})
+}
+
+// open starts a session. With load set, the session is restored from it instead
+// of starting empty.
+func (b *Backend) open(opts monty.ReplOptions, load *montyv1.Load) (monty.ReplHandle, error) {
 	// The session lives as long as this context. The open timeout cancels it
 	// only until the session is configured.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -109,7 +133,12 @@ func (b *Backend) NewRepl(opts monty.ReplOptions) (monty.ReplHandle, error) {
 		MontyVersion:    "gomonty",
 		ProtocolVersion: protocolVersion,
 	}
-	t, err := sess.call(context.Background(), &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Configure{Configure: configure}})
+	sess.configure = configure
+	request := proto.Clone(configure).(*montyv1.Configure)
+	if load != nil {
+		request.First = &montyv1.Configure_Load{Load: load}
+	}
+	t, err := sess.call(context.Background(), &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Configure{Configure: request}})
 	if err != nil {
 		if timer != nil {
 			timer.Stop()
@@ -125,12 +154,23 @@ func (b *Backend) NewRepl(opts monty.ReplOptions) (monty.ReplHandle, error) {
 	}
 	switch k := t.end.GetKind().(type) {
 	case *montyv1.WorkerEvent_Ok:
-		return newReplHandle(sess, opts.ScriptName), nil
+		name := opts.ScriptName
+		if restored := t.end.GetRestoredScriptName(); restored != "" {
+			name = restored
+		}
+		return newReplHandle(sess, name), nil
 	case *montyv1.WorkerEvent_SessionRefused:
 		sess.close()
 		return nil, &SessionRefusedError{Reason: k.SessionRefused.GetMessage()}
+	case *montyv1.WorkerEvent_Error:
+		// A refused Load: the worker could not restore the bytes it was given.
+		sess.close()
+		return nil, pythonError(k.Error.GetException())
 	default:
 		sess.close()
+		if load != nil {
+			return nil, fmt.Errorf("%w: the dump is of a snippet that was paused, not of an idle REPL", ErrUnsupported)
+		}
 		return nil, fmt.Errorf("remote: unexpected reply to Configure: %T", k)
 	}
 }
@@ -184,8 +224,66 @@ func (h *replHandle) Close() {
 	h.sess.close()
 }
 
+// dumpTimeout bounds a Dump or a Reset, which take no context of their own.
+const dumpTimeout = 30 * time.Second
+
+// Dump asks the worker for a snapshot of the idle session and returns it in an
+// envelope that only a remote backend will load. The session stays usable.
+//
+// The bytes are the worker's own and opaque: they are only valid on a worker
+// with a compatible Monty, and a worker without session storage refuses with a
+// PythonError.
 func (h *replHandle) Dump() ([]byte, error) {
-	return nil, fmt.Errorf("%w: Dump", ErrUnsupported)
+	ctx, cancel := context.WithTimeout(context.Background(), dumpTimeout)
+	defer cancel()
+	t, err := h.sess.call(ctx, &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Dump{Dump: &montyv1.Dump{}}})
+	if err != nil {
+		return nil, err
+	}
+	switch k := t.end.GetKind().(type) {
+	case *montyv1.WorkerEvent_DumpResult:
+		return sealDump(k.DumpResult.GetState()), nil
+	case *montyv1.WorkerEvent_Error:
+		return nil, pythonError(k.Error.GetException())
+	default:
+		h.sess.fail(fmt.Errorf("remote: unexpected reply to Dump: %T", k))
+		return nil, h.sess.dead
+	}
+}
+
+var _ monty.ReplResetter = (*replHandle)(nil)
+
+// Reset drops the session's state on the worker and configures a new, empty
+// session on the same stream. The old handle is spent; the returned one carries
+// the session. If either step fails the session is closed.
+func (h *replHandle) Reset(ctx context.Context) (monty.ReplHandle, error) {
+	ctx, cancel := context.WithTimeout(ctx, dumpTimeout)
+	defer cancel()
+	t, err := h.sess.call(ctx, &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Reset_{Reset_: &montyv1.Reset{}}})
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := t.end.GetKind().(*montyv1.WorkerEvent_Ok); !ok {
+		h.sess.fail(fmt.Errorf("remote: unexpected reply to Reset: %T", t.end.GetKind()))
+		return nil, h.sess.dead
+	}
+	t, err = h.sess.call(ctx, &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Configure{
+		Configure: proto.Clone(h.sess.configure).(*montyv1.Configure),
+	}})
+	if err != nil {
+		return nil, err
+	}
+	switch k := t.end.GetKind().(type) {
+	case *montyv1.WorkerEvent_Ok:
+	case *montyv1.WorkerEvent_SessionRefused:
+		h.sess.close()
+		return nil, &SessionRefusedError{Reason: k.SessionRefused.GetMessage()}
+	default:
+		h.sess.fail(fmt.Errorf("remote: unexpected reply to Configure after Reset: %T", k))
+		return nil, h.sess.dead
+	}
+	h.consumed.Store(true)
+	return newReplHandle(h.sess, h.scriptName), nil
 }
 
 func (h *replHandle) FeedStart(ctx context.Context, code string, opts monty.FeedStartOptions) monty.Step {

@@ -48,6 +48,16 @@ func (ffiBackend) NewRepl(opts ReplOptions) (ReplHandle, error) {
 	return &ffiRepl{h: result.Repl}, nil
 }
 
+func (ffiBackend) LoadRepl(data []byte, _ ReplOptions) (ReplHandle, error) {
+	result := ffi.LoadRepl(data)
+	if result.Error != nil {
+		return nil, newError(result.Error)
+	}
+	return &ffiRepl{h: result.Repl}, nil
+}
+
+var _ ReplLoader = ffiBackend{}
+
 func (ffiBackend) LoadProgress(data []byte) Step {
 	return stepFromOp(ffi.LoadProgress(data))
 }

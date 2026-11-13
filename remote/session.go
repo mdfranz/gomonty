@@ -33,6 +33,10 @@ type session struct {
 	events chan recvResult
 	done   chan struct{}
 
+	// configure is what opened the session, kept so Reset can open it again
+	// on the same stream. Its first request is cleared.
+	configure *montyv1.Configure
+
 	closeOnce sync.Once
 	// dead is set once the stream can no longer be used.
 	dead error

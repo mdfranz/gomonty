@@ -326,3 +326,56 @@ func TestRealWorkerStderrIsReportedSeparately(t *testing.T) {
 		t.Fatalf("stdout = %q, stderr = %q", stdout, stderr)
 	}
 }
+
+func TestRealWorkerReset(t *testing.T) {
+	repl := realRepl(t)
+	if _, err := feed(t, repl, "x = 1", monty.FeedOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := repl.Reset(ctx); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	if _, err := feed(t, repl, "x", monty.FeedOptions{
+		// The worker asks the host about a name it does not know.
+		Functions: map[string]monty.ExternalFunction{},
+	}); err == nil {
+		t.Fatal("x survived a reset")
+	}
+	got, err := feed(t, repl, "2 + 2", monty.FeedOptions{})
+	wantInt(t, got, err, 4)
+}
+
+// A worker may refuse to store a snapshot, for example a hosted one whose
+// organization is at its snapshot limit; that is skipped rather than failed.
+func TestRealWorkerDumpAndLoad(t *testing.T) {
+	repl := realRepl(t)
+	if _, err := feed(t, repl, "x = 41", monty.FeedOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := repl.Dump()
+	var refused *remote.PythonError
+	if errors.As(err, &refused) {
+		t.Skipf("the worker refused the dump: %v", refused)
+	}
+	if err != nil {
+		t.Fatalf("Dump: %v", err)
+	}
+
+	endpoint := os.Getenv("MONTY_REMOTE_ENDPOINT")
+	transport, err := remote.DialGRPC(endpoint, remote.GRPCConfig{
+		Insecure: os.Getenv("MONTY_REMOTE_INSECURE") == "1",
+		Token:    os.Getenv("MONTY_REMOTE_TOKEN"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { transport.Close() })
+	restored, err := monty.LoadRepl(data, monty.ReplOptions{ScriptName: "real_worker_test.py", Backend: remote.NewBackend(transport)})
+	if err != nil {
+		t.Fatalf("LoadRepl: %v", err)
+	}
+	got, err := feed(t, restored, "x + 1", monty.FeedOptions{})
+	wantInt(t, got, err, 42)
+}

@@ -133,7 +133,49 @@ func (s *Stream) RecvFeed() *montyv1.Feed {
 	return feed
 }
 
+// RecvDump reads the next request, which must be Dump.
+func (s *Stream) RecvDump() *montyv1.Dump {
+	s.t.Helper()
+	req := s.Recv()
+	if req == nil {
+		return nil
+	}
+	dump := req.GetDump()
+	if dump == nil {
+		s.t.Errorf("fakeworker: request was %T, want Dump", req.GetKind())
+	}
+	return dump
+}
+
+// RecvReset reads the next request, which must be Reset.
+func (s *Stream) RecvReset() *montyv1.Reset {
+	s.t.Helper()
+	req := s.Recv()
+	if req == nil {
+		return nil
+	}
+	reset := req.GetReset_()
+	if reset == nil {
+		s.t.Errorf("fakeworker: request was %T, want Reset", req.GetKind())
+	}
+	return reset
+}
+
 // Event constructors.
+
+// Dumped answers a Dump with the given opaque state.
+func Dumped(state []byte) *montyv1.WorkerEvent {
+	return &montyv1.WorkerEvent{Kind: &montyv1.WorkerEvent_DumpResult{DumpResult: &montyv1.DumpResult{State: state}}}
+}
+
+// Restored answers a Configure that carried a Load, naming the script the
+// dump came from.
+func Restored(scriptName string) *montyv1.WorkerEvent {
+	return &montyv1.WorkerEvent{
+		Kind:               &montyv1.WorkerEvent_Ok{Ok: &montyv1.Ok{}},
+		RestoredScriptName: &scriptName,
+	}
+}
 
 // Ok acknowledges a Configure.
 func Ok() *montyv1.WorkerEvent {

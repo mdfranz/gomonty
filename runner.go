@@ -72,9 +72,11 @@ type replState struct {
 	mu       sync.Mutex
 	handle   ReplHandle
 	inFlight bool
-	// scriptName is set once at construction and never mutated, so it's
-	// safe to read without holding mu.
+	// scriptName and opts are set once at construction and never mutated, so
+	// they're safe to read without holding mu.
 	scriptName string
+	// opts is how the REPL was opened, kept so Reset can open an equivalent one.
+	opts ReplOptions
 }
 
 type progressState struct {
@@ -186,8 +188,74 @@ func NewRepl(opts ReplOptions) (*Repl, error) {
 		return nil, err
 	}
 	return &Repl{
-		state: &replState{handle: handle, scriptName: opts.ScriptName},
+		state: &replState{handle: handle, scriptName: opts.ScriptName, opts: opts},
 	}, nil
+}
+
+// ErrLoadUnsupported reports that the backend cannot restore a REPL from a dump.
+var ErrLoadUnsupported = errors.New("monty: this backend cannot load a REPL dump")
+
+// LoadRepl restores an idle REPL from the bytes of Repl.Dump: its globals and
+// function definitions come back, and it can be fed again with FeedRun or
+// FeedStart. Host callbacks are not part of a dump; pass them again in each
+// FeedOptions.
+//
+// A dump taken in the middle of a snippet is a snapshot, restored with
+// LoadReplSnapshot instead.
+//
+// opts.Backend must be the kind of backend that wrote the dump: a dump from the
+// native library cannot be loaded by a remote worker or the other way round. A
+// dump is only valid with a compatible Monty version (see ErrIncompatibleDump
+// for the check gomonty makes), and a remote dump additionally with a worker
+// that accepts it. opts.ScriptName names the REPL in telemetry; the script
+// identity inside the dump is restored by the backend.
+func LoadRepl(data []byte, opts ReplOptions) (*Repl, error) {
+	data, err := stripDumpHeader(data)
+	if err != nil {
+		return nil, err
+	}
+	loader, ok := backendOrDefault(opts.Backend).(ReplLoader)
+	if !ok {
+		return nil, ErrLoadUnsupported
+	}
+	handle, err := loader.LoadRepl(data, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &Repl{
+		state: &replState{handle: handle, scriptName: opts.ScriptName, opts: opts},
+	}, nil
+}
+
+// Reset discards every global and definition and returns the REPL to its
+// freshly opened state. A backend that can reuse its session does so; any
+// other has its REPL closed and a new one opened with the same options.
+//
+// Resetting fails with ErrConcurrentUse while a snippet is running. If the
+// reset itself fails the session may be gone, and the REPL then reports
+// ErrClosed.
+func (r *Repl) Reset(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	handle, err := r.state.takeForExecution()
+	if err != nil {
+		return err
+	}
+	var fresh ReplHandle
+	if resetter, ok := handle.(ReplResetter); ok {
+		fresh, err = resetter.Reset(ctx)
+		handle.Close()
+	} else {
+		handle.Close()
+		fresh, err = backendOrDefault(r.state.opts.Backend).NewRepl(r.state.opts)
+	}
+	if err != nil {
+		r.state.clear()
+		return err
+	}
+	r.state.restore(fresh)
+	return nil
 }
 
 // Dump serializes the runner.
