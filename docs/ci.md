@@ -62,9 +62,10 @@ Jobs:
 3. `open-pr` downloads every artifact, then:
    - fails if the tag already exists;
    - bumps the version in `Cargo.toml` and in `Cargo.lock`'s own `monty-go-ffi` entry (the lockfile was generated before the bump, so without this, later `--locked` builds fail);
+   - pins the `github.com/mdfranz/gomonty` requirement in `otelmonty/go.mod` and `cmd/shmonty/go.mod` to the release version (shmonty requires otelmonty through a `replace`, so without its own bump `go build` there fails with "updates to go.mod needed");
    - copies the header and all six libraries into `internal/ffi/`;
    - writes `internal/ffi/checksums.txt` (SHA-256 of `Cargo.lock`, the header and the six libraries);
-   - runs `go test ./...`, `go vet ./...` and the `examples` smoke run on the resulting tree;
+   - runs `go test ./...`, `go vet ./...`, the `examples` smoke run and a `cmd/shmonty` build on the resulting tree;
    - commits to `release-prep/<version>` as `github-actions[bot]` and opens a PR titled `Release <version>`. If nothing changed it skips the PR; if the PR already exists it reuses it.
 
 You review and merge that PR like any other. It is the only place libraries are committed.
@@ -78,7 +79,7 @@ It **does not rebuild anything**. The FFI builds are not reproducible, so a rebu
 1. fails if the tag already exists;
 2. checks that `Cargo.toml`'s version matches the requested version, so a skipped or unmerged release-prep is caught;
 3. checks that `checksums.txt` covers every expected file and that `sha256sum --check` passes, so a change merged after release-prep (for example an upstream pin bump) is caught;
-4. runs `go test ./...`, `go vet ./...` and the `examples` smoke run against the committed tree;
+4. runs `go test ./...`, `go vet ./...`, the `examples` smoke run and a `cmd/shmonty` build against the committed tree;
 5. tags the dispatched commit and pushes the tag;
 6. creates the GitHub release with notes generated from `git log` since the previous tag, attaching the libraries (renamed per platform, because asset names must be unique) and `checksums.txt`;
 7. warms the Go module proxy with `go list -m` so `go get` sees the version immediately.

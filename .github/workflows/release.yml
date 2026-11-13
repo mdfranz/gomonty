@@ -95,6 +95,10 @@ jobs:
             cd examples
             CGO_ENABLED=0 go run ./cmd/example
           )
+          (
+            cd cmd/shmonty
+            CGO_ENABLED=0 go build -o /dev/null .
+          )
 
       - name: Tag and push
         shell: bash

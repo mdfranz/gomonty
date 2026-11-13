@@ -53,13 +53,14 @@ version explicitly, use `make release VERSION=vX.Y.Z`. The workflow:
   - `linux/amd64` (musl/Alpine)
   - `linux/arm64` (musl/Alpine)
   - `windows/amd64`
-- pins `otelmonty/go.mod`'s `github.com/mdfranz/gomonty` requirement to the release version (the `replace => ..` stays for local development)
+- pins `otelmonty/go.mod`'s and `cmd/shmonty/go.mod`'s `github.com/mdfranz/gomonty` requirement to the release version (the `replace` directives stay for local development; shmonty needs the bump because it picks up otelmonty's requirement)
 - regenerates `internal/ffi/include/monty_go_ffi.h` exactly once
 - updates `Cargo.toml`, `Cargo.lock`, `internal/ffi/lib/...`, and `internal/ffi/checksums.txt`
 - reruns release validation on the assembled tree:
   - `CGO_ENABLED=0 go test ./...`
   - `go vet ./...`
   - `cd examples && CGO_ENABLED=0 go run ./cmd/example`
+  - `cd cmd/shmonty && CGO_ENABLED=0 go build .`
 - commits the release tree to a `release-prep/vX.Y.Z` branch
 - opens a pull request back to `main`
 
