@@ -89,7 +89,7 @@ err = restored.Reset(ctx)
 
 ## Limits and cancellation
 
-- **Resource limits:** `monty.ReplOptions.Limits` (allocations, memory, stack depth, recursion, duration) are sent in `Configure` and enforced remotely by the worker.
+- **Resource limits:** `monty.ReplOptions.Limits` (duration, memory, GC interval, recursion depth, max suspensions) are sent in `Configure` and enforced remotely by the worker. Because an out-of-process worker binary can install `monty-alloc` as its global allocator, `MaxMemory` enforces a true cumulative heap budget on workers that arm it (unlike the in-process native FFI backend, where `MaxMemory` is a per-allocation size cap).
 - **Context cancellation:** if `ctx` passed to `FeedRun`, `FeedStart`, or `Reset` expires while a request is in flight, the call returns `ctx.Err()` and closes the stream (because a gRPC turn cannot be interrupted mid-flight while keeping the remote interpreter state intact). If `ctx` is already cancelled before sending, the session stays usable.
 
 ## Error handling

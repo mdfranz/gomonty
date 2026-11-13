@@ -17,7 +17,7 @@ Serve `pathlib` calls from `vfs.NewMemoryFS`, then implement `vfs.FileSystem` yo
 - Code: [`vfs/example_test.go`](../vfs/example_test.go)
 
 ## 4. Bound the untrusted code
-Set `ResourceLimits` (`MaxDuration`, `MaxMemory`, `MaxSuspensions`) and write guest code that exceeds each one. Note which errors you get and that `context` cancellation also stops a run.
+Set `ResourceLimits` (`MaxDuration`, `MaxMemory`, `MaxRecursionDepth`, and `MaxSuspensions`) and write guest code that exceeds `MaxDuration`, `MaxMemory` (a per-allocation size cap in-process), and `MaxRecursionDepth`. Note which errors you get, that `MaxSuspensions` is forwarded to backends, and that `context` cancellation also stops a run.
 
 ## 5. Type-check before running
 Compile with `CompileOptions{TypeCheck: true}` or call `Runner.TypeCheck`, supplying stubs that describe your tools. Use the type errors as feedback to send back to a model.

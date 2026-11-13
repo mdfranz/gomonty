@@ -2,6 +2,7 @@ package monty
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -97,4 +98,46 @@ func TestNewWireResourceLimits(t *testing.T) {
 	if zero.MaxSuspensions != nil {
 		t.Fatalf("zero MaxSuspensions = %#v, want nil so upstream applies its default", zero.MaxSuspensions)
 	}
+}
+
+func TestResourceLimitsMaxMemoryPerAllocationCap(t *testing.T) {
+	t.Run("single allocation exceeding MaxMemory fails", func(t *testing.T) {
+		runner, err := New(`"a" * (2 * 1024 * 1024)`, CompileOptions{ScriptName: "mem_single.py"})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer closeTestRunner(runner)
+
+		_, err = runner.Run(context.Background(), RunOptions{
+			Limits: &ResourceLimits{MaxMemory: 1 << 20},
+		})
+		var exc *RuntimeError
+		if !errors.As(err, &exc) {
+			t.Fatalf("err = %v, want *RuntimeError", err)
+		}
+		if exc.summary.TypeName != "MemoryError" {
+			t.Fatalf("RuntimeError.TypeName = %q, want MemoryError (%v)", exc.summary.TypeName, err)
+		}
+	})
+
+	t.Run("smaller allocations exceeding MaxMemory cumulatively succeed in-process", func(t *testing.T) {
+		runner, err := New(
+			"chunks = [\"a\" * (64 * 1024) for _ in range(32)]\nlen(chunks)",
+			CompileOptions{ScriptName: "mem_cumulative.py"},
+		)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer closeTestRunner(runner)
+
+		got, err := runner.Run(context.Background(), RunOptions{
+			Limits: &ResourceLimits{MaxMemory: 1 << 20},
+		})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if v, ok := got.Raw().(int64); !ok || v != 32 {
+			t.Fatalf("got = %v (%T), want int64(32)", got.Raw(), got.Raw())
+		}
+	})
 }

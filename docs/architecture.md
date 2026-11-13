@@ -50,7 +50,7 @@ Handlers return a `Result`: `Return(value)`, `Raise(exception)` (surfaced as a P
 ## Safety boundaries
 
 - The sandbox has no ambient access. Files come only from the `vfs.FileSystem` you supply, and environment variables from the `vfs.Environment`.
-- `ResourceLimits` bound duration, memory, GC interval, recursion depth and the number of host-call suspensions. A zero `MaxRecursionDepth` or `MaxSuspensions` falls back to upstream's default rather than unlimited.
+- `ResourceLimits` bound duration, memory, GC interval, recursion depth and the number of host-call suspensions. In the in-process native FFI backend, `MaxMemory` acts as a per-allocation size cap (because `monty-alloc` is not installed inside the shared library loaded into Go), whereas out-of-process `remote/` workers with `monty-alloc` can enforce a cumulative heap budget. A zero `MaxRecursionDepth` or `MaxSuspensions` falls back to upstream's default (`1000`) rather than unlimited; `MaxSuspensions` is forwarded over the wire and gRPC to the backend, while gomonty's in-process host dispatch loop does not yet enforce it directly.
 - `context.Context` cancellation is checked between dispatch steps.
 
 ## Telemetry

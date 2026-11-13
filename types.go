@@ -405,14 +405,24 @@ func Pending(waiter Waiter) Result {
 // A zero MaxRecursionDepth/MaxSuspensions instead falls back to upstream's
 // own default (1000 for each) — Monty always bounds recursion depth and the
 // suspension budget, even when the host asks for "no limits".
+//
+// In the in-process native FFI backend, MaxMemory acts as a per-allocation
+// size cap in bytes (checked on large string, bytes, and collection growth
+// operations) rather than a cumulative heap budget, because monty-alloc
+// (#[global_allocator]) cannot be installed inside a shared library loaded into
+// a Go process. Out-of-process remote workers that arm monty-alloc enforce
+// MaxMemory as a cumulative heap budget.
 type ResourceLimits struct {
 	MaxDuration       time.Duration
 	MaxMemory         int
 	GCInterval        int
 	MaxRecursionDepth int
-	// MaxSuspensions caps how many external/OS calls Monty will suspend on
-	// and wait for the host to service in one session — a backstop against
-	// sandboxed code looping on host calls while MaxDuration is paused.
+	// MaxSuspensions caps how many external/OS calls a session may suspend on
+	// while waiting for the host — a backstop against sandboxed code looping on
+	// host calls while MaxDuration is paused. gomonty forwards this value over
+	// the wire and gRPC (defaulting to 1000 when 0), where backends that track
+	// suspension budgets enforce it; gomonty's in-process host dispatch loop
+	// does not yet enforce MaxSuspensions directly.
 	MaxSuspensions int
 }
 
