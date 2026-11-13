@@ -243,3 +243,62 @@ func TestRewindResetsTheSession(t *testing.T) {
 		t.Fatal("y survived a rewind that removed it")
 	}
 }
+
+func TestTypeCheckNeedsARemoteWorker(t *testing.T) {
+	old := remoteEndpoint
+	t.Cleanup(func() { remoteEndpoint = old })
+	remoteEndpoint = ""
+
+	m := newTestModel(t)
+	next, ok := m.sessionCommand("/typecheck on")
+	if !ok {
+		t.Fatal("/typecheck was not a session command")
+	}
+	if e := lastEntry(t, next); !e.isErr || !strings.Contains(e.result, "--remote") || next.typeCheck {
+		t.Fatalf("a local session accepted /typecheck: %+v (typeCheck = %v)", e, next.typeCheck)
+	}
+}
+
+func TestTypeCheckCommandToggles(t *testing.T) {
+	old := remoteEndpoint
+	t.Cleanup(func() { remoteEndpoint = old })
+	remoteEndpoint = "worker.example:443"
+
+	m := newTestModel(t)
+	steps := []struct {
+		cmd  string
+		want bool
+		err  bool
+	}{
+		{"/typecheck", true, false}, // no argument toggles
+		{"/typecheck", false, false},
+		{"/typecheck on", true, false},
+		{"/typecheck on", true, false}, // explicit is idempotent
+		{"/typecheck bogus", true, true},
+		{"/typecheck off", false, false},
+	}
+	for _, step := range steps {
+		next, _ := m.sessionCommand(step.cmd)
+		m = next
+		if m.typeCheck != step.want || lastEntry(t, m).isErr != step.err {
+			t.Fatalf("%q: typeCheck = %v, entry = %+v; want %v, error %v", step.cmd, m.typeCheck, lastEntry(t, m), step.want, step.err)
+		}
+	}
+
+	m.typeCheck = true
+	if got := m.renderStatusLine(); !strings.Contains(got, "typecheck:on") {
+		t.Fatalf("status line %q does not show type checking", got)
+	}
+}
+
+func TestSessionCommandsKeepTypeCheckAcrossReset(t *testing.T) {
+	old := remoteEndpoint
+	t.Cleanup(func() { remoteEndpoint = old })
+	remoteEndpoint = "worker.example:443"
+	m := newTestModel(t)
+	m.typeCheck = true
+	m, _ = m.sessionCommand("/reset")
+	if !m.typeCheck {
+		t.Fatal("/reset turned type checking off; it is a setting of the shell, not of the session state")
+	}
+}

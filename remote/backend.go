@@ -2,6 +2,7 @@ package remote
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"runtime"
@@ -39,6 +40,15 @@ import (
 type Backend struct {
 	transport   Transport
 	openTimeout time.Duration
+	config      sessionConfig
+}
+
+// sessionConfig is the part of Configure that comes from options.
+type sessionConfig struct {
+	typeCheck          *TypeCheckOptions
+	profile            *string
+	persistence        Persistence
+	printFlushInterval *time.Duration
 }
 
 var _ monty.Backend = (*Backend)(nil)
@@ -53,6 +63,120 @@ type Option func(*Backend)
 // session. The default is 30 seconds; zero or a negative value means no limit.
 func WithOpenTimeout(d time.Duration) Option {
 	return func(b *Backend) { b.openTimeout = d }
+}
+
+// TypeCheckFormat is how the worker renders type-check diagnostics.
+type TypeCheckFormat string
+
+// The formats the worker can render. The zero value is the worker's default,
+// full.
+const (
+	TypeCheckFull      TypeCheckFormat = "full"
+	TypeCheckConcise   TypeCheckFormat = "concise"
+	TypeCheckAzure     TypeCheckFormat = "azure"
+	TypeCheckJSON      TypeCheckFormat = "json"
+	TypeCheckJSONLines TypeCheckFormat = "jsonlines"
+	TypeCheckRDJSON    TypeCheckFormat = "rdjson"
+	TypeCheckPylint    TypeCheckFormat = "pylint"
+	TypeCheckGitLab    TypeCheckFormat = "gitlab"
+	TypeCheckGitHub    TypeCheckFormat = "github"
+)
+
+var typeCheckFormats = map[TypeCheckFormat]montyv1.TypeCheckFormat{
+	"":                 montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_UNSPECIFIED,
+	TypeCheckFull:      montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_FULL,
+	TypeCheckConcise:   montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_CONCISE,
+	TypeCheckAzure:     montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_AZURE,
+	TypeCheckJSON:      montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_JSON,
+	TypeCheckJSONLines: montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_JSON_LINES,
+	TypeCheckRDJSON:    montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_RDJSON,
+	TypeCheckPylint:    montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_PYLINT,
+	TypeCheckGitLab:    montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_GITLAB,
+	TypeCheckGitHub:    montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_GITHUB,
+}
+
+// TypeCheckOptions turn on type checking for the sessions a Backend opens.
+type TypeCheckOptions struct {
+	// Stubs is optional stub-file source the checker may use.
+	Stubs string
+	// Format is how diagnostics are rendered in a TypingError.
+	Format TypeCheckFormat
+	// Color asks for ANSI colour in the formats that have it.
+	Color bool
+}
+
+// Persistence says whether a relay may keep a session after its stream ends.
+// A worker that is not a relay ignores it.
+type Persistence int
+
+const (
+	// PersistenceDefault leaves the choice to the relay.
+	PersistenceDefault Persistence = iota
+	// PersistenceEphemeral never stores the session.
+	PersistenceEphemeral
+	// PersistenceStored lets the relay park the session on idle, drain or
+	// disconnect so it can be loaded again.
+	PersistenceStored
+)
+
+// WithTypeCheck makes every session type-check each snippet before running it.
+// A snippet that fails the check does not run, and its feed returns a
+// *TypingError. A single feed can opt out with monty.FeedOptions.SkipTypeCheck.
+func WithTypeCheck(opts TypeCheckOptions) Option {
+	return func(b *Backend) { b.config.typeCheck = &opts }
+}
+
+// WithProfile names the server-side profile a relay runs sessions under. A
+// worker that is not a relay ignores it; a relay that does not know the name
+// refuses the session.
+func WithProfile(name string) Option {
+	return func(b *Backend) { b.config.profile = &name }
+}
+
+// WithPersistence sets whether a relay may keep sessions; see Persistence.
+func WithPersistence(p Persistence) Option {
+	return func(b *Backend) { b.config.persistence = p }
+}
+
+// WithPrintFlushInterval sets how long the worker may hold print output before
+// sending it. Zero makes it send each completed line on its own. Without this
+// option the worker's default applies.
+func WithPrintFlushInterval(d time.Duration) Option {
+	return func(b *Backend) { b.config.printFlushInterval = &d }
+}
+
+// configure builds the Configure message for a session.
+func (b *Backend) configure(opts monty.ReplOptions) (*montyv1.Configure, error) {
+	c := &montyv1.Configure{
+		ScriptName:      opts.ScriptName,
+		Limits:          limitsToProto(opts.Limits),
+		MontyVersion:    "gomonty",
+		ProtocolVersion: protocolVersion,
+	}
+	if tc := b.config.typeCheck; tc != nil {
+		format, ok := typeCheckFormats[tc.Format]
+		if !ok {
+			return nil, fmt.Errorf("remote: unknown type check format %q", tc.Format)
+		}
+		c.TypeCheck = true
+		c.TypeCheckFormat = format
+		c.TypeCheckColor = tc.Color
+		if tc.Stubs != "" {
+			c.TypeCheckStubs = &tc.Stubs
+		}
+	}
+	c.Profile = b.config.profile
+	switch b.config.persistence {
+	case PersistenceEphemeral:
+		c.Persistence = montyv1.Persistence_PERSISTENCE_EPHEMERAL
+	case PersistenceStored:
+		c.Persistence = montyv1.Persistence_PERSISTENCE_STORED
+	}
+	if d := b.config.printFlushInterval; d != nil {
+		ms := uint32(max(d.Milliseconds(), 0))
+		c.PrintFlushIntervalMs = &ms
+	}
+	return c, nil
 }
 
 // NewBackend returns a Backend that opens its sessions over t.
@@ -99,6 +223,11 @@ func (b *Backend) LoadRepl(data []byte, opts monty.ReplOptions) (monty.ReplHandl
 // open starts a session. With load set, the session is restored from it instead
 // of starting empty.
 func (b *Backend) open(opts monty.ReplOptions, load *montyv1.Load) (monty.ReplHandle, error) {
+	// Check the options before connecting, so a bad one costs no connection.
+	configure, err := b.configure(opts)
+	if err != nil {
+		return nil, err
+	}
 	// The session lives as long as this context. The open timeout cancels it
 	// only until the session is configured.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -127,12 +256,6 @@ func (b *Backend) open(opts monty.ReplOptions, load *montyv1.Load) (monty.ReplHa
 	}
 	sess := newSession(stream, cancel)
 
-	configure := &montyv1.Configure{
-		ScriptName:      opts.ScriptName,
-		Limits:          limitsToProto(opts.Limits),
-		MontyVersion:    "gomonty",
-		ProtocolVersion: protocolVersion,
-	}
 	sess.configure = configure
 	request := proto.Clone(configure).(*montyv1.Configure)
 	if load != nil {
@@ -154,6 +277,10 @@ func (b *Backend) open(opts monty.ReplOptions, load *montyv1.Load) (monty.ReplHa
 	}
 	switch k := t.end.GetKind().(type) {
 	case *montyv1.WorkerEvent_Ok:
+		// A relay that stores sessions names the one this stream now holds.
+		if id := t.end.GetSessionId(); len(id) > 0 {
+			sess.id = hex.EncodeToString(id)
+		}
 		name := opts.ScriptName
 		if restored := t.end.GetRestoredScriptName(); restored != "" {
 			name = restored
@@ -275,6 +402,11 @@ func (h *replHandle) Reset(ctx context.Context) (monty.ReplHandle, error) {
 	}
 	switch k := t.end.GetKind().(type) {
 	case *montyv1.WorkerEvent_Ok:
+		// The new session has its own id.
+		h.sess.id = ""
+		if id := t.end.GetSessionId(); len(id) > 0 {
+			h.sess.id = hex.EncodeToString(id)
+		}
 	case *montyv1.WorkerEvent_SessionRefused:
 		h.sess.close()
 		return nil, &SessionRefusedError{Reason: k.SessionRefused.GetMessage()}
@@ -292,7 +424,7 @@ func (h *replHandle) FeedStart(ctx context.Context, code string, opts monty.Feed
 		// Nothing was sent, so the handle is still good.
 		return monty.Step{Err: err, Retained: true}
 	}
-	feed := &montyv1.Feed{Code: code, Inputs: refs, Values: arena}
+	feed := &montyv1.Feed{Code: code, Inputs: refs, Values: arena, SkipTypeCheck: opts.SkipTypeCheck}
 	t, err := h.sess.call(ctx, &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Feed{Feed: feed}})
 
 	h.consumed.Store(true)

@@ -3,6 +3,7 @@ package remote_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math"
 	"math/big"
 	"strings"
@@ -1030,5 +1031,159 @@ func TestResetRefusedEndsTheSession(t *testing.T) {
 	}
 	if _, err := feed(t, repl, "1", monty.FeedOptions{}); !errors.Is(err, monty.ErrClosed) {
 		t.Fatalf("feeding after a failed reset: %v, want ErrClosed", err)
+	}
+}
+
+// The options reach the worker's Configure, and an unset option stays unset so
+// the worker's own default applies.
+func TestConfigureCarriesTheOptions(t *testing.T) {
+	seen := make(chan *montyv1.Configure, 2)
+	handler := func(s *fakeworker.Stream) {
+		cfg := s.RecvConfigure()
+		if cfg == nil {
+			return
+		}
+		seen <- cfg
+		s.Send(fakeworker.Ok())
+		s.Recv()
+	}
+
+	conn := fakeworker.Start(t, handler)
+	plain := remote.NewBackend(remote.NewGRPCTransport(conn, token))
+	if _, err := monty.NewRepl(monty.ReplOptions{ScriptName: "plain.py", Backend: plain}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := <-seen
+	if cfg.GetTypeCheck() || cfg.Profile != nil || cfg.PrintFlushIntervalMs != nil ||
+		cfg.GetPersistence() != montyv1.Persistence_PERSISTENCE_UNSPECIFIED {
+		t.Fatalf("an unconfigured backend set options: %v", cfg)
+	}
+
+	configured := remote.NewBackend(remote.NewGRPCTransport(conn, token),
+		remote.WithTypeCheck(remote.TypeCheckOptions{Stubs: "def f() -> int: ...", Format: remote.TypeCheckConcise, Color: true}),
+		remote.WithProfile("sandbox"),
+		remote.WithPersistence(remote.PersistenceStored),
+		remote.WithPrintFlushInterval(0),
+	)
+	if _, err := monty.NewRepl(monty.ReplOptions{ScriptName: "configured.py", Backend: configured}); err != nil {
+		t.Fatal(err)
+	}
+	cfg = <-seen
+	if !cfg.GetTypeCheck() || cfg.GetTypeCheckStubs() != "def f() -> int: ..." || !cfg.GetTypeCheckColor() ||
+		cfg.GetTypeCheckFormat() != montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_CONCISE {
+		t.Fatalf("type check options = %v", cfg)
+	}
+	if cfg.GetProfile() != "sandbox" || cfg.GetPersistence() != montyv1.Persistence_PERSISTENCE_STORED {
+		t.Fatalf("profile/persistence = %v", cfg)
+	}
+	if cfg.PrintFlushIntervalMs == nil || *cfg.PrintFlushIntervalMs != 0 {
+		t.Fatalf("print flush interval = %v, want an explicit 0 (line buffering)", cfg.PrintFlushIntervalMs)
+	}
+}
+
+func TestUnknownTypeCheckFormatIsRefusedBeforeConnecting(t *testing.T) {
+	backend := remote.NewBackend(remote.NewGRPCTransport(fakeworker.Start(t, func(s *fakeworker.Stream) {
+		t.Errorf("a stream was opened with an invalid format")
+	}), token), remote.WithTypeCheck(remote.TypeCheckOptions{Format: "fancy"}))
+	if _, err := monty.NewRepl(monty.ReplOptions{Backend: backend}); err == nil || !strings.Contains(err.Error(), "fancy") {
+		t.Fatalf("err = %v, want the format named", err)
+	}
+}
+
+// A feed can opt out of the session's type checking.
+func TestFeedCanSkipTheTypeCheck(t *testing.T) {
+	skips := make(chan bool, 2)
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, f *montyv1.Feed) {
+		skips <- f.GetSkipTypeCheck()
+		s.Send(fakeworker.Complete(0, fakeworker.Int(1)))
+	}))
+	if _, err := feed(t, repl, "x", monty.FeedOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := feed(t, repl, "x", monty.FeedOptions{SkipTypeCheck: true}); err != nil {
+		t.Fatal(err)
+	}
+	if first, second := <-skips, <-skips; first || !second {
+		t.Fatalf("skip flags = %v, %v; want false then true", first, second)
+	}
+}
+
+// What the worker reports about the session reaches telemetry: its in-sandbox
+// times and its session id.
+func TestWorkerStatsReachTelemetry(t *testing.T) {
+	id := []byte{0xde, 0xad, 0xbe, 0xef}
+	repl := newRepl(t, func(s *fakeworker.Stream) {
+		if s.RecvConfigure() == nil {
+			return
+		}
+		s.Send(fakeworker.WithSessionID(fakeworker.Ok(), id))
+		for n := 1; ; n++ {
+			if s.RecvFeed() == nil {
+				return
+			}
+			s.Send(fakeworker.WithStats(fakeworker.Complete(0, fakeworker.Int(1)), uint64(n)*5000, 1500))
+		}
+	})
+
+	var logs strings.Builder
+	opts := monty.FeedOptions{Telemetry: monty.SlogHandler{
+		Logger:       slog.New(slog.NewTextHandler(&logs, nil)),
+		DurationUnit: monty.DurationMicroseconds,
+	}}
+	if _, err := feed(t, repl, "x", opts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := feed(t, repl, "x", opts); err != nil {
+		t.Fatal(err)
+	}
+
+	var finished []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "execution finished") {
+			finished = append(finished, line)
+		}
+	}
+	if len(finished) != 2 {
+		t.Fatalf("want 2 finished lines:\n%s", logs.String())
+	}
+	for i, want := range []string{"worker_session_duration_us=5000", "worker_session_duration_us=10000"} {
+		for _, attr := range []string{"worker_feed_duration_us=1500", want, "worker_session_id=deadbeef"} {
+			if !strings.Contains(finished[i], attr) {
+				t.Errorf("feed %d lacks %s:\n%s", i+1, attr, finished[i])
+			}
+		}
+	}
+}
+
+// A failing turn is reported too: the stats ride on the turn-ending event, not
+// only on Complete.
+func TestWorkerStatsAreReportedForAFailedFeed(t *testing.T) {
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.WithStats(fakeworker.Raised("ValueError", "boom"), 7000, 3000))
+	}))
+	var logs strings.Builder
+	_, err := feed(t, repl, "x", monty.FeedOptions{Telemetry: monty.SlogHandler{
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)), DurationUnit: monty.DurationMicroseconds,
+	}})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !strings.Contains(logs.String(), "execution failed") || !strings.Contains(logs.String(), "worker_feed_duration_us=3000") {
+		t.Fatalf("the failed feed carries no worker stats:\n%s", logs.String())
+	}
+}
+
+// The native library reports nothing, so its executions have no worker fields.
+func TestNativeExecutionsHaveNoWorkerStats(t *testing.T) {
+	repl, err := monty.NewRepl(monty.ReplOptions{})
+	if err != nil {
+		t.Skipf("no native library: %v", err)
+	}
+	var logs strings.Builder
+	if _, err := feed(t, repl, "1 + 1", monty.FeedOptions{Telemetry: monty.SlogHandler{Logger: slog.New(slog.NewTextHandler(&logs, nil))}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "worker_") {
+		t.Fatalf("a native run reported worker stats:\n%s", logs.String())
 	}
 }

@@ -3,6 +3,7 @@ package remote_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"regexp"
 	"strings"
@@ -378,4 +379,60 @@ func TestRealWorkerDumpAndLoad(t *testing.T) {
 	}
 	got, err := feed(t, restored, "x + 1", monty.FeedOptions{})
 	wantInt(t, got, err, 42)
+}
+
+// With type checking on, a snippet with a type error does not run, and a feed
+// can opt out.
+func TestRealWorkerTypeCheck(t *testing.T) {
+	endpoint := os.Getenv("MONTY_REMOTE_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("MONTY_REMOTE_ENDPOINT is not set")
+	}
+	transport, err := remote.DialGRPC(endpoint, remote.GRPCConfig{
+		Insecure: os.Getenv("MONTY_REMOTE_INSECURE") == "1",
+		Token:    os.Getenv("MONTY_REMOTE_TOKEN"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { transport.Close() })
+	backend := remote.NewBackend(transport, remote.WithTypeCheck(remote.TypeCheckOptions{Format: remote.TypeCheckConcise}))
+	repl, err := monty.NewRepl(monty.ReplOptions{ScriptName: "typed.py", Backend: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = feed(t, repl, "x: int = 'not an int'", monty.FeedOptions{})
+	var typing *remote.TypingError
+	if !errors.As(err, &typing) || typing.Diagnostics == "" {
+		t.Fatalf("err = %v, want a TypingError with diagnostics", err)
+	}
+	// The snippet did not run, and the session is fine.
+	got, err := feed(t, repl, "1 + 1", monty.FeedOptions{})
+	wantInt(t, got, err, 2)
+	// Opting out lets it run.
+	if _, err := feed(t, repl, "y: int = 'not an int'", monty.FeedOptions{SkipTypeCheck: true}); err != nil {
+		t.Fatalf("a feed that skips the check failed: %v", err)
+	}
+}
+
+// The worker's own in-sandbox time and session id show up in telemetry.
+func TestRealWorkerStatsReachTelemetry(t *testing.T) {
+	repl := realRepl(t)
+	var logs strings.Builder
+	opts := monty.FeedOptions{Telemetry: monty.SlogHandler{
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)), DurationUnit: monty.DurationMicroseconds,
+	}}
+	if _, err := feed(t, repl, "sum(range(200000))", opts); err != nil {
+		t.Fatal(err)
+	}
+	out := logs.String()
+	for _, want := range []string{"worker_feed_duration_us=", "worker_session_duration_us=", "worker_session_id="} {
+		if !strings.Contains(out, want) {
+			t.Errorf("telemetry lacks %s:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "worker_feed_duration_us=0 ") {
+		t.Errorf("the worker reported no execution time for a busy loop:\n%s", out)
+	}
 }

@@ -229,3 +229,29 @@ func TestPythonScriptsOverARemoteWorker(t *testing.T) {
 	useRealWorker(t)
 	checkPythonScripts(t)
 }
+
+// With /typecheck on, a snippet with a type error is rejected before it runs;
+// with it off the same snippet runs.
+func TestTypeCheckOnARemoteWorker(t *testing.T) {
+	useRealWorker(t)
+	m := newTestModel(t)
+
+	if e := m.runCode("untyped", "x: int = 'text'"); e.isErr {
+		t.Fatalf("type checking is off by default, but a snippet failed: %+v", e)
+	}
+	m, _ = m.sessionCommand("/typecheck on")
+	if e := lastEntry(t, m); e.isErr {
+		t.Fatalf("/typecheck on: %+v", e)
+	}
+	e := m.runCode("bad", "y: int = 'text'")
+	if !e.isErr || !strings.Contains(e.result, "type check failed") {
+		t.Fatalf("with checking on, a type error ran: %+v", e)
+	}
+	if e := m.runCode("good", "z: int = 4\nz + 1"); e.isErr || e.result != "5" {
+		t.Fatalf("a well-typed snippet: %+v", e)
+	}
+	m, _ = m.sessionCommand("/typecheck off")
+	if e := m.runCode("again", "w: int = 'text'"); e.isErr {
+		t.Fatalf("after /typecheck off the snippet failed: %+v", e)
+	}
+}

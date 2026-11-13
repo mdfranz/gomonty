@@ -46,7 +46,13 @@ in the history that rewind replays:
 - `/dump <path>` writes the REPL's variables and definitions to a file.
 - `/load <path>` replaces the session with one restored from `/dump`. The
   in-memory filesystem and the history start fresh.
-- `/debug` toggles the telemetry pane.
+- `/typecheck [on|off]` type-checks each snippet before it runs, so one with a
+  type error is rejected with the checker's diagnostics. It is off by default
+  and needs `--remote`: a native REPL session cannot type-check. Scripts are
+  never type-checked.
+- `/debug` toggles the telemetry pane. Against a remote worker its log lines
+  also carry `worker_feed_duration_*` and `worker_session_duration_*` (the
+  worker's own in-sandbox time) and `worker_session_id`.
 
 Tab completes the path of `/execute`, `/dump` and `/load`. A snippet runs in
 the background, so the screen stays live: Ctrl+C cancels the running turn (a

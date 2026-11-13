@@ -1,6 +1,10 @@
 package monty
 
-import "context"
+import (
+	"context"
+	"sync"
+	"time"
+)
 
 // Backend is the seam between the host-facing API (Runner, Repl, the progress
 // snapshots and the dispatch loop) and whatever actually runs the interpreter.
@@ -123,6 +127,59 @@ func printSinkContext(ctx context.Context, print PrintCallback) context.Context 
 	return WithPrintSink(ctx, PrintSink(print))
 }
 
+// WorkerStats is what a remote worker reports about the session an execution
+// ran in. Times are in-sandbox: the worker's clock runs only while the
+// interpreter executes bytecode, never while it waits on the host or sits idle.
+type WorkerStats struct {
+	// SessionExecution is the session's cumulative execution time, which
+	// survives Dump and Load.
+	SessionExecution time.Duration
+	// FeedExecution is the execution time of the snippet in progress.
+	FeedExecution time.Duration
+	// SessionID is the worker's identifier for the session, hex encoded. It is
+	// empty when the worker does not store sessions.
+	SessionID string
+}
+
+// WorkerStatsSink receives a backend's WorkerStats when a turn ends.
+type WorkerStatsSink func(WorkerStats)
+
+type workerStatsKey struct{}
+
+// WithWorkerStatsSink returns a context carrying sink. FeedRun and Run put one
+// on the context of every backend call and fold the latest report into
+// ExecutionTiming.Worker, so a backend that learns these numbers from its
+// worker can report them with WorkerStatsSinkFromContext. A backend that has
+// nothing to report ignores it, and Worker stays nil.
+func WithWorkerStatsSink(ctx context.Context, sink WorkerStatsSink) context.Context {
+	return context.WithValue(ctx, workerStatsKey{}, sink)
+}
+
+// WorkerStatsSinkFromContext returns the sink a backend should report to, or
+// nil if the caller is not collecting them.
+func WorkerStatsSinkFromContext(ctx context.Context) WorkerStatsSink {
+	sink, _ := ctx.Value(workerStatsKey{}).(WorkerStatsSink)
+	return sink
+}
+
+// workerStatsCollector keeps the latest report of one execution.
+type workerStatsCollector struct {
+	mu   sync.Mutex
+	last *WorkerStats
+}
+
+func (c *workerStatsCollector) record(s WorkerStats) {
+	c.mu.Lock()
+	c.last = &s
+	c.mu.Unlock()
+}
+
+func (c *workerStatsCollector) latest() *WorkerStats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.last
+}
+
 // Step is the outcome of starting or resuming an execution.
 type Step struct {
 	// Progress is the next paused state, nil if the backend returned none.
@@ -191,4 +248,11 @@ func backendOrDefault(b Backend) Backend {
 		return ffiBackend{}
 	}
 	return b
+}
+
+// withWorkerStatsCollector returns a context whose backend calls report
+// WorkerStats to the returned collector.
+func withWorkerStatsCollector(ctx context.Context) (context.Context, *workerStatsCollector) {
+	c := &workerStatsCollector{}
+	return WithWorkerStatsSink(ctx, c.record), c
 }

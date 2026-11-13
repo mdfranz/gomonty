@@ -69,7 +69,10 @@ func useRemote(endpoint string) error {
 	}
 	remoteTransport = t
 	remoteEndpoint = endpoint
-	replBackend = remote.NewBackend(t)
+	// Sessions are opened with type checking available, because it can only be
+	// set when a session starts. Every feed skips it unless /typecheck is on,
+	// so nothing changes until it is asked for.
+	replBackend = remote.NewBackend(t, remote.WithTypeCheck(remote.TypeCheckOptions{Format: remote.TypeCheckConcise}))
 	return nil
 }
 

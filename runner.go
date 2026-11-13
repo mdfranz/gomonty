@@ -312,13 +312,14 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (Value, error) {
 			return renderInputs(opts.Inputs)
 		}, opts.TelemetryOptions.MaxAttributeBytes),
 	}, opts.TelemetryOptions)
+	execCtx, stats := withWorkerStatsCollector(execCtx)
 
 	progress, err := r.start(execCtx, StartOptions{
 		Inputs: opts.Inputs,
 		Limits: opts.Limits,
 	}, opts.Print, printTelemetry{handler: opts.Telemetry, opts: opts.TelemetryOptions})
 	if err != nil {
-		endExecutionSpan(span, Value{}, err, ExecutionTiming{Total: time.Since(start)}, opts.TelemetryOptions)
+		endExecutionSpan(span, Value{}, err, ExecutionTiming{Total: time.Since(start), Worker: stats.latest()}, opts.TelemetryOptions)
 		return Value{}, err
 	}
 	value, runErr, timing := dispatchLoop(execCtx, progress, dispatchConfig{
@@ -333,6 +334,7 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (Value, error) {
 		Total:    time.Since(start),
 		Callback: timing.callback,
 		Wait:     timing.wait,
+		Worker:   stats.latest(),
 	}, opts.TelemetryOptions)
 	return value, runErr
 }
@@ -386,10 +388,11 @@ func (r *Repl) FeedRun(ctx context.Context, code string, opts FeedOptions) (Valu
 			return renderInputs(opts.Inputs)
 		}, opts.TelemetryOptions.MaxAttributeBytes),
 	}, opts.TelemetryOptions)
+	execCtx, stats := withWorkerStatsCollector(execCtx)
 
-	progress, err := r.feedStart(execCtx, code, FeedStartOptions{Inputs: opts.Inputs}, opts.Print, printTelemetry{handler: opts.Telemetry, opts: opts.TelemetryOptions})
+	progress, err := r.feedStart(execCtx, code, FeedStartOptions{Inputs: opts.Inputs, SkipTypeCheck: opts.SkipTypeCheck}, opts.Print, printTelemetry{handler: opts.Telemetry, opts: opts.TelemetryOptions})
 	if err != nil {
-		endExecutionSpan(span, Value{}, err, ExecutionTiming{Total: time.Since(start)}, opts.TelemetryOptions)
+		endExecutionSpan(span, Value{}, err, ExecutionTiming{Total: time.Since(start), Worker: stats.latest()}, opts.TelemetryOptions)
 		return Value{}, err
 	}
 	value, runErr, timing := dispatchLoop(execCtx, progress, dispatchConfig{
@@ -404,6 +407,7 @@ func (r *Repl) FeedRun(ctx context.Context, code string, opts FeedOptions) (Valu
 		Total:    time.Since(start),
 		Callback: timing.callback,
 		Wait:     timing.wait,
+		Worker:   stats.latest(),
 	}, opts.TelemetryOptions)
 	return value, runErr
 }

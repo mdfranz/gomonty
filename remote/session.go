@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	monty "github.com/mdfranz/gomonty"
 	montyv1 "github.com/mdfranz/gomonty/remote/internal/montyv1"
@@ -32,6 +33,9 @@ type session struct {
 	sendMu sync.Mutex
 	events chan recvResult
 	done   chan struct{}
+
+	// id is the worker's session id, hex encoded, or "" if it sent none.
+	id string
 
 	// configure is what opened the session, kept so Reset can open it again
 	// on the same stream. Its first request is cleared.
@@ -195,9 +199,24 @@ func (s *session) call(ctx context.Context, req *montyv1.ClientRequest) (turn, e
 		case *montyv1.WorkerEvent_FatalError:
 			return turn{}, s.fail(fmt.Errorf("remote: the worker failed: %s", kind.FatalError.GetMessage()))
 		default:
+			s.reportStats(ctx, event)
 			return turn{prints: prints, end: event}, nil
 		}
 	}
+}
+
+// reportStats gives the caller's stats sink, if it has one, what the worker
+// says about the session at the end of a turn.
+func (s *session) reportStats(ctx context.Context, event *montyv1.WorkerEvent) {
+	sink := monty.WorkerStatsSinkFromContext(ctx)
+	if sink == nil {
+		return
+	}
+	sink(monty.WorkerStats{
+		SessionExecution: time.Duration(event.GetTotalExecutionMicros()) * time.Microsecond,
+		FeedExecution:    time.Duration(event.GetFeedExecutionMicros()) * time.Microsecond,
+		SessionID:        s.id,
+	})
 }
 
 // sendCause explains a failed send. gRPC reports a stream the worker already

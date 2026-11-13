@@ -22,7 +22,8 @@
 // (bpython's term for it): pops the last input back into the prompt for
 // editing and replays everything before it against a fresh interpreter, so
 // a mistyped line can be fixed without restarting the whole session. /reset,
-// /dump <path> and /load <path> empty the session, save it and restore it.
+// /dump <path> and /load <path> empty the session, save it and restore it, and
+// /typecheck turns on type checking of each snippet (remote workers only).
 // Snippets run in the background, so Ctrl+C cancels a turn that is stuck.
 // With --remote host:port the interpreter runs on a remote worker instead of
 // the native library, for the REPL and for a script path alike. exit
@@ -159,6 +160,10 @@ type model struct {
 	running    bool
 	cancelling bool
 	cancel     context.CancelFunc
+
+	// typeCheck makes each snippet type-check before it runs. Only a remote
+	// worker can do that; see sessionCommand.
+	typeCheck bool
 
 	// width/height track the terminal size (via tea.WindowSizeMsg), used to
 	// size the log pane to roughly a quarter of the screen.
@@ -313,6 +318,7 @@ const (
 	dumpCmd       = "/dump"
 	loadCmd       = "/load"
 	resetCmd      = "/reset"
+	typeCheckCmd  = "/typecheck"
 )
 
 // pathCommandPrefixes are the commands whose argument is a filesystem path,
@@ -669,6 +675,10 @@ func (m model) sessionCommand(code string) (model, bool) {
 		m.sandbox = newSandbox()
 		m.history, m.historyIdx = nil, 0
 		m.entries = append(m.entries, entry{code: code, result: "session reset: variables, definitions and the in-memory filesystem are back to their starting state"})
+	case typeCheckCmd:
+		var e entry
+		m, e = m.setTypeCheck(code, arg)
+		m.entries = append(m.entries, e)
 	case dumpCmd:
 		m.entries = append(m.entries, m.dumpSession(code, arg))
 	case loadCmd:
@@ -682,6 +692,28 @@ func (m model) sessionCommand(code string) (model, bool) {
 		m.entries = m.entries[len(m.entries)-maxHistoryEntries:]
 	}
 	return m, true
+}
+
+// setTypeCheck handles /typecheck [on|off]: with no argument it toggles.
+func (m model) setTypeCheck(code, arg string) (model, entry) {
+	if remoteEndpoint == "" {
+		return m, entry{code: code, result: "type checking needs a remote worker: start shmonty with --remote host:port (the native library cannot type-check a REPL session)", isErr: true}
+	}
+	switch arg {
+	case "":
+		m.typeCheck = !m.typeCheck
+	case "on":
+		m.typeCheck = true
+	case "off":
+		m.typeCheck = false
+	default:
+		return m, entry{code: code, result: "usage: /typecheck [on|off]", isErr: true}
+	}
+	state := "off"
+	if m.typeCheck {
+		state = "on: a snippet with a type error is rejected before it runs"
+	}
+	return m, entry{code: code, result: "type checking " + state}
 }
 
 func (m model) dumpSession(code, path string) entry {
@@ -808,6 +840,8 @@ func (m model) runCodeCtx(ctx context.Context, display, code string) entry {
 		Modules:   m.sandbox.modules,
 		Print:     monty.WriterPrintCallback(&stdout),
 		Functions: hostFunctions(),
+		// A session is opened able to type-check; each snippet opts in.
+		SkipTypeCheck: !m.typeCheck,
 	}
 	switch {
 	case m.otelHandler != nil:
@@ -879,6 +913,9 @@ func (m model) renderStatusLine() string {
 		}
 		parts = append(parts, state)
 	}
+	if m.typeCheck {
+		parts = append(parts, "typecheck:on")
+	}
 	if remoteEndpoint != "" {
 		parts = append([]string{"remote:" + remoteEndpoint}, parts...)
 	}
@@ -895,7 +932,7 @@ func (m model) renderStatusLine() string {
 
 func (m model) View() string {
 	var b strings.Builder
-	header := "shmonty  (Ctrl+C/Ctrl+D/exit to quit, Up/Down history, Ctrl+R rewind, /debug telemetry [PgUp/PgDn scroll], /execute <path>, /dump <path>, /load <path>, /reset [Tab completes paths])"
+	header := "shmonty  (Ctrl+C/Ctrl+D/exit to quit, Up/Down history, Ctrl+R rewind, /debug telemetry [PgUp/PgDn scroll], /execute <path>, /dump <path>, /load <path>, /reset, /typecheck [Tab completes paths])"
 	b.WriteString(header)
 	b.WriteString("\n\n")
 
@@ -1043,7 +1080,8 @@ func execScript(path string, stdout, stderr io.Writer) error {
 			return err
 		}
 		value, runErr = repl.FeedRun(ctx, string(data), monty.FeedOptions{
-			OS: sandbox.os, Modules: sandbox.modules, Print: print, Functions: hostFunctions(),
+			SkipTypeCheck: true, // scripts run as they always have
+			OS:            sandbox.os, Modules: sandbox.modules, Print: print, Functions: hostFunctions(),
 			Telemetry: telemetry, TelemetryOptions: telemetryOptions,
 		})
 	} else {

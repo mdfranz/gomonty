@@ -26,10 +26,14 @@ const (
 	attrCallbackDuration = "monty.callback_duration_ms"
 	attrWaitDuration     = "monty.wait_duration_ms"
 	attrPythonDuration   = "monty.python_duration_ms"
-	attrOutput           = "monty.output"
-	attrOutputTruncated  = "monty.output_truncated"
-	attrExceptionType    = "monty.exception_type"
-	attrPrintText        = "monty.text"
+	// Worker attributes are present only when a remote worker reported them.
+	attrWorkerFeedDuration    = "monty.worker.feed_duration_ms"
+	attrWorkerSessionDuration = "monty.worker.session_duration_ms"
+	attrWorkerSessionID       = "monty.worker.session_id"
+	attrOutput                = "monty.output"
+	attrOutputTruncated       = "monty.output_truncated"
+	attrExceptionType         = "monty.exception_type"
+	attrPrintText             = "monty.text"
 )
 
 // executionAttrs returns the ExecutionInfo attributes shared by
@@ -69,11 +73,23 @@ func waitAttrs(info monty.WaitInfo) []attribute.KeyValue {
 // gomonty-olly.md's own monty.python_duration_ms naming. Total isn't
 // included: the span's own start/end timestamps already carry it.
 func timingAttrs(t monty.ExecutionTiming) []attribute.KeyValue {
-	return []attribute.KeyValue{
+	attrs := []attribute.KeyValue{
 		attribute.Float64(attrCallbackDuration, float64(t.Callback)/float64(time.Millisecond)),
 		attribute.Float64(attrWaitDuration, float64(t.Wait)/float64(time.Millisecond)),
 		attribute.Float64(attrPythonDuration, float64(t.Python())/float64(time.Millisecond)),
 	}
+	if w := t.Worker; w != nil {
+		// The worker's own in-sandbox times, which exclude host callbacks and
+		// network time, unlike monty.python_duration_ms.
+		attrs = append(attrs,
+			attribute.Float64(attrWorkerFeedDuration, float64(w.FeedExecution)/float64(time.Millisecond)),
+			attribute.Float64(attrWorkerSessionDuration, float64(w.SessionExecution)/float64(time.Millisecond)),
+		)
+		if w.SessionID != "" {
+			attrs = append(attrs, attribute.String(attrWorkerSessionID, w.SessionID))
+		}
+	}
+	return attrs
 }
 
 // appendPayloadAttrs appends key/keyTruncated attrs for a TruncatedPayload,

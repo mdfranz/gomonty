@@ -144,6 +144,13 @@ func (s slogExecutionSpan) End(_ Value, err error, timing ExecutionTiming, outpu
 	attrs = appendDurationAttr(attrs, s.unit, "python_duration", timing.Python())
 	attrs = appendDurationAttr(attrs, s.unit, "callback_duration", timing.Callback)
 	attrs = appendDurationAttr(attrs, s.unit, "wait_duration", timing.Wait)
+	if w := timing.Worker; w != nil {
+		attrs = appendDurationAttr(attrs, s.unit, "worker_feed_duration", w.FeedExecution)
+		attrs = appendDurationAttr(attrs, s.unit, "worker_session_duration", w.SessionExecution)
+		if w.SessionID != "" {
+			attrs = append(attrs, "worker_session_id", w.SessionID)
+		}
+	}
 	attrs = appendPayloadAttrs(attrs, "output", output)
 	if err != nil {
 		s.logger.Error("monty execution failed", append(attrs, "error", err.Error())...)

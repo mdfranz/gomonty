@@ -163,6 +163,20 @@ func (s *Stream) RecvReset() *montyv1.Reset {
 
 // Event constructors.
 
+// WithStats sets the execution times a worker reports on a turn-ending event,
+// in microseconds.
+func WithStats(event *montyv1.WorkerEvent, totalMicros, feedMicros uint64) *montyv1.WorkerEvent {
+	event.TotalExecutionMicros = totalMicros
+	event.FeedExecutionMicros = feedMicros
+	return event
+}
+
+// WithSessionID sets the session id a relay reports on its first reply.
+func WithSessionID(event *montyv1.WorkerEvent, id []byte) *montyv1.WorkerEvent {
+	event.SessionId = id
+	return event
+}
+
 // Dumped answers a Dump with the given opaque state.
 func Dumped(state []byte) *montyv1.WorkerEvent {
 	return &montyv1.WorkerEvent{Kind: &montyv1.WorkerEvent_DumpResult{DumpResult: &montyv1.DumpResult{State: state}}}
