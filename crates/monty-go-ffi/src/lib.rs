@@ -780,7 +780,7 @@ fn start_runner_internal(
     let inputs = extract_inputs(&handle.input_names, &options.inputs)
         .map_err(|error| (error, String::new()))?;
     let mut prints = PrintCollector::new();
-    let tracker = ResourceTracker::new(options.limits.map(Into::into).unwrap_or_default());
+    let tracker = ResourceTracker::new(options.limits.map_or_default(Into::into));
 
     let start_result = handle
         .runner
@@ -1431,7 +1431,7 @@ pub extern "C" fn monty_go_repl_new(
             Err(error) => return MontyGoReplResult::err(error),
         };
         let script_name = options.script_name.unwrap_or_else(|| "main.py".to_owned());
-        let tracker = ResourceTracker::new(options.limits.map(Into::into).unwrap_or_default());
+        let tracker = ResourceTracker::new(options.limits.map_or_default(Into::into));
         let inner = StoredRepl(MontyRepl::new(
             &script_name,
             tracker,

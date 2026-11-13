@@ -4,7 +4,7 @@ gomonty has four GitHub Actions workflows (`verify`, `release-prep`, `release` a
 
 ```mermaid
 flowchart LR
-    pr["Pull request opened"] --> verify
+    pr["Pull request opened / updated"] --> verify
     dispatch["gh workflow run verify.yml"] --> verify
     verify["verify<br/>(check changes)"]
     make["make release"] --> prep["release-prep<br/>(build libs, open PR)"]
@@ -108,4 +108,4 @@ The workflows follow these rules:
 
 ## Known gaps
 
-Open issues: [#32](https://github.com/mdfranz/gomonty/issues/32) (single required status check), [#33](https://github.com/mdfranz/gomonty/issues/33) (7 FFI exports without panic guards), and [#23](https://github.com/mdfranz/gomonty/issues/23) (release builds are not reproducible across runs).
+Open issues: [#23](https://github.com/mdfranz/gomonty/issues/23) (release builds are not reproducible across runs) and [#52](https://github.com/mdfranz/gomonty/issues/52)–[#54](https://github.com/mdfranz/gomonty/issues/54) (CI build speed, platform scope, and release parallelism).

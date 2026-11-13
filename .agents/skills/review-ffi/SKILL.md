@@ -45,7 +45,3 @@ CGO_ENABLED=0 go test -run '^$' -fuzz FuzzLoadRunner -fuzztime=30s .
 ```
 
 Rebuild the host library first: Go tests run against it, so a stale library makes a wire change look fine. Do not commit the rebuilt library or header; see `AGENTS.md`.
-
-## Known gaps (do not treat as new findings)
-
-Issue #33 tracks 7 exports without panic guards. Report a new unguarded export, but link #33 rather than re-filing it.
