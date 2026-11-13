@@ -75,6 +75,36 @@ type PrintSegment struct {
 	Text   string
 }
 
+// PrintSink reports a run of output, on "stdout" or "stderr", while a backend
+// call is still in progress.
+type PrintSink func(stream, text string)
+
+type printSinkKey struct{}
+
+// WithPrintSink returns a context carrying sink. The host layer puts the
+// caller's PrintCallback on the context of every backend call, so a backend
+// that learns of output before the call returns, such as a remote worker
+// during a long turn, can pass it on at once instead of at the end. A backend
+// that does so sets Step.PrintsDelivered.
+func WithPrintSink(ctx context.Context, sink PrintSink) context.Context {
+	return context.WithValue(ctx, printSinkKey{}, sink)
+}
+
+// PrintSinkFromContext returns the sink a backend call should report output
+// to, or nil if the caller has no print callback.
+func PrintSinkFromContext(ctx context.Context) PrintSink {
+	sink, _ := ctx.Value(printSinkKey{}).(PrintSink)
+	return sink
+}
+
+// printSinkContext carries print on ctx for a backend call.
+func printSinkContext(ctx context.Context, print PrintCallback) context.Context {
+	if print == nil {
+		return ctx
+	}
+	return WithPrintSink(ctx, PrintSink(print))
+}
+
 // Step is the outcome of starting or resuming an execution.
 type Step struct {
 	// Progress is the next paused state, nil if the backend returned none.
@@ -89,6 +119,11 @@ type Step struct {
 	// reports each run to PrintCallback under its own stream. Prints must
 	// still hold the joined text. Empty means all of Prints is stdout.
 	PrintSegments []PrintSegment
+	// PrintsDelivered reports that the backend already gave the output to the
+	// PrintSink in the context as it was produced. The host layer then skips
+	// PrintCallback for this step's output, so nothing is reported twice;
+	// telemetry still sees it.
+	PrintsDelivered bool
 	// Repl is a REPL session handed back with this step (on the error path, or
 	// alongside a completed snippet).
 	Repl ReplHandle

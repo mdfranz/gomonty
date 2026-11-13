@@ -231,7 +231,7 @@ func (r *Runner) start(ctx context.Context, opts StartOptions, print PrintCallba
 	}
 	defer release()
 
-	return consumeStep(ctx, handle.Start(ctx, opts), nil, print, pt)
+	return consumeStep(ctx, handle.Start(printSinkContext(ctx, print), opts), nil, print, pt)
 }
 
 // Run executes the runner through the high-level host callback loop.
@@ -298,7 +298,7 @@ func (r *Repl) feedStart(ctx context.Context, code string, opts FeedStartOptions
 		return nil, err
 	}
 
-	st := handle.FeedStart(ctx, code, opts)
+	st := handle.FeedStart(printSinkContext(ctx, print), code, opts)
 	if st.Retained {
 		// The options could not be encoded, so the session was not consumed.
 		r.state.restore(handle)
@@ -422,15 +422,15 @@ func (b *progressBase) dump() ([]byte, error) {
 }
 
 func (b *progressBase) resumeCall(ctx context.Context, result Result, print PrintCallback, pt printTelemetry) (Progress, error) {
-	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeCall(ctx, result) })
+	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeCall(printSinkContext(ctx, print), result) })
 }
 
 func (b *progressBase) resumeLookup(ctx context.Context, value Value, found bool, print PrintCallback, pt printTelemetry) (Progress, error) {
-	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeLookup(ctx, value, found) })
+	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeLookup(printSinkContext(ctx, print), value, found) })
 }
 
 func (b *progressBase) resumeFutures(ctx context.Context, results map[uint32]Result, print PrintCallback, pt printTelemetry) (Progress, error) {
-	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeFutures(ctx, results) })
+	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeFutures(printSinkContext(ctx, print), results) })
 }
 
 // resume takes the paused handle, resumes it through call and consumes the
@@ -586,7 +586,7 @@ func closeStep(st Step) {
 
 func consumeStep(ctx context.Context, st Step, owner *replState, print PrintCallback, pt printTelemetry) (Progress, error) {
 	if st.Prints != "" {
-		if print != nil {
+		if print != nil && !st.PrintsDelivered {
 			if len(st.PrintSegments) == 0 {
 				print("stdout", st.Prints)
 			}

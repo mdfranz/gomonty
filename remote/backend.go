@@ -264,11 +264,11 @@ func (h *replHandle) abort(ctx context.Context, message string) (output, error) 
 		AbortFeed: &montyv1.AbortFeed{Exception: exc},
 	}})
 	if err != nil {
-		return nil, err
+		return output{}, err
 	}
 	if _, ok := t.end.GetKind().(*montyv1.WorkerEvent_Error); !ok {
 		h.sess.fail(fmt.Errorf("remote: unexpected reply to AbortFeed: %T", t.end.GetKind()))
-		return nil, h.sess.dead
+		return output{}, h.sess.dead
 	}
 	return t.prints, nil
 }

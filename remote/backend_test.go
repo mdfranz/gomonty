@@ -709,3 +709,69 @@ func TestStderrBeforeAnErrorIsDelivered(t *testing.T) {
 		t.Fatalf("stderr = %q, stdout = %q", stderr, stdout)
 	}
 }
+
+// Output reaches the print callback while the turn is still running, not when
+// it ends: the worker holds the turn open until the host has seen the text.
+func TestPrintIsDeliveredWhileTheTurnRuns(t *testing.T) {
+	seen := make(chan struct{})
+	var once sync.Once
+	early := make(chan bool, 1)
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.PrintedSegments(fakeworker.Stdout("early\n"), fakeworker.Stderr("warn\n")))
+		select {
+		case <-seen:
+			early <- true
+		case <-time.After(3 * time.Second):
+			early <- false
+		}
+		s.Send(fakeworker.Complete(0, fakeworker.Int(1)))
+	}))
+
+	var mu sync.Mutex
+	var got []string
+	_, err := feed(t, repl, "x", monty.FeedOptions{Print: func(stream, text string) {
+		mu.Lock()
+		got = append(got, stream+":"+text)
+		mu.Unlock()
+		once.Do(func() { close(seen) })
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !<-early {
+		t.Fatal("the host saw no output until the turn ended")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 || got[0] != "stdout:early\n" || got[1] != "stderr:warn\n" {
+		t.Fatalf("got %v, want each run exactly once, in order", got)
+	}
+}
+
+// Output from before and after a host call is reported once each, in order,
+// even though the turn is split by the call.
+func TestStreamedPrintIsNotRepeatedAcrossAPause(t *testing.T) {
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.Printed("before\n"))
+		s.Send(fakeworker.CallsHost("ping"))
+		if s.RecvResumeCall() == nil {
+			return
+		}
+		s.Send(fakeworker.PrintedSegments(fakeworker.Stderr("after\n")))
+		s.Send(fakeworker.Complete(0, fakeworker.Int(1)))
+	}))
+
+	var got []string
+	_, err := feed(t, repl, "x", monty.FeedOptions{
+		Print: func(stream, text string) { got = append(got, stream+":"+text) },
+		Functions: map[string]monty.ExternalFunction{
+			"ping": func(context.Context, monty.Call) (monty.Result, error) { return monty.Return(monty.None()), nil },
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "stdout:before\n" || got[1] != "stderr:after\n" {
+		t.Fatalf("got %v", got)
+	}
+}

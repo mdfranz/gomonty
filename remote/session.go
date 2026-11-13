@@ -98,17 +98,25 @@ type turn struct {
 }
 
 // output is what the sandbox printed, as runs on one stream each, in order.
-type output []monty.PrintSegment
+// delivered says the runs already went to the host's print sink as they
+// arrived, so the host layer must not report them again.
+type output struct {
+	segments  []monty.PrintSegment
+	delivered bool
+}
 
 // plus returns o followed by more.
 func (o output) plus(more output) output {
-	return append(append(output(nil), o...), more...)
+	return output{
+		segments:  append(append([]monty.PrintSegment(nil), o.segments...), more.segments...),
+		delivered: o.delivered || more.delivered,
+	}
 }
 
 // text is every run joined, whatever its stream.
 func (o output) text() string {
 	var b strings.Builder
-	for _, segment := range o {
+	for _, segment := range o.segments {
 		b.WriteString(segment.Text)
 	}
 	return b.String()
@@ -116,9 +124,10 @@ func (o output) text() string {
 
 // step attaches the output to a Step.
 func (o output) step(s monty.Step) monty.Step {
-	if len(o) > 0 {
+	if len(o.segments) > 0 {
 		s.Prints = o.text()
-		s.PrintSegments = o
+		s.PrintSegments = o.segments
+		s.PrintsDelivered = o.delivered
 	}
 	return s
 }
@@ -130,8 +139,9 @@ func streamName(s montyv1.PrintStream) string {
 	return "stdout"
 }
 
-// call sends one request and reads until the turn ends. Print events are
-// gathered, and Ping is answered with Pong. If the worker reports a fatal
+// call sends one request and reads until the turn ends. Print events go to the
+// context's print sink as they arrive, if it has one, and are also gathered
+// for the turn's result. Ping is answered with Pong. If the worker reports a fatal
 // error, or the stream ends without one, the session is dead afterwards.
 //
 // If ctx ends first, the call returns ctx's error and the session is dead
@@ -153,6 +163,7 @@ func (s *session) call(ctx context.Context, req *montyv1.ClientRequest) (turn, e
 		return turn{}, s.fail(callError(ctx, "send", s.sendCause(err)))
 	}
 	var prints output
+	sink := monty.PrintSinkFromContext(ctx)
 	for {
 		event, err := s.recv()
 		if err != nil {
@@ -165,8 +176,16 @@ func (s *session) call(ctx context.Context, req *montyv1.ClientRequest) (turn, e
 		switch kind := event.GetKind().(type) {
 		case *montyv1.WorkerEvent_Print:
 			for _, segment := range kind.Print.GetSegments() {
-				if text := segment.GetText(); text != "" {
-					prints = append(prints, monty.PrintSegment{Stream: streamName(segment.GetStream()), Text: text})
+				text := segment.GetText()
+				if text == "" {
+					continue
+				}
+				run := monty.PrintSegment{Stream: streamName(segment.GetStream()), Text: text}
+				prints.segments = append(prints.segments, run)
+				if sink != nil {
+					// Hand the run on now: a turn can last a long time.
+					sink(run.Stream, run.Text)
+					prints.delivered = true
 				}
 			}
 		case *montyv1.WorkerEvent_FatalError:
