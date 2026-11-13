@@ -88,6 +88,7 @@ Run it from a checkout with `cd examples && CGO_ENABLED=0 go run ./cmd/example`.
 | Type checking | Check code against stubs before running it. | `Runner.TypeCheck`, `CompileOptions.TypeCheck` |
 | Resource limits | Bound duration, memory, recursion depth and host-call count. | `ResourceLimits` |
 | Telemetry | Opt-in structured logs or OpenTelemetry spans for runs, callbacks and waits. | `SlogHandler`, [`otelmonty/`](./otelmonty) |
+| Remote workers | Run REPL sessions on an out-of-process `monty.v1.MontySession` gRPC worker with host callbacks, VFS, limits, snapshots, and W3C `traceparent` propagation. | [`remote/`](./remote), [docs/remote.md](./docs/remote.md) |
 | `shmonty` | Interactive terminal REPL and script runner built on the library. `--remote host:port` runs the REPL on a remote worker. | [`cmd/shmonty/`](./cmd/shmonty) |
 
 ## What gomonty adds on top of upstream
@@ -108,6 +109,7 @@ Upstream Monty is a Rust library. gomonty is the Go layer around it:
 - [docs/learning-path.md](./docs/learning-path.md): staged exercises for building Go tools around Monty
 - [docs/case-study-sparktea.md](./docs/case-study-sparktea.md): a real consumer
 - [`go/README.md`](./go/README.md): detailed API guide (values, errors, async, pause/resume)
+- [docs/remote.md](./docs/remote.md): connecting to remote Monty workers over gRPC, authentication, limits, error types, and distributed tracing
 - [docs/ci.md](./docs/ci.md): CI and release workflows
 - [docs/contributing.md](./docs/contributing.md): building, testing, benchmarks, fuzzing, upstream overrides
 - [docs/UPSTREAM-REFRESH-PLAN.md](./docs/UPSTREAM-REFRESH-PLAN.md): record of a completed upstream bump

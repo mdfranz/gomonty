@@ -11,6 +11,7 @@ import (
 
 	monty "github.com/mdfranz/gomonty"
 	montyv1 "github.com/mdfranz/gomonty/remote/internal/montyv1"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // protocolVersion is the wire schema version this client speaks. A worker
@@ -147,8 +148,10 @@ func streamName(s montyv1.PrintStream) string {
 	return "stdout"
 }
 
-// call sends one request and reads until the turn ends. Print events go to the
-// context's print sink as they arrive, if it has one, and are also gathered
+// call sends one request and reads until the turn ends. If ctx carries an
+// active OpenTelemetry span context and req.TraceParent is unset, call attaches
+// a W3C traceparent header so the worker can join the trace. Print events go to
+// the context's print sink as they arrive, if it has one, and are also gathered
 // for the turn's result. Ping is answered with Pong. If the worker reports a fatal
 // error, or the stream ends without one, the session is dead afterwards.
 //
@@ -167,6 +170,9 @@ func (s *session) call(ctx context.Context, req *montyv1.ClientRequest) (turn, e
 	stop := context.AfterFunc(ctx, s.cancel)
 	defer stop()
 
+	if req.TraceParent == nil {
+		req.TraceParent = traceParent(ctx)
+	}
 	if err := s.send(req); err != nil {
 		return turn{}, s.fail(callError(ctx, "send", s.sendCause(err)))
 	}
@@ -264,4 +270,15 @@ func (s *session) close() {
 		_ = s.stream.CloseSend()
 		s.cancel()
 	})
+}
+
+// traceParent returns a W3C traceparent header for the active OpenTelemetry span
+// in ctx, or nil when ctx carries no valid span context.
+func traceParent(ctx context.Context) *string {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() {
+		return nil
+	}
+	tp := fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags())
+	return &tp
 }

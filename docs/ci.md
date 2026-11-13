@@ -4,7 +4,7 @@ gomonty has four GitHub Actions workflows (`verify`, `release-prep`, `release` a
 
 ```mermaid
 flowchart LR
-    pr["Pull request opened"] --> verify
+    pr["Pull request opened / updated"] --> verify
     dispatch["gh workflow run verify.yml"] --> verify
     verify["verify<br/>(check changes)"]
     make["make release"] --> prep["release-prep<br/>(build libs, open PR)"]
@@ -18,17 +18,13 @@ The Go package embeds a prebuilt native library per platform, and Go consumers r
 
 ## `verify`
 
-**Triggers:** a PR being *opened*, or manual dispatch. It deliberately does **not** run on later pushes to the PR, to save runner time. To check a later commit:
-
-```bash
-gh workflow run verify.yml --ref <branch>
-```
+**Triggers:** a PR being *opened*, *updated* (`synchronize`), or *reopened*, plus manual dispatch (`gh workflow run verify.yml --ref <branch>`). A concurrency group keyed by PR / ref cancels superseded in-progress runs when new commits are pushed.
 
 Permissions are read-only (`contents: read`).
 
 | Job | Runner | What it does |
 | --- | --- | --- |
-| `go-pure` | ubuntu (amd64) | `gofmt -l .` and `cargo fmt --all --check`; builds the native library; `cargo test -p monty-go-ffi --locked`; `CGO_ENABLED=0 go test ./...` and `go vet ./...` on the root module; runs `examples/cmd/example`; tests `otelmonty` and builds its example; vets and tests `cmd/shmonty`; fuzzes `FuzzLoadRunner` for 30 seconds. |
+| `go-pure` | ubuntu (amd64) | `gofmt -l .` and `cargo fmt --all --check`; builds the native library; `cargo test -p monty-go-ffi --locked` and `cargo clippy -p monty-go-ffi --tests --locked -- -D warnings`; `CGO_ENABLED=0 go test ./...` and `go vet ./...` on the root module; runs `examples` tests (`CGO_ENABLED=0 go test ./...`) and smoke-runs `examples/cmd/example` and `examples/cmd/remote`; tests `otelmonty` and builds its example; vets and tests `cmd/shmonty`; fuzzes `FuzzLoadRunner` for 30 seconds. |
 | `platform-verify` (linux-arm64) | `ubuntu-24.04-arm` | Builds the library for `aarch64-unknown-linux-gnu`, then runs the root module's Go tests. |
 | `platform-verify` (darwin-arm64) | `macos-14` | Same for `aarch64-apple-darwin`. |
 | `verify-musl-amd64`, `verify-musl-arm64` | ubuntu (amd64, arm64) | Builds the musl library inside a `rust:1.96-alpine3.21` container. **Build only**: no Go tests. **Off by default**; see below. |
@@ -37,7 +33,7 @@ Notes:
 
 - Windows is not verified here. The Windows library is built only during `release-prep`.
 - The `platform-verify` jobs run only the root module's tests. The `examples`, `otelmonty` and `cmd/shmonty` modules are tested only in `go-pure` on linux/amd64.
-- Only `FuzzLoadRunner` is fuzzed in CI, and only briefly. Benchmarks and clippy are not run in CI.
+- Only `FuzzLoadRunner` is fuzzed in CI, and only briefly. Benchmarks are not run in CI.
 - Every job builds the Rust crate from scratch or from the `Swatinem/rust-cache` cache, so the first run after a dependency change is slow (upstream Monty is compiled).
 
 ### Enabling the musl checks
@@ -103,7 +99,7 @@ The workflows follow these rules:
 
 | Situation | What to do |
 | --- | --- |
-| Pushed more commits to an open PR | `gh workflow run verify.yml --ref <branch>` |
+| Re-run `verify` manually on a branch | `gh workflow run verify.yml --ref <branch>` |
 | `release` says the Cargo.toml version is wrong | Run release-prep for that version, merge its PR, retry. |
 | `release` says the tree does not match `checksums.txt` | Something changed the libraries or lockfile after release-prep. Re-run release-prep from current `main`. |
 | Upstream pin changed after the release PR was opened | Re-run release-prep so the checksums cover the new lockfile. |
@@ -112,4 +108,4 @@ The workflows follow these rules:
 
 ## Known gaps
 
-Open issues: [#32](https://github.com/mdfranz/gomonty/issues/32) (what remains is running `verify` again on later pushes with cancellation of superseded runs, and a single required status check), [#33](https://github.com/mdfranz/gomonty/issues/33) (panic guards and clippy), and [#23](https://github.com/mdfranz/gomonty/issues/23) (release builds are not reproducible across runs).
+Open issues: [#23](https://github.com/mdfranz/gomonty/issues/23) (release builds are not reproducible across runs) and [#52](https://github.com/mdfranz/gomonty/issues/52)–[#54](https://github.com/mdfranz/gomonty/issues/54) (CI build speed, platform scope, and release parallelism).

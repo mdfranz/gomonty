@@ -1,14 +1,13 @@
 name: verify
 
 on:
-  # Only run automatically when a PR is first opened, not on every
-  # subsequent push (default pull_request types also include
-  # synchronize/reopened). To check a later commit, trigger manually
-  # against that branch's current head:
-  #   gh workflow run verify.yml --ref <branch-name>
   pull_request:
-    types: [opened]
+    types: [opened, synchronize, reopened]
   workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -35,6 +34,7 @@ jobs:
             examples/go.sum
             otelmonty/go.sum
             cmd/shmonty/go.sum
+            remote/go.sum
 
       - name: Setup Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -45,7 +45,7 @@ jobs:
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           targets: x86_64-unknown-linux-gnu
-          components: rustfmt
+          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -77,6 +77,12 @@ jobs:
           export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
           cargo test -p monty-go-ffi --locked
 
+      - name: Run clippy
+        shell: bash
+        run: |
+          export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+          cargo clippy -p monty-go-ffi --tests --locked -- -D warnings
+
       - name: Run CGO-disabled tests
         env:
           CGO_ENABLED: "0"
@@ -93,11 +99,13 @@ jobs:
           CGO_ENABLED: "0"
         run: go test -run '^$' -fuzz FuzzLoadRunner -fuzztime=30s .
 
-      - name: Smoke test example module
+      - name: Test and smoke-run example module
         shell: bash
         run: |
           cd examples
+          CGO_ENABLED=0 go test ./...
           CGO_ENABLED=0 go run ./cmd/example
+          CGO_ENABLED=0 go run ./cmd/remote
 
       - name: Test otelmonty submodule
         shell: bash

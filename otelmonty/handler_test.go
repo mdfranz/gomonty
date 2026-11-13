@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // newTestHandler returns an otelmonty.Handler wired to an in-memory span
@@ -511,5 +512,152 @@ func TestHandlerRecordsWorkerStatsOnlyWhenReported(t *testing.T) {
 	}
 	if v, ok := worker(root.Attributes(), "monty.worker.session_id"); !ok || v.AsString() != "deadbeef" {
 		t.Errorf("session id = %v (found %v), want deadbeef", v.Emit(), ok)
+	}
+}
+
+type traceFakeBackend struct {
+	feedSC   trace.SpanContext
+	resumeSC trace.SpanContext
+}
+
+func (b *traceFakeBackend) NewRunner(string, monty.CompileOptions) (monty.RunnerHandle, error) {
+	return nil, errors.New("unsupported")
+}
+
+func (b *traceFakeBackend) LoadRunner([]byte) (monty.RunnerHandle, error) {
+	return nil, errors.New("unsupported")
+}
+
+func (b *traceFakeBackend) NewRepl(monty.ReplOptions) (monty.ReplHandle, error) {
+	return &traceFakeRepl{backend: b}, nil
+}
+
+func (b *traceFakeBackend) LoadProgress([]byte) monty.Step {
+	return monty.Step{Err: errors.New("unsupported")}
+}
+
+type traceFakeRepl struct{ backend *traceFakeBackend }
+
+func (r *traceFakeRepl) Close()                {}
+func (r *traceFakeRepl) Dump() ([]byte, error) { return nil, errors.New("unsupported") }
+func (r *traceFakeRepl) FeedStart(ctx context.Context, _ string, _ monty.FeedStartOptions) monty.Step {
+	r.backend.feedSC = trace.SpanContextFromContext(ctx)
+	return monty.Step{
+		Progress: &traceFakeProgress{backend: r.backend},
+		Desc: monty.ProgressDesc{
+			Kind:         monty.ProgressFunctionCall,
+			ScriptName:   "remote.py",
+			IsRepl:       true,
+			FunctionName: "tool",
+			CallID:       1,
+		},
+	}
+}
+
+type traceFakeProgress struct{ backend *traceFakeBackend }
+
+func (p *traceFakeProgress) Close()                {}
+func (p *traceFakeProgress) Dump() ([]byte, error) { return nil, errors.New("unsupported") }
+func (p *traceFakeProgress) TakeRepl() (monty.ReplHandle, error) {
+	return &traceFakeRepl{backend: p.backend}, nil
+}
+func (p *traceFakeProgress) ResumeCall(ctx context.Context, _ monty.Result) monty.Step {
+	p.backend.resumeSC = trace.SpanContextFromContext(ctx)
+	if sink := monty.WorkerStatsSinkFromContext(ctx); sink != nil {
+		sink(monty.WorkerStats{
+			FeedExecution:    2 * time.Millisecond,
+			SessionExecution: 5 * time.Millisecond,
+			SessionID:        "remote-1",
+		})
+	}
+	return monty.Step{
+		Progress: &traceFakeProgress{backend: p.backend},
+		Desc: monty.ProgressDesc{
+			Kind:       monty.ProgressComplete,
+			ScriptName: "remote.py",
+			IsRepl:     true,
+			Output:     monty.Int(7),
+		},
+		Repl: &traceFakeRepl{backend: p.backend},
+	}
+}
+func (p *traceFakeProgress) ResumeLookup(context.Context, monty.Value, bool) monty.Step {
+	return monty.Step{Err: errors.New("unexpected lookup")}
+}
+func (p *traceFakeProgress) ResumeFutures(context.Context, map[uint32]monty.Result) monty.Step {
+	return monty.Step{Err: errors.New("unexpected futures")}
+}
+
+func TestHandlerRemoteFeedRunNestsUnderCallerSpanAndPropagatesContext(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	handler := otelmonty.Handler{Tracer: tp.Tracer("otelmonty-test")}
+	backend := &traceFakeBackend{}
+	repl, err := monty.NewRepl(monty.ReplOptions{ScriptName: "remote.py", Backend: backend})
+	if err != nil {
+		t.Fatalf("NewRepl: %v", err)
+	}
+
+	callerCtx, callerSpan := tp.Tracer("caller").Start(context.Background(), "http.request")
+	var callbackSC trace.SpanContext
+	val, err := repl.FeedRun(callerCtx, "tool()", monty.FeedOptions{
+		Telemetry: handler,
+		Functions: map[string]monty.ExternalFunction{
+			"tool": func(cbCtx context.Context, _ monty.Call) (monty.Result, error) {
+				callbackSC = trace.SpanContextFromContext(cbCtx)
+				return monty.Return(monty.Int(3)), nil
+			},
+		},
+	})
+	callerSpan.End()
+	if err != nil {
+		t.Fatalf("FeedRun: %v", err)
+	}
+	if val.Raw() != int64(7) {
+		t.Fatalf("FeedRun output = %#v, want 7", val.Raw())
+	}
+
+	byName := make(map[string]tracetest.SpanStub)
+	for _, s := range exporter.GetSpans() {
+		byName[s.Name] = s
+	}
+	caller, ok := byName["http.request"]
+	feed, okFeed := byName["monty.feed"]
+	call, okCall := byName["monty.call"]
+	if !ok || !okFeed || !okCall {
+		t.Fatalf("missing expected spans: %+v", byName)
+	}
+
+	if feed.SpanContext.TraceID() != caller.SpanContext.TraceID() {
+		t.Errorf("monty.feed TraceID = %s, want caller %s", feed.SpanContext.TraceID(), caller.SpanContext.TraceID())
+	}
+	if feed.Parent.SpanID() != caller.SpanContext.SpanID() {
+		t.Errorf("monty.feed parent = %s, want caller %s", feed.Parent.SpanID(), caller.SpanContext.SpanID())
+	}
+	if call.Parent.SpanID() != feed.SpanContext.SpanID() {
+		t.Errorf("monty.call parent = %s, want monty.feed %s", call.Parent.SpanID(), feed.SpanContext.SpanID())
+	}
+	if backend.feedSC.SpanID() != feed.SpanContext.SpanID() || backend.resumeSC.SpanID() != feed.SpanContext.SpanID() {
+		t.Errorf("backend saw FeedStart=%s ResumeCall=%s, want monty.feed=%s",
+			backend.feedSC.SpanID(), backend.resumeSC.SpanID(), feed.SpanContext.SpanID())
+	}
+	if callbackSC.SpanID() != call.SpanContext.SpanID() {
+		t.Errorf("callback saw SpanID=%s, want monty.call=%s", callbackSC.SpanID(), call.SpanContext.SpanID())
+	}
+
+	attrs := make(map[string]attribute.Value)
+	for _, a := range feed.Attributes {
+		attrs[string(a.Key)] = a.Value
+	}
+	if v := attrs["monty.worker.session_id"]; v.AsString() != "remote-1" {
+		t.Errorf("monty.worker.session_id = %q, want remote-1", v.AsString())
+	}
+	if v := attrs["monty.worker.feed_duration_ms"]; v.AsFloat64() != 2 {
+		t.Errorf("monty.worker.feed_duration_ms = %v, want 2", v.Emit())
+	}
+	if v := attrs["monty.worker.session_duration_ms"]; v.AsFloat64() != 5 {
+		t.Errorf("monty.worker.session_duration_ms = %v, want 5", v.Emit())
 	}
 }
