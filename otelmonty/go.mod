@@ -3,7 +3,7 @@ module github.com/mdfranz/gomonty/otelmonty
 go 1.27.4
 
 require (
-	github.com/mdfranz/gomonty v0.0.0
+	github.com/mdfranz/gomonty v0.2.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.46.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0
