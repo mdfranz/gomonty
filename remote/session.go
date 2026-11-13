@@ -168,7 +168,7 @@ func callError(ctx context.Context, op string, err error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
-	return fmt.Errorf("remote: %s: %w", op, err)
+	return &ConnectionLostError{Op: op, Err: err}
 }
 
 func (s *session) fail(err error) error {

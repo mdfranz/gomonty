@@ -44,3 +44,20 @@ type SessionRefusedError struct{ Reason string }
 func (e *SessionRefusedError) Error() string {
 	return fmt.Sprintf("remote: the worker refused the session: %s", e.Reason)
 }
+
+// ConnectionLostError reports that the stream to the worker failed or ended
+// before the worker finished a turn: the worker crashed, was restarted, hung
+// up, or the network dropped. The session is closed and cannot be reused.
+// Err is the underlying cause, such as a gRPC status. Use errors.As to detect
+// it.
+type ConnectionLostError struct {
+	// Op is "send" or "receive".
+	Op  string
+	Err error
+}
+
+func (e *ConnectionLostError) Error() string {
+	return fmt.Sprintf("remote: connection lost during %s: %v", e.Op, e.Err)
+}
+
+func (e *ConnectionLostError) Unwrap() error { return e.Err }

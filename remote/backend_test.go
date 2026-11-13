@@ -301,8 +301,9 @@ func TestWorkerCrashIsReported(t *testing.T) {
 		// Return without answering, which ends the stream: the worker died.
 	})
 	_, err := feed(t, repl, "x", monty.FeedOptions{})
-	if err == nil || !strings.Contains(err.Error(), "closed the stream") {
-		t.Fatalf("err = %v, want a closed-stream error", err)
+	var lost *remote.ConnectionLostError
+	if !errors.As(err, &lost) || !strings.Contains(err.Error(), "closed the stream") {
+		t.Fatalf("err = %v, want a ConnectionLostError about a closed stream", err)
 	}
 }
 
@@ -418,6 +419,16 @@ func TestDialGRPCRefusesATokenWithoutTLS(t *testing.T) {
 	_, err := remote.DialGRPC("localhost:1", remote.GRPCConfig{Insecure: true, Token: "secret"})
 	if err == nil || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("err = %v, want a refusal that does not echo the token", err)
+	}
+}
+
+func TestDialGRPCRefusesAnAuthorizationHeaderWithoutTLS(t *testing.T) {
+	_, err := remote.DialGRPC("localhost:1", remote.GRPCConfig{
+		Insecure: true,
+		Metadata: map[string]string{"Authorization": "Bearer secret"},
+	})
+	if err == nil || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("err = %v, want a refusal that does not echo the header", err)
 	}
 }
 
