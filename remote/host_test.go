@@ -481,3 +481,58 @@ func TestModuleAndStatResultReachTheWorker(t *testing.T) {
 		t.Fatalf("stat returned %s %s", got.Kind(), got)
 	}
 }
+
+// asyncio.sleep arrives as an OS call, is answered with a pending future and
+// resolves once the delay has elapsed, so the OS handler never sees it.
+func TestAsyncSleepResolvesThroughAFuture(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call *montyv1.OsCall
+	}{
+		{"system", &montyv1.OsCall{Call: &montyv1.OsCall_AsyncSystemSleep{AsyncSystemSleep: &montyv1.OsCall_AsyncSleep{Delay: 0.2}}}},
+		{"call host", &montyv1.OsCall{Call: &montyv1.OsCall_AsyncSleep_{AsyncSleep: &montyv1.OsCall_AsyncSleep{Delay: 0.2}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			waited := make(chan time.Duration, 1)
+			repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+				start := time.Now()
+				s.Send(fakeworker.OS(1, tc.call))
+				first := s.RecvResumeCall()
+				if first == nil {
+					return
+				}
+				if first.GetResult().GetFuture() != 1 {
+					t.Errorf("an async sleep should be answered with call 1 as a future, got %v", first.GetResult())
+				}
+				s.Send(fakeworker.ResolveFutures(1))
+				resolved := s.RecvResumeFutures()
+				if resolved == nil || len(resolved.GetResults()) != 1 {
+					t.Errorf("want one resolved future, got %v", resolved)
+					return
+				}
+				waited <- time.Since(start)
+				s.Send(fakeworker.CompleteWith(resolved.GetResults()[0].GetResult().GetReturnValue(), resolved.GetValues()))
+			}))
+
+			handlerCalled := false
+			got, err := feed(t, repl, "await asyncio.sleep(0.2)", monty.FeedOptions{
+				OS: func(context.Context, monty.OSCall) (monty.Result, error) {
+					handlerCalled = true
+					return monty.Return(monty.None()), nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("FeedRun: %v", err)
+			}
+			if got.Kind() != "none" {
+				t.Fatalf("result = %v, want None", got)
+			}
+			if d := <-waited; d < 150*time.Millisecond {
+				t.Fatalf("the future resolved after %v, want about 200ms", d)
+			}
+			if handlerCalled {
+				t.Fatal("an async sleep was passed to the OS handler")
+			}
+		})
+	}
+}

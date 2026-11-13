@@ -230,3 +230,28 @@ func TestRealWorkerPathStat(t *testing.T) {
 	})
 	wantInt(t, got, err, 5)
 }
+
+// Concurrent sleeps overlap: gather finishes in about the longest delay, not
+// the sum, and the sleeps never reach the OS handler.
+func TestRealWorkerAsyncSleepGather(t *testing.T) {
+	repl := realRepl(t)
+	code := `import asyncio
+async def main():
+    return await asyncio.gather(asyncio.sleep(0.4, 'a'), asyncio.sleep(0.4, 'b'), asyncio.sleep(0.4, 'c'))
+await main()`
+	start := time.Now()
+	got, err := feed(t, repl, code, monty.FeedOptions{
+		OS: func(_ context.Context, call monty.OSCall) (monty.Result, error) {
+			return monty.Result{}, errors.New("unexpected OS call " + string(call.Function))
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := monty.List(monty.String("a"), monty.String("b"), monty.String("c")); got.String() != want.String() {
+		t.Fatalf("gather = %s, want %s", got, want)
+	}
+	if d := time.Since(start); d < 350*time.Millisecond || d > 1100*time.Millisecond {
+		t.Fatalf("three 0.4s sleeps took %v: want them to overlap (about 0.4s, not 1.2s)", d)
+	}
+}
