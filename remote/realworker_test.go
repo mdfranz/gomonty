@@ -10,6 +10,7 @@ import (
 
 	monty "github.com/mdfranz/gomonty"
 	"github.com/mdfranz/gomonty/remote"
+	"github.com/mdfranz/gomonty/vfs"
 )
 
 // These tests drive a real Monty worker instead of the in-process fake. They
@@ -168,4 +169,64 @@ func TestRealWorkerLargeValueRoundTrip(t *testing.T) {
 		},
 	})
 	wantInt(t, got, err, 50000)
+}
+
+// Dates are built by the worker and also sent to it, so both directions of the
+// date, time and timedelta nodes are exercised.
+func TestRealWorkerDateTimeValues(t *testing.T) {
+	repl := realRepl(t)
+	got, err := feed(t, repl, "import datetime\ndatetime.date(2026, 11, 12)", monty.FeedOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := got.Date(); !ok || d != (monty.Date{Year: 2026, Month: 11, Day: 12}) {
+		t.Fatalf("date = %s %s", got.Kind(), got)
+	}
+
+	got, err = feed(t, repl, "datetime.timedelta(days=1, seconds=2, microseconds=3)", monty.FeedOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := got.TimeDelta(); !ok || d != (monty.TimeDelta{Days: 1, Seconds: 2, Microseconds: 3}) {
+		t.Fatalf("timedelta = %s %s", got.Kind(), got)
+	}
+
+	got, err = feed(t, repl, "datetime.datetime(2026, 1, 2, 3, 4, 5, 6, tzinfo=datetime.timezone.utc)", monty.FeedOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := got.DateTime(); !ok || d.Year != 2026 || d.Microsecond != 6 || d.OffsetSeconds == nil || *d.OffsetSeconds != 0 {
+		t.Fatalf("datetime = %s %s", got.Kind(), got)
+	}
+
+	// A date sent as an input comes back out of Python arithmetic.
+	got, err = feed(t, repl, "(when + datetime.timedelta(days=1)).day", monty.FeedOptions{
+		Inputs: map[string]monty.Value{"when": monty.DateValue(monty.Date{Year: 2026, Month: 11, Day: 12})},
+	})
+	wantInt(t, got, err, 13)
+}
+
+func TestRealWorkerHostModule(t *testing.T) {
+	repl := realRepl(t)
+	got, err := feed(t, repl, "import hostmod\nhostmod.answer", monty.FeedOptions{
+		OS: func(_ context.Context, call monty.OSCall) (monty.Result, error) {
+			if call.Function != monty.OSImport {
+				return monty.Result{}, errors.New("unexpected OS call " + string(call.Function))
+			}
+			return monty.Return(monty.ModuleValue(monty.Module{Name: "hostmod", Attrs: monty.Dict{
+				{Key: monty.String("answer"), Value: monty.Int(42)},
+			}})), nil
+		},
+	})
+	wantInt(t, got, err, 42)
+}
+
+func TestRealWorkerPathStat(t *testing.T) {
+	repl := realRepl(t)
+	fs := vfs.NewMemoryFS()
+	fs.AddText("/readme.txt", "hello")
+	got, err := feed(t, repl, "from pathlib import Path\nPath('/readme.txt').stat().st_size", monty.FeedOptions{
+		OS: vfs.Handler(fs, vfs.MapEnvironment{}),
+	})
+	wantInt(t, got, err, 5)
 }

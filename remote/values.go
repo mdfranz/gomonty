@@ -1,9 +1,11 @@
 package remote
 
 import (
+	"encoding/hex"
 	"fmt"
 	"math/big"
 	"sort"
+	"strings"
 
 	monty "github.com/mdfranz/gomonty"
 	montyv1 "github.com/mdfranz/gomonty/remote/internal/montyv1"
@@ -15,9 +17,10 @@ import (
 //
 // Supported kinds are None, Ellipsis, NotImplemented, bool, int (including
 // ints wider than 64 bits), float, complex, str, bytes, list, tuple, set,
-// frozenset, dict, Decimal, Path, host function and simple exception values. A result the
-// worker sends in any other form (dates, class instances, functions) is
-// reported as an error and not guessed at. Cycles and reprs, which the worker
+// frozenset, dict, Decimal, Path, host function, simple exception, host module,
+// named tuple, date, time, datetime, timedelta and timezone values. A worker
+// may also send an open file handle. A result the worker sends in any other
+// form (class instances, functions) is reported as an error and not guessed at. Cycles and reprs, which the worker
 // only ever sends, decode to monty.CycleValue and monty.ReprValue.
 
 type arenaBuilder struct {
@@ -43,6 +46,31 @@ func (b *arenaBuilder) items(values []monty.Value) (*montyv1.Indexes, error) {
 		indexes[i] = idx
 	}
 	return &montyv1.Indexes{Items: indexes}, nil
+}
+
+func (b *arenaBuilder) pairs(dict monty.Dict) (*montyv1.NodePairs, error) {
+	pairs := make([]*montyv1.NodePair, len(dict))
+	for i, pair := range dict {
+		key, err := b.encode(pair.Key)
+		if err != nil {
+			return nil, err
+		}
+		value, err := b.encode(pair.Value)
+		if err != nil {
+			return nil, err
+		}
+		pairs[i] = &montyv1.NodePair{Key: key, Value: value}
+	}
+	return &montyv1.NodePairs{Pairs: pairs}, nil
+}
+
+// uuidBytes turns a canonical uuid string into its 16 raw bytes.
+func uuidBytes(id string) ([]byte, error) {
+	raw, err := hex.DecodeString(strings.ReplaceAll(id, "-", ""))
+	if err != nil || len(raw) != 16 {
+		return nil, fmt.Errorf("%q is not a uuid", id)
+	}
+	return raw, nil
 }
 
 func (b *arenaBuilder) encode(v monty.Value) (uint32, error) {
@@ -96,20 +124,11 @@ func (b *arenaBuilder) encode(v monty.Value) (uint32, error) {
 		}
 		return b.add(&montyv1.MontyNode{Kind: &montyv1.MontyNode_FrozenSet{FrozenSet: items}}), nil
 	case "dict":
-		dict := v.Raw().(monty.Dict)
-		pairs := make([]*montyv1.NodePair, len(dict))
-		for i, pair := range dict {
-			key, err := b.encode(pair.Key)
-			if err != nil {
-				return 0, err
-			}
-			value, err := b.encode(pair.Value)
-			if err != nil {
-				return 0, err
-			}
-			pairs[i] = &montyv1.NodePair{Key: key, Value: value}
+		pairs, err := b.pairs(v.Raw().(monty.Dict))
+		if err != nil {
+			return 0, err
 		}
-		return b.add(&montyv1.MontyNode{Kind: &montyv1.MontyNode_Dict{Dict: &montyv1.NodePairs{Pairs: pairs}}}), nil
+		return b.add(&montyv1.MontyNode{Kind: &montyv1.MontyNode_Dict{Dict: pairs}}), nil
 	case "decimal":
 		return b.add(&montyv1.MontyNode{Kind: &montyv1.MontyNode_Decimal{Decimal: string(v.Raw().(monty.Decimal))}}), nil
 	case "path":
@@ -120,6 +139,44 @@ func (b *arenaBuilder) encode(v monty.Value) (uint32, error) {
 	case "exception":
 		e := v.Raw().(monty.Exception)
 		return b.add(&montyv1.MontyNode{Kind: &montyv1.MontyNode_Exception{Exception: &montyv1.Exception{ExcType: e.Type, Arg: e.Arg}}}), nil
+	case "module":
+		m := v.Raw().(monty.Module)
+		id, err := uuidBytes(m.ID)
+		if err != nil {
+			return 0, fmt.Errorf("module %q: %w", m.Name, err)
+		}
+		attrs, err := b.pairs(m.Attrs)
+		if err != nil {
+			return 0, err
+		}
+		return b.add(&montyv1.MontyNode{Kind: &montyv1.MontyNode_Module{Module: &montyv1.ModuleNode{Name: m.Name, Id: &montyv1.Uuid{Data: id}, Attrs: attrs}}}), nil
+	case "named_tuple":
+		nt := v.Raw().(monty.NamedTuple)
+		values, err := b.items(nt.Values)
+		if err != nil {
+			return 0, err
+		}
+		return b.add(&montyv1.MontyNode{Kind: &montyv1.MontyNode_NamedTuple{NamedTuple: &montyv1.NamedTupleNode{TypeName: nt.TypeName, FieldNames: append([]string(nil), nt.FieldNames...), Values: values.Items}}}), nil
+	case "date":
+		d := v.Raw().(monty.Date)
+		return b.add(&montyv1.MontyNode{Kind: &montyv1.MontyNode_Date{Date: &montyv1.Date{Year: d.Year, Month: uint32(d.Month), Day: uint32(d.Day)}}}), nil
+	case "time":
+		t := v.Raw().(monty.Time)
+		return b.add(&montyv1.MontyNode{Kind: &montyv1.MontyNode_Time{Time: &montyv1.Time{
+			Hour: uint32(t.Hour), Minute: uint32(t.Minute), Second: uint32(t.Second), Microsecond: t.Microsecond,
+			OffsetSeconds: t.OffsetSeconds, TimezoneName: t.TimezoneName, Fold: uint32(t.Fold)}}}), nil
+	case "datetime":
+		d := v.Raw().(monty.DateTime)
+		return b.add(&montyv1.MontyNode{Kind: &montyv1.MontyNode_Datetime{Datetime: &montyv1.DateTime{
+			Year: d.Year, Month: uint32(d.Month), Day: uint32(d.Day),
+			Hour: uint32(d.Hour), Minute: uint32(d.Minute), Second: uint32(d.Second), Microsecond: d.Microsecond,
+			OffsetSeconds: d.OffsetSeconds, TimezoneName: d.TimezoneName}}}), nil
+	case "timedelta":
+		d := v.Raw().(monty.TimeDelta)
+		return b.add(&montyv1.MontyNode{Kind: &montyv1.MontyNode_Timedelta{Timedelta: &montyv1.TimeDelta{Days: d.Days, Seconds: d.Seconds, Microseconds: d.Microseconds}}}), nil
+	case "timezone":
+		z := v.Raw().(monty.TimeZone)
+		return b.add(&montyv1.MontyNode{Kind: &montyv1.MontyNode_Timezone{Timezone: &montyv1.TimeZone{OffsetSeconds: z.OffsetSeconds, Name: z.Name}}}), nil
 	default:
 		return 0, fmt.Errorf("remote: a %s value cannot be sent to a remote worker yet", kind)
 	}
@@ -198,6 +255,23 @@ func children(done []monty.Value, idx *montyv1.Indexes) ([]monty.Value, error) {
 	return out, nil
 }
 
+func decodePairs(done []monty.Value, np *montyv1.NodePairs) (monty.Dict, error) {
+	pairs := np.GetPairs()
+	dict := make(monty.Dict, 0, len(pairs))
+	for _, p := range pairs {
+		key, err := child(done, p.GetKey())
+		if err != nil {
+			return nil, err
+		}
+		value, err := child(done, p.GetValue())
+		if err != nil {
+			return nil, err
+		}
+		dict = append(dict, monty.Pair{Key: key, Value: value})
+	}
+	return dict, nil
+}
+
 func decodeNode(node *montyv1.MontyNode, done []monty.Value) (monty.Value, error) {
 	switch k := node.GetKind().(type) {
 	case *montyv1.MontyNode_None:
@@ -249,18 +323,9 @@ func decodeNode(node *montyv1.MontyNode, done []monty.Value) (monty.Value, error
 		}
 		return monty.FrozenSetValue(monty.FrozenSet(items)), nil
 	case *montyv1.MontyNode_Dict:
-		pairs := k.Dict.GetPairs()
-		dict := make(monty.Dict, 0, len(pairs))
-		for _, p := range pairs {
-			key, err := child(done, p.GetKey())
-			if err != nil {
-				return monty.Value{}, err
-			}
-			value, err := child(done, p.GetValue())
-			if err != nil {
-				return monty.Value{}, err
-			}
-			dict = append(dict, monty.Pair{Key: key, Value: value})
+		dict, err := decodePairs(done, k.Dict)
+		if err != nil {
+			return monty.Value{}, err
 		}
 		return monty.DictValue(dict), nil
 	case *montyv1.MontyNode_Decimal:
@@ -271,6 +336,45 @@ func decodeNode(node *montyv1.MontyNode, done []monty.Value) (monty.Value, error
 		return monty.ExceptionValue(monty.Exception{Type: k.Exception.GetExcType(), Arg: k.Exception.Arg}), nil
 	case *montyv1.MontyNode_Function:
 		return monty.FunctionValue(monty.Function{Name: k.Function.GetName(), Docstring: k.Function.Docstring}), nil
+	case *montyv1.MontyNode_Module:
+		raw := k.Module.GetId().GetData()
+		if len(raw) != 16 {
+			return monty.Value{}, fmt.Errorf("module id is %d bytes, want 16", len(raw))
+		}
+		id := uuidString(raw)
+		attrs, err := decodePairs(done, k.Module.GetAttrs())
+		if err != nil {
+			return monty.Value{}, err
+		}
+		return monty.ModuleValue(monty.Module{Name: k.Module.GetName(), ID: id, Attrs: attrs}), nil
+	case *montyv1.MontyNode_NamedTuple:
+		nt := k.NamedTuple
+		values, err := children(done, &montyv1.Indexes{Items: nt.GetValues()})
+		if err != nil {
+			return monty.Value{}, err
+		}
+		return monty.NamedTupleValue(monty.NamedTuple{TypeName: nt.GetTypeName(), FieldNames: append([]string(nil), nt.GetFieldNames()...), Values: values}), nil
+	case *montyv1.MontyNode_Date:
+		d := k.Date
+		return monty.DateValue(monty.Date{Year: d.GetYear(), Month: uint8(d.GetMonth()), Day: uint8(d.GetDay())}), nil
+	case *montyv1.MontyNode_Time:
+		t := k.Time
+		return monty.TimeValue(monty.Time{
+			Hour: uint8(t.GetHour()), Minute: uint8(t.GetMinute()), Second: uint8(t.GetSecond()), Microsecond: t.GetMicrosecond(),
+			OffsetSeconds: t.OffsetSeconds, TimezoneName: t.TimezoneName, Fold: uint8(t.GetFold())}), nil
+	case *montyv1.MontyNode_Datetime:
+		d := k.Datetime
+		return monty.DateTimeValue(monty.DateTime{
+			Year: d.GetYear(), Month: uint8(d.GetMonth()), Day: uint8(d.GetDay()),
+			Hour: uint8(d.GetHour()), Minute: uint8(d.GetMinute()), Second: uint8(d.GetSecond()), Microsecond: d.GetMicrosecond(),
+			OffsetSeconds: d.OffsetSeconds, TimezoneName: d.TimezoneName}), nil
+	case *montyv1.MontyNode_Timedelta:
+		d := k.Timedelta
+		return monty.TimeDeltaValue(monty.TimeDelta{Days: d.GetDays(), Seconds: d.GetSeconds(), Microseconds: d.GetMicroseconds()}), nil
+	case *montyv1.MontyNode_Timezone:
+		return monty.TimeZoneValue(monty.TimeZone{OffsetSeconds: k.Timezone.GetOffsetSeconds(), Name: k.Timezone.Name}), nil
+	case *montyv1.MontyNode_FileHandle:
+		return monty.FileHandleValue(monty.FileHandle{Path: k.FileHandle.GetPath(), Mode: k.FileHandle.GetMode(), Position: k.FileHandle.GetPosition()}), nil
 	case *montyv1.MontyNode_Repr:
 		return monty.ReprValue(k.Repr), nil
 	case *montyv1.MontyNode_Cycle:

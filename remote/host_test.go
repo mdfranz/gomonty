@@ -436,3 +436,48 @@ func TestUndefinedNameErrorIsNotJoinedWithClosedHandle(t *testing.T) {
 		t.Fatalf("err wraps ErrClosed: %v", err)
 	}
 }
+
+// A host module and a stat result travel to the worker as arena nodes: the
+// import handler's Module and vfs's Path.stat NamedTuple.
+func TestModuleAndStatResultReachTheWorker(t *testing.T) {
+	calls := []*montyv1.OsCall{
+		{Call: &montyv1.OsCall_Import_{Import: &montyv1.OsCall_Import{Module: "hostmod", SearchPath: []string{"/"}}}},
+		{Call: &montyv1.OsCall_Stat{Stat: "/readme.txt"}},
+	}
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, n int, _ *montyv1.Feed) {
+		s.Send(fakeworker.OS(uint32(n), calls[n-1]))
+		if answer := s.RecvResumeCall(); answer != nil {
+			echoOutcome(s, answer)
+		}
+	}))
+
+	fs := vfs.NewMemoryFS()
+	fs.AddText("/readme.txt", "hello")
+	stat := vfs.Handler(fs, vfs.MapEnvironment{})
+	opts := monty.FeedOptions{OS: func(ctx context.Context, call monty.OSCall) (monty.Result, error) {
+		if call.Function == monty.OSImport {
+			return monty.Return(monty.ModuleValue(monty.Module{Name: "hostmod", Attrs: monty.Dict{
+				{Key: monty.String("answer"), Value: monty.Int(42)},
+			}})), nil
+		}
+		return stat(ctx, call)
+	}}
+
+	got, err := feed(t, repl, "import hostmod", opts)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	mod, ok := got.Module()
+	if !ok || mod.Name != "hostmod" || len(mod.Attrs) != 1 || mod.ID == "" {
+		t.Fatalf("import returned %s %s", got.Kind(), got)
+	}
+
+	got, err = feed(t, repl, "Path('/readme.txt').stat()", opts)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	nt, ok := got.Raw().(monty.NamedTuple)
+	if !ok || len(nt.FieldNames) != len(nt.Values) || len(nt.Values) == 0 {
+		t.Fatalf("stat returned %s %s", got.Kind(), got)
+	}
+}

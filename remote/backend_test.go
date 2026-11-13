@@ -151,6 +151,8 @@ func TestInputsAndResultsRoundTripThroughTheArena(t *testing.T) {
 
 	huge := new(big.Int).Lsh(big.NewInt(1), 100)
 	text := "héllo"
+	offset := int32(-18000)
+	zoneName := "EST"
 	cases := map[string]monty.Value{
 		"none":       monty.None(),
 		"ellipsis":   monty.Ellipsis(),
@@ -173,6 +175,17 @@ func TestInputsAndResultsRoundTripThroughTheArena(t *testing.T) {
 		"path":       monty.PathValue("/tmp/x"),
 		"exception":  monty.ExceptionValue(monty.Exception{Type: "ValueError", Arg: &text}),
 		"function":   monty.FunctionValue(monty.Function{Name: "tool"}),
+		"date":       monty.DateValue(monty.Date{Year: 2026, Month: 11, Day: 12}),
+		"time":       monty.TimeValue(monty.Time{Hour: 1, Minute: 2, Second: 3, Microsecond: 4, OffsetSeconds: &offset, Fold: 1}),
+		"datetime":   monty.DateTimeValue(monty.DateTime{Year: 2026, Month: 11, Day: 12, Hour: 13, Minute: 14, Second: 15, Microsecond: 16, OffsetSeconds: &offset, TimezoneName: &zoneName}),
+		"naive":      monty.DateTimeValue(monty.DateTime{Year: 1999, Month: 1, Day: 2}),
+		"timedelta":  monty.TimeDeltaValue(monty.TimeDelta{Days: -1, Seconds: 2, Microseconds: 3}),
+		"timezone":   monty.TimeZoneValue(monty.TimeZone{OffsetSeconds: 3600, Name: &zoneName}),
+		"namedtuple": monty.NamedTupleValue(monty.NamedTuple{TypeName: "StatResult", FieldNames: []string{"size", "name"}, Values: []monty.Value{monty.Int(7), monty.String("x")}}),
+		"module": monty.ModuleValue(monty.Module{Name: "hostmod", ID: "0b9c6a3e-5f2d-4c1a-8e7b-123456789abc", Attrs: monty.Dict{
+			{Key: monty.String("answer"), Value: monty.Int(42)},
+			{Key: monty.String("names"), Value: monty.List(monty.String("a"))},
+		}}),
 		"emptylist":  monty.List(),
 		"nestedlist": monty.List(monty.List(monty.List(monty.Int(1)))),
 		"dict": monty.DictValue(monty.Dict{
@@ -358,7 +371,7 @@ func TestUnsendableInputIsRejectedBeforeAnythingIsSent(t *testing.T) {
 		s.Send(fakeworker.Complete(0, fakeworker.Int(3)))
 	}))
 
-	bad := monty.DateValue(monty.Date{Year: 2026, Month: 1, Day: 2})
+	bad := monty.ClassInstanceValue(monty.ClassInstance{})
 	_, err := feed(t, repl, "x", monty.FeedOptions{Inputs: map[string]monty.Value{"when": bad}})
 	if err == nil || !strings.Contains(err.Error(), `input "when"`) {
 		t.Fatalf("err = %v, want the input named", err)
