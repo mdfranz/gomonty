@@ -62,6 +62,13 @@ func TestRenderStatusLine(t *testing.T) {
 // script asserts its own results, so a clean exit is the main check;
 // workload_* scripts additionally have their final value pinned here.
 func TestPythonScripts(t *testing.T) {
+	checkPythonScripts(t)
+}
+
+// checkPythonScripts runs every script through execScript with whatever
+// backend newRepl and execScript are currently set up to use.
+func checkPythonScripts(t *testing.T) {
+	t.Helper()
 	scripts, err := filepath.Glob(filepath.Join("..", "..", "python-scripts", "*.py"))
 	if err != nil || len(scripts) == 0 {
 		t.Fatalf("no python scripts found: %v", err)

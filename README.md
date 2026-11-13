@@ -17,7 +17,7 @@ Changes since the fork (releases `v0.0.15` to `v0.0.17`, plus the docs on the un
 - **Newer Monty.** Refreshed the pinned upstream Monty several times, most recently to v1.6.0, and updated the wire format and Go types for the upstream changes (see [docs/UPSTREAM-REFRESH-PLAN.md](./docs/UPSTREAM-REFRESH-PLAN.md) and the `upstream-refresh` skill).
 - **Complex numbers and host modules.** `Complex` carries Python `complex` values as `complex128`. `RunOptions.Modules` and `FeedOptions.Modules` let sandbox code `import` a module you define in Go, and `vfs.Handler` now serves `os.scandir`, `os.walk` and `Path.glob`.
 - **Telemetry.** An opt-in `TelemetryHandler` API with a `log/slog` adapter, plus `otelmonty`, a separate module that exports OpenTelemetry traces.
-- **`shmonty`.** An interactive REPL and script runner, with history, rewind, a telemetry pane and OTLP export.
+- **`shmonty`.** An interactive REPL and script runner, with history, rewind, a telemetry pane and OTLP export. `shmonty --remote host:port` runs the REPL on a remote Monty worker over gRPC.
 - **Fixes.** `Value.String()` now renders containers, and `print()` results show `None` correctly.
 - **CI and release.** `--locked` Rust builds, a faster `verify` workflow that runs when a PR is opened, optional musl CI, and a release flow that publishes the committed release tree.
 - **Docs.** Architecture, Monty context, a Go + Rust implementation guide and a learning path under [`docs/`](./docs).
@@ -30,6 +30,8 @@ Changes since the fork (releases `v0.0.15` to `v0.0.17`, plus the docs on the un
 Since v1.2.0, a Python `import` of a name Monty does not provide reaches your `OS` handler as an `OSImport` call. `RunOptions.Modules` and `vfs.Handler` answer it (with `ModuleNotFoundError` when nothing matches), but a custom `OSHandler` that raises on unknown functions will now break `try: import x` code. Return `ModuleNotFoundError` for `OSImport` and an empty dict for `OSImportStubs`.
 
 Dumps are not portable across releases that change the pinned Monty. Every dump starts with a small gomonty header (magic, header version, pinned Monty revision), and `LoadRunner`, `LoadSnapshot` and `LoadReplSnapshot` return `ErrIncompatibleDump` for dumps that lack the header (including those written before it was added) or were written against a different pin. Load a dump with the same release that wrote it, and re-create a runner from source after upgrading.
+
+`LoadRepl` restores an idle REPL from `Repl.Dump` (globals and function definitions come back; pass host callbacks again with each `FeedRun`), and `Repl.Reset` empties a REPL in place. A dump is only loadable by the kind of backend that wrote it: a native dump cannot be loaded by a remote worker, or the other way round.
 
 **Unreleased telemetry change:** Python `print()` output is now excluded from telemetry by default. Set `TelemetryOptions{RecordPrint: true}` to keep print events in `SlogHandler` or `otelmonty`. Captured telemetry chunks are capped by `MaxAttributeBytes` (4096 bytes by default) at a UTF-8 boundary; ordinary `RunOptions.Print` and `FeedOptions.Print` callbacks still receive the full output.
 
@@ -86,7 +88,7 @@ Run it from a checkout with `cd examples && CGO_ENABLED=0 go run ./cmd/example`.
 | Type checking | Check code against stubs before running it. | `Runner.TypeCheck`, `CompileOptions.TypeCheck` |
 | Resource limits | Bound duration, memory, recursion depth and host-call count. | `ResourceLimits` |
 | Telemetry | Opt-in structured logs or OpenTelemetry spans for runs, callbacks and waits. | `SlogHandler`, [`otelmonty/`](./otelmonty) |
-| `shmonty` | Interactive terminal REPL and script runner built on the library. | [`cmd/shmonty/`](./cmd/shmonty) |
+| `shmonty` | Interactive terminal REPL and script runner built on the library. `--remote host:port` runs the REPL on a remote worker. | [`cmd/shmonty/`](./cmd/shmonty) |
 
 ## What gomonty adds on top of upstream
 

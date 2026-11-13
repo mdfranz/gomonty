@@ -474,3 +474,42 @@ func TestHandlerTimingPreservesFractionalMilliseconds(t *testing.T) {
 		})
 	}
 }
+
+func TestHandlerRecordsWorkerStatsOnlyWhenReported(t *testing.T) {
+	worker := func(attrs []attribute.KeyValue, key string) (attribute.Value, bool) {
+		for _, a := range attrs {
+			if string(a.Key) == key {
+				return a.Value, true
+			}
+		}
+		return attribute.Value{}, false
+	}
+
+	handler, recorder := newTestHandler()
+	_, span := handler.StartExecution(context.Background(), monty.ExecutionInfo{})
+	span.End(monty.None(), nil, monty.ExecutionTiming{Total: time.Millisecond}, monty.TruncatedPayload{})
+	if root := findSpan(recorder.Ended(), "monty.run"); root == nil {
+		t.Fatal("no monty.run span recorded")
+	} else if _, ok := worker(root.Attributes(), "monty.worker.feed_duration_ms"); ok {
+		t.Fatal("a run with no worker reported worker attributes")
+	}
+
+	handler, recorder = newTestHandler()
+	_, span = handler.StartExecution(context.Background(), monty.ExecutionInfo{})
+	span.End(monty.None(), nil, monty.ExecutionTiming{Worker: &monty.WorkerStats{
+		FeedExecution: 1500 * time.Microsecond, SessionExecution: 12 * time.Millisecond, SessionID: "deadbeef",
+	}}, monty.TruncatedPayload{})
+	root := findSpan(recorder.Ended(), "monty.run")
+	if root == nil {
+		t.Fatal("no monty.run span recorded")
+	}
+	if v, ok := worker(root.Attributes(), "monty.worker.feed_duration_ms"); !ok || v.AsFloat64() != 1.5 {
+		t.Errorf("feed duration = %v (found %v), want 1.5", v.Emit(), ok)
+	}
+	if v, ok := worker(root.Attributes(), "monty.worker.session_duration_ms"); !ok || v.AsFloat64() != 12 {
+		t.Errorf("session duration = %v (found %v), want 12", v.Emit(), ok)
+	}
+	if v, ok := worker(root.Attributes(), "monty.worker.session_id"); !ok || v.AsString() != "deadbeef" {
+		t.Errorf("session id = %v (found %v), want deadbeef", v.Emit(), ok)
+	}
+}

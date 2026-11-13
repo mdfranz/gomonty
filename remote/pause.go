@@ -12,10 +12,10 @@ import (
 
 // pause hands a suspension to the host layer as a Step. The host layer's
 // dispatch loop answers it through the suspension and carries on.
-func (h *replHandle) pause(s *suspension, desc monty.ProgressDesc, prints string) monty.Step {
+func (h *replHandle) pause(s *suspension, desc monty.ProgressDesc, prints output) monty.Step {
 	desc.ScriptName = h.scriptName
 	desc.IsRepl = true
-	return monty.Step{Progress: s, Desc: desc, Prints: prints}
+	return prints.step(monty.Step{Progress: s, Desc: desc})
 }
 
 // pickAll resolves arena indexes to values.
@@ -32,7 +32,7 @@ func pickAll(values []monty.Value, indexes []uint32) ([]monty.Value, error) {
 }
 
 // pauseOnCall is a call to a host function.
-func (h *replHandle) pauseOnCall(ctx context.Context, call *montyv1.FunctionCall, prints string) monty.Step {
+func (h *replHandle) pauseOnCall(ctx context.Context, call *montyv1.FunctionCall, prints output) monty.Step {
 	if call.GetObjectId() != nil {
 		// A method on a host object. gomonty has no way to route one yet (#57).
 		return h.abortFeed(ctx, "a method call on a host object", prints)
@@ -66,7 +66,7 @@ func (h *replHandle) pauseOnCall(ctx context.Context, call *montyv1.FunctionCall
 
 // pauseOnOS is an OS call. Most are passed to the host's OS handler under the
 // names and arguments the native library uses; some the backend answers itself.
-func (h *replHandle) pauseOnOS(ctx context.Context, call *montyv1.OsCall, prints string) monty.Step {
+func (h *replHandle) pauseOnOS(ctx context.Context, call *montyv1.OsCall, prints output) monty.Step {
 	values, err := decodeArena(call.GetValues())
 	if err != nil {
 		return h.abortFeedWith(ctx, err, "the remote backend could not read the OS call", prints)
@@ -98,18 +98,18 @@ func (h *replHandle) pauseOnOS(ctx context.Context, call *montyv1.OsCall, prints
 
 // answerLocally answers an OS call without asking the host, then carries on
 // with whatever the worker does next.
-func (h *replHandle) answerLocally(ctx context.Context, callID uint32, plan osPlan, prints string) monty.Step {
+func (h *replHandle) answerLocally(ctx context.Context, callID uint32, plan osPlan, prints output) monty.Step {
 	b := &arenaBuilder{}
 	var ext *montyv1.ExtFunctionResult
 	switch plan.local {
 	case answerAfterSleep:
 		if err := sleep(ctx, plan.sleep); err != nil {
 			// Giving up mid-sleep leaves the worker waiting on us.
-			return monty.Step{Err: h.sess.fail(err), Prints: prints}
+			return prints.step(monty.Step{Err: h.sess.fail(err)})
 		}
 		idx, err := b.encode(monty.None())
 		if err != nil {
-			return monty.Step{Err: err, Prints: prints}
+			return prints.step(monty.Step{Err: err})
 		}
 		ext = &montyv1.ExtFunctionResult{Kind: &montyv1.ExtFunctionResult_ReturnValue{ReturnValue: idx}}
 	default:
@@ -119,9 +119,9 @@ func (h *replHandle) answerLocally(ctx context.Context, callID uint32, plan osPl
 		ResumeCall: &montyv1.ResumeCall{CallId: callID, Result: ext, Values: b.arena()},
 	}})
 	if err != nil {
-		return monty.Step{Err: err, Prints: prints}
+		return prints.step(monty.Step{Err: err})
 	}
-	t.prints = prints + t.prints
+	t.prints = prints.plus(t.prints)
 	return h.stepFor(ctx, t)
 }
 
@@ -141,7 +141,7 @@ func sleep(ctx context.Context, d time.Duration) error {
 }
 
 // pauseOnName is a name the sandbox wants from the host.
-func (h *replHandle) pauseOnName(ctx context.Context, lookup *montyv1.NameLookup, prints string) monty.Step {
+func (h *replHandle) pauseOnName(ctx context.Context, lookup *montyv1.NameLookup, prints output) monty.Step {
 	if lookup.GetObjectId() != nil {
 		return h.abortFeed(ctx, "an attribute of a host object", prints)
 	}
@@ -153,7 +153,7 @@ func (h *replHandle) pauseOnName(ctx context.Context, lookup *montyv1.NameLookup
 }
 
 // pauseOnFutures is every sandbox task blocked on host futures.
-func (h *replHandle) pauseOnFutures(f *montyv1.ResolveFutures, prints string) monty.Step {
+func (h *replHandle) pauseOnFutures(f *montyv1.ResolveFutures, prints output) monty.Step {
 	ids := append([]uint32(nil), f.GetPendingCallIds()...)
 	return h.pause(&suspension{repl: h, kind: pausedOnFutures, name: fmt.Sprintf("futures %v", ids)}, monty.ProgressDesc{
 		Kind:           monty.ProgressFuture,

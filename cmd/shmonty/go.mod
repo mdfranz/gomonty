@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/mdfranz/gomonty v0.0.0
 	github.com/mdfranz/gomonty/otelmonty v0.0.0
+	github.com/mdfranz/gomonty/remote v0.0.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
@@ -52,10 +53,12 @@ require (
 	golang.org/x/text v0.41.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
-	google.golang.org/grpc v1.83.1 // indirect
+	google.golang.org/grpc v1.84.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
 replace github.com/mdfranz/gomonty => ../..
 
 replace github.com/mdfranz/gomonty/otelmonty => ../../otelmonty
+
+replace github.com/mdfranz/gomonty/remote => ../../remote

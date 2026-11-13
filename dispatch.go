@@ -331,7 +331,9 @@ func restoreProgressOwner(progress Progress, err error) error {
 	if !ok {
 		return err
 	}
-	if restoreErr := restorable.restoreOwner(); restoreErr != nil {
+	// ErrClosed means the snapshot was already consumed by a resume, which
+	// restored or cleared its owner itself, so there is nothing left to do.
+	if restoreErr := restorable.restoreOwner(); restoreErr != nil && !errors.Is(restoreErr, ErrClosed) {
 		return errors.Join(err, restoreErr)
 	}
 	return err

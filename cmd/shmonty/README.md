@@ -25,7 +25,56 @@ Available host callbacks accept positional or keyword arguments:
   unknown operations raise `ValueError`.
 - `host_echo(value)` returns `{"value": value, "source": "shmonty"}`.
 - `host_fail(msg)` raises a catchable Python `ValueError` with the message.
+- `host_sleep(seconds, value=None)` is an async host function: it returns a
+  future that resolves to `value` after `seconds` (0 to 30), so
+  `await host_sleep(0.1, "x")` and `asyncio.gather(host_sleep(...), ...)`
+  exercise futures, locally and on a remote worker.
 
-Invalid arguments to the new callbacks raise `TypeError`. Enable `/debug`
-to inspect callback spans. `open()` and sleep support remain separate work;
-use `Path.read_text()` and `Path.write_text()` for file examples.
+Invalid arguments to the callbacks raise `TypeError` (or `ValueError` for an
+out-of-range delay). Enable `/debug` to inspect callback spans. `open()` is
+separate work; use `Path.read_text()` and `Path.write_text()` for file
+examples.
+
+## Session commands
+
+These slash commands act on the session, not on Python, so they are not kept
+in the history that rewind replays:
+
+- `/execute <path>` runs a file as one snippet, as if typed in.
+- `/reset` empties the session: variables, definitions and the in-memory
+  filesystem return to their starting state, and the history is cleared.
+- `/dump <path>` writes the REPL's variables and definitions to a file.
+- `/load <path>` replaces the session with one restored from `/dump`. The
+  in-memory filesystem and the history start fresh.
+- `/typecheck [on|off]` type-checks each snippet before it runs, so one with a
+  type error is rejected with the checker's diagnostics. It is off by default
+  and needs `--remote`: a native REPL session cannot type-check. Scripts are
+  never type-checked.
+- `/debug` toggles the telemetry pane. Against a remote worker its log lines
+  also carry `worker_feed_duration_*` and `worker_session_duration_*` (the
+  worker's own in-sandbox time) and `worker_session_id`.
+
+Tab completes the path of `/execute`, `/dump` and `/load`. A snippet runs in
+the background, so the screen stays live: Ctrl+C cancels the running turn (a
+second Ctrl+C quits). Cancelling a remote turn ends its session, so shmonty
+starts a new one and earlier state is gone. A turn on the native library
+cannot be interrupted mid-computation; Ctrl+C takes effect when it next waits
+on the host.
+
+A dump is only loadable by the kind of backend that wrote it: a native dump
+cannot be loaded on a remote worker, or the other way round. A remote worker
+must support session storage to take a dump, and refuses otherwise.
+
+## Running against a remote worker
+
+`./shmonty --remote host:port` runs the interactive REPL on a Monty worker
+that serves `monty.v1.MontySession` over gRPC instead of the native library.
+TLS is on by default. Set `MONTY_REMOTE_TOKEN` to send a bearer token (only
+over TLS), or `MONTY_REMOTE_INSECURE=1` to dial a local worker without TLS
+(no token allowed). `./shmonty --remote host:port script.py` runs a script on
+the worker too, as one snippet in a session. Errors show the worker's
+traceback. The status line shows `remote:<endpoint>` while a worker is in use.
+
+```bash
+MONTY_REMOTE_TOKEN="$LOGFIRE_API_KEY" ./shmonty --remote logfire-us.pydantic.dev:443
+```

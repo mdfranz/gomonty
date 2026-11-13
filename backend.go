@@ -1,6 +1,10 @@
 package monty
 
-import "context"
+import (
+	"context"
+	"sync"
+	"time"
+)
 
 // Backend is the seam between the host-facing API (Runner, Repl, the progress
 // snapshots and the dispatch loop) and whatever actually runs the interpreter.
@@ -38,6 +42,24 @@ type Backend interface {
 	LoadProgress(data []byte) Step
 }
 
+// ReplLoader is implemented by a backend that can restore an idle REPL from
+// the bytes its ReplHandle.Dump produced. LoadRepl uses it. data is the
+// backend's own dump, without the gomonty header. opts is what the caller
+// passed to LoadRepl; a backend whose dumps record their own configuration
+// may ignore it.
+type ReplLoader interface {
+	LoadRepl(data []byte, opts ReplOptions) (ReplHandle, error)
+}
+
+// ReplResetter is implemented by a ReplHandle that can discard its state and
+// start over cheaply, for example by reusing the connection to a remote worker.
+// Like FeedStart it consumes the handle it is called on and returns the empty
+// session in a new one. Repl.Reset falls back to closing the handle and
+// opening a new REPL for a handle that does not implement it.
+type ReplResetter interface {
+	Reset(ctx context.Context) (ReplHandle, error)
+}
+
 // RunnerHandle is a compiled runner.
 type RunnerHandle interface {
 	Close()
@@ -68,6 +90,96 @@ type ProgressHandle interface {
 	ResumeFutures(ctx context.Context, results map[uint32]Result) Step
 }
 
+// PrintSegment is one run of print output on a single stream, "stdout" or
+// "stderr".
+type PrintSegment struct {
+	Stream string
+	Text   string
+}
+
+// PrintSink reports a run of output, on "stdout" or "stderr", while a backend
+// call is still in progress.
+type PrintSink func(stream, text string)
+
+type printSinkKey struct{}
+
+// WithPrintSink returns a context carrying sink. The host layer puts the
+// caller's PrintCallback on the context of every backend call, so a backend
+// that learns of output before the call returns, such as a remote worker
+// during a long turn, can pass it on at once instead of at the end. A backend
+// that does so sets Step.PrintsDelivered.
+func WithPrintSink(ctx context.Context, sink PrintSink) context.Context {
+	return context.WithValue(ctx, printSinkKey{}, sink)
+}
+
+// PrintSinkFromContext returns the sink a backend call should report output
+// to, or nil if the caller has no print callback.
+func PrintSinkFromContext(ctx context.Context) PrintSink {
+	sink, _ := ctx.Value(printSinkKey{}).(PrintSink)
+	return sink
+}
+
+// printSinkContext carries print on ctx for a backend call.
+func printSinkContext(ctx context.Context, print PrintCallback) context.Context {
+	if print == nil {
+		return ctx
+	}
+	return WithPrintSink(ctx, PrintSink(print))
+}
+
+// WorkerStats is what a remote worker reports about the session an execution
+// ran in. Times are in-sandbox: the worker's clock runs only while the
+// interpreter executes bytecode, never while it waits on the host or sits idle.
+type WorkerStats struct {
+	// SessionExecution is the session's cumulative execution time, which
+	// survives Dump and Load.
+	SessionExecution time.Duration
+	// FeedExecution is the execution time of the snippet in progress.
+	FeedExecution time.Duration
+	// SessionID is the worker's identifier for the session, hex encoded. It is
+	// empty when the worker does not store sessions.
+	SessionID string
+}
+
+// WorkerStatsSink receives a backend's WorkerStats when a turn ends.
+type WorkerStatsSink func(WorkerStats)
+
+type workerStatsKey struct{}
+
+// WithWorkerStatsSink returns a context carrying sink. FeedRun and Run put one
+// on the context of every backend call and fold the latest report into
+// ExecutionTiming.Worker, so a backend that learns these numbers from its
+// worker can report them with WorkerStatsSinkFromContext. A backend that has
+// nothing to report ignores it, and Worker stays nil.
+func WithWorkerStatsSink(ctx context.Context, sink WorkerStatsSink) context.Context {
+	return context.WithValue(ctx, workerStatsKey{}, sink)
+}
+
+// WorkerStatsSinkFromContext returns the sink a backend should report to, or
+// nil if the caller is not collecting them.
+func WorkerStatsSinkFromContext(ctx context.Context) WorkerStatsSink {
+	sink, _ := ctx.Value(workerStatsKey{}).(WorkerStatsSink)
+	return sink
+}
+
+// workerStatsCollector keeps the latest report of one execution.
+type workerStatsCollector struct {
+	mu   sync.Mutex
+	last *WorkerStats
+}
+
+func (c *workerStatsCollector) record(s WorkerStats) {
+	c.mu.Lock()
+	c.last = &s
+	c.mu.Unlock()
+}
+
+func (c *workerStatsCollector) latest() *WorkerStats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.last
+}
+
 // Step is the outcome of starting or resuming an execution.
 type Step struct {
 	// Progress is the next paused state, nil if the backend returned none.
@@ -75,8 +187,18 @@ type Step struct {
 	// Desc describes Progress; meaningful only when Progress is non-nil and Err
 	// is nil.
 	Desc ProgressDesc
-	// Prints is what the program printed during this step.
+	// Prints is what the program printed during this step, all streams joined.
 	Prints string
+	// PrintSegments is the same output split into runs by stream, in order.
+	// A backend that can tell stdout from stderr sets it; the host layer then
+	// reports each run to PrintCallback under its own stream. Prints must
+	// still hold the joined text. Empty means all of Prints is stdout.
+	PrintSegments []PrintSegment
+	// PrintsDelivered reports that the backend already gave the output to the
+	// PrintSink in the context as it was produced. The host layer then skips
+	// PrintCallback for this step's output, so nothing is reported twice;
+	// telemetry still sees it.
+	PrintsDelivered bool
 	// Repl is a REPL session handed back with this step (on the error path, or
 	// alongside a completed snippet).
 	Repl ReplHandle
@@ -126,4 +248,11 @@ func backendOrDefault(b Backend) Backend {
 		return ffiBackend{}
 	}
 	return b
+}
+
+// withWorkerStatsCollector returns a context whose backend calls report
+// WorkerStats to the returned collector.
+func withWorkerStatsCollector(ctx context.Context) (context.Context, *workerStatsCollector) {
+	c := &workerStatsCollector{}
+	return WithWorkerStatsSink(ctx, c.record), c
 }

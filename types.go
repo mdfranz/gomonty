@@ -447,6 +447,10 @@ type ReplOptions struct {
 // FeedStartOptions configures low-level REPL snippet execution.
 type FeedStartOptions struct {
 	Inputs map[string]Value
+	// SkipTypeCheck skips type checking for this snippet in a session that
+	// has it enabled. Backends without REPL type checking, such as the native
+	// library, ignore it.
+	SkipTypeCheck bool
 }
 
 // RunOptions configures the high-level runner helper loop.
@@ -467,9 +471,12 @@ type RunOptions struct {
 
 // FeedOptions configures the high-level REPL helper loop.
 type FeedOptions struct {
-	Inputs    map[string]Value
-	Functions map[string]ExternalFunction
-	OS        OSHandler
+	Inputs map[string]Value
+	// SkipTypeCheck skips type checking for this snippet in a session that
+	// has it enabled; see FeedStartOptions.SkipTypeCheck.
+	SkipTypeCheck bool
+	Functions     map[string]ExternalFunction
+	OS            OSHandler
 	// Modules are host modules the sandbox can import; see RunOptions.Modules.
 	Modules map[string]Module
 	Print   PrintCallback

@@ -133,7 +133,63 @@ func (s *Stream) RecvFeed() *montyv1.Feed {
 	return feed
 }
 
+// RecvDump reads the next request, which must be Dump.
+func (s *Stream) RecvDump() *montyv1.Dump {
+	s.t.Helper()
+	req := s.Recv()
+	if req == nil {
+		return nil
+	}
+	dump := req.GetDump()
+	if dump == nil {
+		s.t.Errorf("fakeworker: request was %T, want Dump", req.GetKind())
+	}
+	return dump
+}
+
+// RecvReset reads the next request, which must be Reset.
+func (s *Stream) RecvReset() *montyv1.Reset {
+	s.t.Helper()
+	req := s.Recv()
+	if req == nil {
+		return nil
+	}
+	reset := req.GetReset_()
+	if reset == nil {
+		s.t.Errorf("fakeworker: request was %T, want Reset", req.GetKind())
+	}
+	return reset
+}
+
 // Event constructors.
+
+// WithStats sets the execution times a worker reports on a turn-ending event,
+// in microseconds.
+func WithStats(event *montyv1.WorkerEvent, totalMicros, feedMicros uint64) *montyv1.WorkerEvent {
+	event.TotalExecutionMicros = totalMicros
+	event.FeedExecutionMicros = feedMicros
+	return event
+}
+
+// WithSessionID sets the session id a relay reports on its first reply.
+func WithSessionID(event *montyv1.WorkerEvent, id []byte) *montyv1.WorkerEvent {
+	event.SessionId = id
+	return event
+}
+
+// Dumped answers a Dump with the given opaque state.
+func Dumped(state []byte) *montyv1.WorkerEvent {
+	return &montyv1.WorkerEvent{Kind: &montyv1.WorkerEvent_DumpResult{DumpResult: &montyv1.DumpResult{State: state}}}
+}
+
+// Restored answers a Configure that carried a Load, naming the script the
+// dump came from.
+func Restored(scriptName string) *montyv1.WorkerEvent {
+	return &montyv1.WorkerEvent{
+		Kind:               &montyv1.WorkerEvent_Ok{Ok: &montyv1.Ok{}},
+		RestoredScriptName: &scriptName,
+	}
+}
 
 // Ok acknowledges a Configure.
 func Ok() *montyv1.WorkerEvent {
@@ -145,6 +201,26 @@ func Printed(text string) *montyv1.WorkerEvent {
 	return &montyv1.WorkerEvent{Kind: &montyv1.WorkerEvent_Print{Print: &montyv1.Print{
 		Segments: []*montyv1.PrintSegment{{Stream: montyv1.PrintStream_PRINT_STREAM_STDOUT, Text: text}},
 	}}}
+}
+
+// PrintedSegments is a Print event with the given segments, in order.
+func PrintedSegments(segments ...*montyv1.PrintSegment) *montyv1.WorkerEvent {
+	return &montyv1.WorkerEvent{Kind: &montyv1.WorkerEvent_Print{Print: &montyv1.Print{Segments: segments}}}
+}
+
+// Stdout and Stderr build one print segment on that stream.
+func Stdout(text string) *montyv1.PrintSegment {
+	return &montyv1.PrintSegment{Stream: montyv1.PrintStream_PRINT_STREAM_STDOUT, Text: text}
+}
+
+func Stderr(text string) *montyv1.PrintSegment {
+	return &montyv1.PrintSegment{Stream: montyv1.PrintStream_PRINT_STREAM_STDERR, Text: text}
+}
+
+// RaisedException ends a turn with a fully specified exception, traceback and
+// data included.
+func RaisedException(exc *montyv1.RaisedException) *montyv1.WorkerEvent {
+	return &montyv1.WorkerEvent{Kind: &montyv1.WorkerEvent_Error{Error: &montyv1.Error{Exception: exc}}}
 }
 
 // Complete ends a turn with the node at root in the arena built from nodes.

@@ -2,6 +2,7 @@ package remote
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"runtime"
@@ -10,6 +11,7 @@ import (
 
 	monty "github.com/mdfranz/gomonty"
 	montyv1 "github.com/mdfranz/gomonty/remote/internal/montyv1"
+	"google.golang.org/protobuf/proto"
 )
 
 // Backend runs REPL sessions on a remote Monty worker. Pass it as
@@ -22,7 +24,10 @@ import (
 // vfs filesystems work unchanged) and wait on its futures, exactly as it can
 // locally. Blocking sleeps are served by the backend itself.
 //
-// Not supported yet: runners, Dump and snapshots (#87); methods and attributes
+// A REPL can be dumped and restored with monty.LoadRepl, and reset in place; see
+// replHandle.Dump for what a snapshot is good for. Not supported yet: runners,
+// and snapshots of a snippet that is paused (a dump is only of an idle REPL);
+// methods and attributes
 // of host objects, which stop the script with ErrUnsupported; async host calls
 // started without waiting for the host, and asyncio sleeps. OS calls with no
 // gomonty equivalent (appending to files, open and exclusive creation) are
@@ -35,6 +40,15 @@ import (
 type Backend struct {
 	transport   Transport
 	openTimeout time.Duration
+	config      sessionConfig
+}
+
+// sessionConfig is the part of Configure that comes from options.
+type sessionConfig struct {
+	typeCheck          *TypeCheckOptions
+	profile            *string
+	persistence        Persistence
+	printFlushInterval *time.Duration
 }
 
 var _ monty.Backend = (*Backend)(nil)
@@ -49,6 +63,120 @@ type Option func(*Backend)
 // session. The default is 30 seconds; zero or a negative value means no limit.
 func WithOpenTimeout(d time.Duration) Option {
 	return func(b *Backend) { b.openTimeout = d }
+}
+
+// TypeCheckFormat is how the worker renders type-check diagnostics.
+type TypeCheckFormat string
+
+// The formats the worker can render. The zero value is the worker's default,
+// full.
+const (
+	TypeCheckFull      TypeCheckFormat = "full"
+	TypeCheckConcise   TypeCheckFormat = "concise"
+	TypeCheckAzure     TypeCheckFormat = "azure"
+	TypeCheckJSON      TypeCheckFormat = "json"
+	TypeCheckJSONLines TypeCheckFormat = "jsonlines"
+	TypeCheckRDJSON    TypeCheckFormat = "rdjson"
+	TypeCheckPylint    TypeCheckFormat = "pylint"
+	TypeCheckGitLab    TypeCheckFormat = "gitlab"
+	TypeCheckGitHub    TypeCheckFormat = "github"
+)
+
+var typeCheckFormats = map[TypeCheckFormat]montyv1.TypeCheckFormat{
+	"":                 montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_UNSPECIFIED,
+	TypeCheckFull:      montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_FULL,
+	TypeCheckConcise:   montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_CONCISE,
+	TypeCheckAzure:     montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_AZURE,
+	TypeCheckJSON:      montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_JSON,
+	TypeCheckJSONLines: montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_JSON_LINES,
+	TypeCheckRDJSON:    montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_RDJSON,
+	TypeCheckPylint:    montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_PYLINT,
+	TypeCheckGitLab:    montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_GITLAB,
+	TypeCheckGitHub:    montyv1.TypeCheckFormat_TYPE_CHECK_FORMAT_GITHUB,
+}
+
+// TypeCheckOptions turn on type checking for the sessions a Backend opens.
+type TypeCheckOptions struct {
+	// Stubs is optional stub-file source the checker may use.
+	Stubs string
+	// Format is how diagnostics are rendered in a TypingError.
+	Format TypeCheckFormat
+	// Color asks for ANSI colour in the formats that have it.
+	Color bool
+}
+
+// Persistence says whether a relay may keep a session after its stream ends.
+// A worker that is not a relay ignores it.
+type Persistence int
+
+const (
+	// PersistenceDefault leaves the choice to the relay.
+	PersistenceDefault Persistence = iota
+	// PersistenceEphemeral never stores the session.
+	PersistenceEphemeral
+	// PersistenceStored lets the relay park the session on idle, drain or
+	// disconnect so it can be loaded again.
+	PersistenceStored
+)
+
+// WithTypeCheck makes every session type-check each snippet before running it.
+// A snippet that fails the check does not run, and its feed returns a
+// *TypingError. A single feed can opt out with monty.FeedOptions.SkipTypeCheck.
+func WithTypeCheck(opts TypeCheckOptions) Option {
+	return func(b *Backend) { b.config.typeCheck = &opts }
+}
+
+// WithProfile names the server-side profile a relay runs sessions under. A
+// worker that is not a relay ignores it; a relay that does not know the name
+// refuses the session.
+func WithProfile(name string) Option {
+	return func(b *Backend) { b.config.profile = &name }
+}
+
+// WithPersistence sets whether a relay may keep sessions; see Persistence.
+func WithPersistence(p Persistence) Option {
+	return func(b *Backend) { b.config.persistence = p }
+}
+
+// WithPrintFlushInterval sets how long the worker may hold print output before
+// sending it. Zero makes it send each completed line on its own. Without this
+// option the worker's default applies.
+func WithPrintFlushInterval(d time.Duration) Option {
+	return func(b *Backend) { b.config.printFlushInterval = &d }
+}
+
+// configure builds the Configure message for a session.
+func (b *Backend) configure(opts monty.ReplOptions) (*montyv1.Configure, error) {
+	c := &montyv1.Configure{
+		ScriptName:      opts.ScriptName,
+		Limits:          limitsToProto(opts.Limits),
+		MontyVersion:    "gomonty",
+		ProtocolVersion: protocolVersion,
+	}
+	if tc := b.config.typeCheck; tc != nil {
+		format, ok := typeCheckFormats[tc.Format]
+		if !ok {
+			return nil, fmt.Errorf("remote: unknown type check format %q", tc.Format)
+		}
+		c.TypeCheck = true
+		c.TypeCheckFormat = format
+		c.TypeCheckColor = tc.Color
+		if tc.Stubs != "" {
+			c.TypeCheckStubs = &tc.Stubs
+		}
+	}
+	c.Profile = b.config.profile
+	switch b.config.persistence {
+	case PersistenceEphemeral:
+		c.Persistence = montyv1.Persistence_PERSISTENCE_EPHEMERAL
+	case PersistenceStored:
+		c.Persistence = montyv1.Persistence_PERSISTENCE_STORED
+	}
+	if d := b.config.printFlushInterval; d != nil {
+		ms := uint32(max(d.Milliseconds(), 0))
+		c.PrintFlushIntervalMs = &ms
+	}
+	return c, nil
 }
 
 // NewBackend returns a Backend that opens its sessions over t.
@@ -75,6 +203,31 @@ func (b *Backend) LoadProgress([]byte) monty.Step {
 // NewRepl opens a session and configures it. It fails if the worker cannot be
 // reached or refuses the session.
 func (b *Backend) NewRepl(opts monty.ReplOptions) (monty.ReplHandle, error) {
+	return b.open(opts, nil)
+}
+
+var _ monty.ReplLoader = (*Backend)(nil)
+
+// LoadRepl restores an idle REPL from the bytes of a remote handle's Dump. The
+// worker decides whether it accepts them: a snapshot is opaque, and only valid
+// on a worker running a compatible Monty. A dump written by the native library
+// is refused here.
+func (b *Backend) LoadRepl(data []byte, opts monty.ReplOptions) (monty.ReplHandle, error) {
+	state, err := openDump(data)
+	if err != nil {
+		return nil, err
+	}
+	return b.open(opts, &montyv1.Load{State: state})
+}
+
+// open starts a session. With load set, the session is restored from it instead
+// of starting empty.
+func (b *Backend) open(opts monty.ReplOptions, load *montyv1.Load) (monty.ReplHandle, error) {
+	// Check the options before connecting, so a bad one costs no connection.
+	configure, err := b.configure(opts)
+	if err != nil {
+		return nil, err
+	}
 	// The session lives as long as this context. The open timeout cancels it
 	// only until the session is configured.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -101,15 +254,14 @@ func (b *Backend) NewRepl(opts monty.ReplOptions) (monty.ReplHandle, error) {
 		cancel()
 		return nil, openErr(err)
 	}
-	sess := &session{stream: stream, cancel: cancel}
+	sess := newSession(stream, cancel)
 
-	configure := &montyv1.Configure{
-		ScriptName:      opts.ScriptName,
-		Limits:          limitsToProto(opts.Limits),
-		MontyVersion:    "gomonty",
-		ProtocolVersion: protocolVersion,
+	sess.configure = configure
+	request := proto.Clone(configure).(*montyv1.Configure)
+	if load != nil {
+		request.First = &montyv1.Configure_Load{Load: load}
 	}
-	t, err := sess.call(context.Background(), &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Configure{Configure: configure}})
+	t, err := sess.call(context.Background(), &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Configure{Configure: request}})
 	if err != nil {
 		if timer != nil {
 			timer.Stop()
@@ -125,12 +277,27 @@ func (b *Backend) NewRepl(opts monty.ReplOptions) (monty.ReplHandle, error) {
 	}
 	switch k := t.end.GetKind().(type) {
 	case *montyv1.WorkerEvent_Ok:
-		return newReplHandle(sess, opts.ScriptName), nil
+		// A relay that stores sessions names the one this stream now holds.
+		if id := t.end.GetSessionId(); len(id) > 0 {
+			sess.id = hex.EncodeToString(id)
+		}
+		name := opts.ScriptName
+		if restored := t.end.GetRestoredScriptName(); restored != "" {
+			name = restored
+		}
+		return newReplHandle(sess, name), nil
 	case *montyv1.WorkerEvent_SessionRefused:
 		sess.close()
 		return nil, &SessionRefusedError{Reason: k.SessionRefused.GetMessage()}
+	case *montyv1.WorkerEvent_Error:
+		// A refused Load: the worker could not restore the bytes it was given.
+		sess.close()
+		return nil, pythonError(k.Error.GetException())
 	default:
 		sess.close()
+		if load != nil {
+			return nil, fmt.Errorf("%w: the dump is of a snippet that was paused, not of an idle REPL", ErrUnsupported)
+		}
 		return nil, fmt.Errorf("remote: unexpected reply to Configure: %T", k)
 	}
 }
@@ -184,8 +351,71 @@ func (h *replHandle) Close() {
 	h.sess.close()
 }
 
+// dumpTimeout bounds a Dump or a Reset, which take no context of their own.
+const dumpTimeout = 30 * time.Second
+
+// Dump asks the worker for a snapshot of the idle session and returns it in an
+// envelope that only a remote backend will load. The session stays usable.
+//
+// The bytes are the worker's own and opaque: they are only valid on a worker
+// with a compatible Monty, and a worker without session storage refuses with a
+// PythonError.
 func (h *replHandle) Dump() ([]byte, error) {
-	return nil, fmt.Errorf("%w: Dump", ErrUnsupported)
+	ctx, cancel := context.WithTimeout(context.Background(), dumpTimeout)
+	defer cancel()
+	t, err := h.sess.call(ctx, &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Dump{Dump: &montyv1.Dump{}}})
+	if err != nil {
+		return nil, err
+	}
+	switch k := t.end.GetKind().(type) {
+	case *montyv1.WorkerEvent_DumpResult:
+		return sealDump(k.DumpResult.GetState()), nil
+	case *montyv1.WorkerEvent_Error:
+		return nil, pythonError(k.Error.GetException())
+	default:
+		h.sess.fail(fmt.Errorf("remote: unexpected reply to Dump: %T", k))
+		return nil, h.sess.dead
+	}
+}
+
+var _ monty.ReplResetter = (*replHandle)(nil)
+
+// Reset drops the session's state on the worker and configures a new, empty
+// session on the same stream. The old handle is spent; the returned one carries
+// the session. If either step fails the session is closed.
+func (h *replHandle) Reset(ctx context.Context) (monty.ReplHandle, error) {
+	ctx, cancel := context.WithTimeout(ctx, dumpTimeout)
+	defer cancel()
+	t, err := h.sess.call(ctx, &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Reset_{Reset_: &montyv1.Reset{}}})
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := t.end.GetKind().(*montyv1.WorkerEvent_Ok); !ok {
+		h.sess.fail(fmt.Errorf("remote: unexpected reply to Reset: %T", t.end.GetKind()))
+		return nil, h.sess.dead
+	}
+	t, err = h.sess.call(ctx, &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Configure{
+		Configure: proto.Clone(h.sess.configure).(*montyv1.Configure),
+	}})
+	if err != nil {
+		return nil, err
+	}
+	switch k := t.end.GetKind().(type) {
+	case *montyv1.WorkerEvent_Ok:
+		// The new session has its own id.
+		h.sess.id = ""
+		if id := t.end.GetSessionId(); len(id) > 0 {
+			h.sess.id = hex.EncodeToString(id)
+		}
+	case *montyv1.WorkerEvent_SessionRefused:
+		h.sess.close()
+		return nil, &SessionRefusedError{Reason: k.SessionRefused.GetMessage()}
+	default:
+		h.sess.fail(fmt.Errorf("remote: unexpected reply to Configure after Reset: %T", k))
+		return nil, h.sess.dead
+	}
+	h.consumed.Store(true)
+	return newReplHandle(h.sess, h.scriptName), nil
 }
 
 func (h *replHandle) FeedStart(ctx context.Context, code string, opts monty.FeedStartOptions) monty.Step {
@@ -194,7 +424,7 @@ func (h *replHandle) FeedStart(ctx context.Context, code string, opts monty.Feed
 		// Nothing was sent, so the handle is still good.
 		return monty.Step{Err: err, Retained: true}
 	}
-	feed := &montyv1.Feed{Code: code, Inputs: refs, Values: arena}
+	feed := &montyv1.Feed{Code: code, Inputs: refs, Values: arena, SkipTypeCheck: opts.SkipTypeCheck}
 	t, err := h.sess.call(ctx, &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Feed{Feed: feed}})
 
 	h.consumed.Store(true)
@@ -213,22 +443,21 @@ func (h *replHandle) stepFor(ctx context.Context, t turn) monty.Step {
 	case *montyv1.WorkerEvent_Complete:
 		value, err := decodeValue(k.Complete.GetValues(), k.Complete.GetValue())
 		if err != nil {
-			return monty.Step{Err: err, Repl: h, Prints: t.prints}
+			return t.prints.step(monty.Step{Err: err, Repl: h})
 		}
-		return monty.Step{
+		return t.prints.step(monty.Step{
 			Progress: &completedProgress{repl: h},
-			Prints:   t.prints,
 			Desc: monty.ProgressDesc{
 				Kind:       monty.ProgressComplete,
 				ScriptName: h.scriptName,
 				IsRepl:     true,
 				Output:     value,
 			},
-		}
+		})
 	case *montyv1.WorkerEvent_Error:
-		return monty.Step{Err: pythonError(k.Error.GetException()), Repl: h, Prints: t.prints}
+		return t.prints.step(monty.Step{Err: pythonError(k.Error.GetException()), Repl: h})
 	case *montyv1.WorkerEvent_TypingError:
-		return monty.Step{Err: &TypingError{Diagnostics: k.TypingError.GetDiagnostics()}, Repl: h, Prints: t.prints}
+		return t.prints.step(monty.Step{Err: &TypingError{Diagnostics: k.TypingError.GetDiagnostics()}, Repl: h})
 	case *montyv1.WorkerEvent_FunctionCall:
 		return h.pauseOnCall(ctx, k.FunctionCall, t.prints)
 	case *montyv1.WorkerEvent_OsCall:
@@ -242,7 +471,7 @@ func (h *replHandle) stepFor(ctx context.Context, t turn) monty.Step {
 		return h.abortFeed(ctx, "a streamed host call", t.prints)
 	default:
 		h.sess.fail(fmt.Errorf("remote: unexpected event ending a feed: %T", k))
-		return monty.Step{Err: h.sess.dead, Prints: t.prints}
+		return t.prints.step(monty.Step{Err: h.sess.dead})
 	}
 }
 
@@ -259,33 +488,33 @@ func (h *replHandle) proceed(ctx context.Context, req *montyv1.ClientRequest) mo
 // abort ends a feed that is suspended. The worker raises the exception where
 // the script was waiting, the feed ends in an Error event, and the session
 // stays usable. It returns what the script printed on the way out.
-func (h *replHandle) abort(ctx context.Context, message string) (string, error) {
+func (h *replHandle) abort(ctx context.Context, message string) (output, error) {
 	exc := &montyv1.RaisedException{ExcType: "RuntimeError", Message: &message}
 	t, err := h.sess.call(ctx, &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_AbortFeed{
 		AbortFeed: &montyv1.AbortFeed{Exception: exc},
 	}})
 	if err != nil {
-		return "", err
+		return output{}, err
 	}
 	if _, ok := t.end.GetKind().(*montyv1.WorkerEvent_Error); !ok {
 		h.sess.fail(fmt.Errorf("remote: unexpected reply to AbortFeed: %T", t.end.GetKind()))
-		return "", h.sess.dead
+		return output{}, h.sess.dead
 	}
 	return t.prints, nil
 }
 
 // abortFeedWith gives up on a suspended feed because of cause, and reports
 // cause to the caller. The session survives.
-func (h *replHandle) abortFeedWith(ctx context.Context, cause error, message, prints string) monty.Step {
+func (h *replHandle) abortFeedWith(ctx context.Context, cause error, message string, prints output) monty.Step {
 	more, err := h.abort(ctx, message)
 	if err != nil {
-		return monty.Step{Err: errors.Join(cause, err), Prints: prints}
+		return prints.step(monty.Step{Err: errors.Join(cause, err)})
 	}
-	return monty.Step{Err: cause, Repl: h, Prints: prints + more}
+	return prints.plus(more).step(monty.Step{Err: cause, Repl: h})
 }
 
 // abortFeed gives up on a feed that needs something this backend cannot answer.
-func (h *replHandle) abortFeed(ctx context.Context, what, prints string) monty.Step {
+func (h *replHandle) abortFeed(ctx context.Context, what string, prints output) monty.Step {
 	cause := fmt.Errorf("%w: the script needed %s", ErrUnsupported, what)
 	return h.abortFeedWith(ctx, cause, "the remote backend cannot answer "+what+" yet", prints)
 }

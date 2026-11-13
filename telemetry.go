@@ -69,6 +69,10 @@ type ExecutionTiming struct {
 	// Wait is cumulative time spent blocked resolving pending futures (the
 	// sum of every StartWait...End interval).
 	Wait time.Duration
+	// Worker is what a remote worker reported about the session, or nil when
+	// the execution ran on a backend that reports nothing, such as the native
+	// library. Unlike Python, its times are measured by the worker itself.
+	Worker *WorkerStats
 }
 
 // Python returns Total - Callback - Wait: time spent inside the Rust/FFI

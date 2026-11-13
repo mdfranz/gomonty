@@ -72,9 +72,11 @@ type replState struct {
 	mu       sync.Mutex
 	handle   ReplHandle
 	inFlight bool
-	// scriptName is set once at construction and never mutated, so it's
-	// safe to read without holding mu.
+	// scriptName and opts are set once at construction and never mutated, so
+	// they're safe to read without holding mu.
 	scriptName string
+	// opts is how the REPL was opened, kept so Reset can open an equivalent one.
+	opts ReplOptions
 }
 
 type progressState struct {
@@ -186,8 +188,74 @@ func NewRepl(opts ReplOptions) (*Repl, error) {
 		return nil, err
 	}
 	return &Repl{
-		state: &replState{handle: handle, scriptName: opts.ScriptName},
+		state: &replState{handle: handle, scriptName: opts.ScriptName, opts: opts},
 	}, nil
+}
+
+// ErrLoadUnsupported reports that the backend cannot restore a REPL from a dump.
+var ErrLoadUnsupported = errors.New("monty: this backend cannot load a REPL dump")
+
+// LoadRepl restores an idle REPL from the bytes of Repl.Dump: its globals and
+// function definitions come back, and it can be fed again with FeedRun or
+// FeedStart. Host callbacks are not part of a dump; pass them again in each
+// FeedOptions.
+//
+// A dump taken in the middle of a snippet is a snapshot, restored with
+// LoadReplSnapshot instead.
+//
+// opts.Backend must be the kind of backend that wrote the dump: a dump from the
+// native library cannot be loaded by a remote worker or the other way round. A
+// dump is only valid with a compatible Monty version (see ErrIncompatibleDump
+// for the check gomonty makes), and a remote dump additionally with a worker
+// that accepts it. opts.ScriptName names the REPL in telemetry; the script
+// identity inside the dump is restored by the backend.
+func LoadRepl(data []byte, opts ReplOptions) (*Repl, error) {
+	data, err := stripDumpHeader(data)
+	if err != nil {
+		return nil, err
+	}
+	loader, ok := backendOrDefault(opts.Backend).(ReplLoader)
+	if !ok {
+		return nil, ErrLoadUnsupported
+	}
+	handle, err := loader.LoadRepl(data, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &Repl{
+		state: &replState{handle: handle, scriptName: opts.ScriptName, opts: opts},
+	}, nil
+}
+
+// Reset discards every global and definition and returns the REPL to its
+// freshly opened state. A backend that can reuse its session does so; any
+// other has its REPL closed and a new one opened with the same options.
+//
+// Resetting fails with ErrConcurrentUse while a snippet is running. If the
+// reset itself fails the session may be gone, and the REPL then reports
+// ErrClosed.
+func (r *Repl) Reset(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	handle, err := r.state.takeForExecution()
+	if err != nil {
+		return err
+	}
+	var fresh ReplHandle
+	if resetter, ok := handle.(ReplResetter); ok {
+		fresh, err = resetter.Reset(ctx)
+		handle.Close()
+	} else {
+		handle.Close()
+		fresh, err = backendOrDefault(r.state.opts.Backend).NewRepl(r.state.opts)
+	}
+	if err != nil {
+		r.state.clear()
+		return err
+	}
+	r.state.restore(fresh)
+	return nil
 }
 
 // Dump serializes the runner.
@@ -231,7 +299,7 @@ func (r *Runner) start(ctx context.Context, opts StartOptions, print PrintCallba
 	}
 	defer release()
 
-	return consumeStep(ctx, handle.Start(ctx, opts), nil, print, pt)
+	return consumeStep(ctx, handle.Start(printSinkContext(ctx, print), opts), nil, print, pt)
 }
 
 // Run executes the runner through the high-level host callback loop.
@@ -244,13 +312,14 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (Value, error) {
 			return renderInputs(opts.Inputs)
 		}, opts.TelemetryOptions.MaxAttributeBytes),
 	}, opts.TelemetryOptions)
+	execCtx, stats := withWorkerStatsCollector(execCtx)
 
 	progress, err := r.start(execCtx, StartOptions{
 		Inputs: opts.Inputs,
 		Limits: opts.Limits,
 	}, opts.Print, printTelemetry{handler: opts.Telemetry, opts: opts.TelemetryOptions})
 	if err != nil {
-		endExecutionSpan(span, Value{}, err, ExecutionTiming{Total: time.Since(start)}, opts.TelemetryOptions)
+		endExecutionSpan(span, Value{}, err, ExecutionTiming{Total: time.Since(start), Worker: stats.latest()}, opts.TelemetryOptions)
 		return Value{}, err
 	}
 	value, runErr, timing := dispatchLoop(execCtx, progress, dispatchConfig{
@@ -265,6 +334,7 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (Value, error) {
 		Total:    time.Since(start),
 		Callback: timing.callback,
 		Wait:     timing.wait,
+		Worker:   stats.latest(),
 	}, opts.TelemetryOptions)
 	return value, runErr
 }
@@ -298,7 +368,7 @@ func (r *Repl) feedStart(ctx context.Context, code string, opts FeedStartOptions
 		return nil, err
 	}
 
-	st := handle.FeedStart(ctx, code, opts)
+	st := handle.FeedStart(printSinkContext(ctx, print), code, opts)
 	if st.Retained {
 		// The options could not be encoded, so the session was not consumed.
 		r.state.restore(handle)
@@ -318,10 +388,11 @@ func (r *Repl) FeedRun(ctx context.Context, code string, opts FeedOptions) (Valu
 			return renderInputs(opts.Inputs)
 		}, opts.TelemetryOptions.MaxAttributeBytes),
 	}, opts.TelemetryOptions)
+	execCtx, stats := withWorkerStatsCollector(execCtx)
 
-	progress, err := r.feedStart(execCtx, code, FeedStartOptions{Inputs: opts.Inputs}, opts.Print, printTelemetry{handler: opts.Telemetry, opts: opts.TelemetryOptions})
+	progress, err := r.feedStart(execCtx, code, FeedStartOptions{Inputs: opts.Inputs, SkipTypeCheck: opts.SkipTypeCheck}, opts.Print, printTelemetry{handler: opts.Telemetry, opts: opts.TelemetryOptions})
 	if err != nil {
-		endExecutionSpan(span, Value{}, err, ExecutionTiming{Total: time.Since(start)}, opts.TelemetryOptions)
+		endExecutionSpan(span, Value{}, err, ExecutionTiming{Total: time.Since(start), Worker: stats.latest()}, opts.TelemetryOptions)
 		return Value{}, err
 	}
 	value, runErr, timing := dispatchLoop(execCtx, progress, dispatchConfig{
@@ -336,6 +407,7 @@ func (r *Repl) FeedRun(ctx context.Context, code string, opts FeedOptions) (Valu
 		Total:    time.Since(start),
 		Callback: timing.callback,
 		Wait:     timing.wait,
+		Worker:   stats.latest(),
 	}, opts.TelemetryOptions)
 	return value, runErr
 }
@@ -422,15 +494,15 @@ func (b *progressBase) dump() ([]byte, error) {
 }
 
 func (b *progressBase) resumeCall(ctx context.Context, result Result, print PrintCallback, pt printTelemetry) (Progress, error) {
-	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeCall(ctx, result) })
+	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeCall(printSinkContext(ctx, print), result) })
 }
 
 func (b *progressBase) resumeLookup(ctx context.Context, value Value, found bool, print PrintCallback, pt printTelemetry) (Progress, error) {
-	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeLookup(ctx, value, found) })
+	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeLookup(printSinkContext(ctx, print), value, found) })
 }
 
 func (b *progressBase) resumeFutures(ctx context.Context, results map[uint32]Result, print PrintCallback, pt printTelemetry) (Progress, error) {
-	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeFutures(ctx, results) })
+	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeFutures(printSinkContext(ctx, print), results) })
 }
 
 // resume takes the paused handle, resumes it through call and consumes the
@@ -586,8 +658,13 @@ func closeStep(st Step) {
 
 func consumeStep(ctx context.Context, st Step, owner *replState, print PrintCallback, pt printTelemetry) (Progress, error) {
 	if st.Prints != "" {
-		if print != nil {
-			print("stdout", st.Prints)
+		if print != nil && !st.PrintsDelivered {
+			if len(st.PrintSegments) == 0 {
+				print("stdout", st.Prints)
+			}
+			for _, segment := range st.PrintSegments {
+				print(segment.Stream, segment.Text)
+			}
 		}
 		recordPrint(ctx, pt, st.Prints)
 	}

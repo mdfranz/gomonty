@@ -418,3 +418,121 @@ func TestMethodCallsOnHostObjectsAreAborted(t *testing.T) {
 	got, err := feed(t, repl, "1", monty.FeedOptions{})
 	wantInt(t, got, err, 9)
 }
+
+// An undefined name arrives as a name lookup and then raises NameError on
+// resume. The error must be the Python exception alone, with no "handle is
+// closed" error joined on by the dispatcher's cleanup.
+func TestUndefinedNameErrorIsNotJoinedWithClosedHandle(t *testing.T) {
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.NameLookup("foo"))
+		s.RecvResumeNameLookup()
+		s.Send(fakeworker.Raised("NameError", "name 'foo' is not defined"))
+	}))
+	_, err := feed(t, repl, "print(foo)", monty.FeedOptions{})
+	if err == nil || err.Error() != "NameError: name 'foo' is not defined" {
+		t.Fatalf("err = %q, want only the NameError", err)
+	}
+	if errors.Is(err, monty.ErrClosed) {
+		t.Fatalf("err wraps ErrClosed: %v", err)
+	}
+}
+
+// A host module and a stat result travel to the worker as arena nodes: the
+// import handler's Module and vfs's Path.stat NamedTuple.
+func TestModuleAndStatResultReachTheWorker(t *testing.T) {
+	calls := []*montyv1.OsCall{
+		{Call: &montyv1.OsCall_Import_{Import: &montyv1.OsCall_Import{Module: "hostmod", SearchPath: []string{"/"}}}},
+		{Call: &montyv1.OsCall_Stat{Stat: "/readme.txt"}},
+	}
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, n int, _ *montyv1.Feed) {
+		s.Send(fakeworker.OS(uint32(n), calls[n-1]))
+		if answer := s.RecvResumeCall(); answer != nil {
+			echoOutcome(s, answer)
+		}
+	}))
+
+	fs := vfs.NewMemoryFS()
+	fs.AddText("/readme.txt", "hello")
+	stat := vfs.Handler(fs, vfs.MapEnvironment{})
+	opts := monty.FeedOptions{OS: func(ctx context.Context, call monty.OSCall) (monty.Result, error) {
+		if call.Function == monty.OSImport {
+			return monty.Return(monty.ModuleValue(monty.Module{Name: "hostmod", Attrs: monty.Dict{
+				{Key: monty.String("answer"), Value: monty.Int(42)},
+			}})), nil
+		}
+		return stat(ctx, call)
+	}}
+
+	got, err := feed(t, repl, "import hostmod", opts)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	mod, ok := got.Module()
+	if !ok || mod.Name != "hostmod" || len(mod.Attrs) != 1 || mod.ID == "" {
+		t.Fatalf("import returned %s %s", got.Kind(), got)
+	}
+
+	got, err = feed(t, repl, "Path('/readme.txt').stat()", opts)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	nt, ok := got.Raw().(monty.NamedTuple)
+	if !ok || len(nt.FieldNames) != len(nt.Values) || len(nt.Values) == 0 {
+		t.Fatalf("stat returned %s %s", got.Kind(), got)
+	}
+}
+
+// asyncio.sleep arrives as an OS call, is answered with a pending future and
+// resolves once the delay has elapsed, so the OS handler never sees it.
+func TestAsyncSleepResolvesThroughAFuture(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call *montyv1.OsCall
+	}{
+		{"system", &montyv1.OsCall{Call: &montyv1.OsCall_AsyncSystemSleep{AsyncSystemSleep: &montyv1.OsCall_AsyncSleep{Delay: 0.2}}}},
+		{"call host", &montyv1.OsCall{Call: &montyv1.OsCall_AsyncSleep_{AsyncSleep: &montyv1.OsCall_AsyncSleep{Delay: 0.2}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			waited := make(chan time.Duration, 1)
+			repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+				start := time.Now()
+				s.Send(fakeworker.OS(1, tc.call))
+				first := s.RecvResumeCall()
+				if first == nil {
+					return
+				}
+				if first.GetResult().GetFuture() != 1 {
+					t.Errorf("an async sleep should be answered with call 1 as a future, got %v", first.GetResult())
+				}
+				s.Send(fakeworker.ResolveFutures(1))
+				resolved := s.RecvResumeFutures()
+				if resolved == nil || len(resolved.GetResults()) != 1 {
+					t.Errorf("want one resolved future, got %v", resolved)
+					return
+				}
+				waited <- time.Since(start)
+				s.Send(fakeworker.CompleteWith(resolved.GetResults()[0].GetResult().GetReturnValue(), resolved.GetValues()))
+			}))
+
+			handlerCalled := false
+			got, err := feed(t, repl, "await asyncio.sleep(0.2)", monty.FeedOptions{
+				OS: func(context.Context, monty.OSCall) (monty.Result, error) {
+					handlerCalled = true
+					return monty.Return(monty.None()), nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("FeedRun: %v", err)
+			}
+			if got.Kind() != "none" {
+				t.Fatalf("result = %v, want None", got)
+			}
+			if d := <-waited; d < 150*time.Millisecond {
+				t.Fatalf("the future resolved after %v, want about 200ms", d)
+			}
+			if handlerCalled {
+				t.Fatal("an async sleep was passed to the OS handler")
+			}
+		})
+	}
+}

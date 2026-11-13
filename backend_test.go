@@ -13,6 +13,14 @@ import (
 // over any backend, not only the native library.
 type fakeBackend struct {
 	closes atomic.Int32
+	// segments, when set, is what the backend prints per stream instead of
+	// the plain "paused" line.
+	segments []PrintSegment
+	// stream, when set, makes the backend report its segments to the context's
+	// print sink and mark them delivered, as a streaming backend would.
+	stream bool
+	// sawSink records whether a backend call carried a print sink.
+	sawSink atomic.Bool
 }
 
 type fakeRunner struct{ b *fakeBackend }
@@ -34,19 +42,38 @@ func (f *fakeBackend) LoadProgress([]byte) Step {
 func (r *fakeRunner) Close()                        { r.b.closes.Add(1) }
 func (r *fakeRunner) Dump() ([]byte, error)         { return []byte("runner"), nil }
 func (r *fakeRunner) TypeCheck(prefix string) error { return nil }
-func (r *fakeRunner) Start(_ context.Context, opts StartOptions) Step {
-	return pausedAtDouble(r.b, opts.Inputs["x"], false)
+func (r *fakeRunner) Start(ctx context.Context, opts StartOptions) Step {
+	return pausedAtDouble(ctx, r.b, opts.Inputs["x"], false)
 }
 func (r *fakeRepl) Close()                { r.b.closes.Add(1) }
 func (r *fakeRepl) Dump() ([]byte, error) { return []byte("repl"), nil }
-func (r *fakeRepl) FeedStart(_ context.Context, _ string, opts FeedStartOptions) Step {
-	return pausedAtDouble(r.b, opts.Inputs["x"], true)
+func (r *fakeRepl) FeedStart(ctx context.Context, _ string, opts FeedStartOptions) Step {
+	return pausedAtDouble(ctx, r.b, opts.Inputs["x"], true)
 }
 
-func pausedAtDouble(b *fakeBackend, x Value, isRepl bool) Step {
+func pausedAtDouble(ctx context.Context, b *fakeBackend, x Value, isRepl bool) Step {
+	sink := PrintSinkFromContext(ctx)
+	b.sawSink.Store(sink != nil)
+	delivered := false
+	if b.stream && sink != nil {
+		for _, segment := range b.segments {
+			sink(segment.Stream, segment.Text)
+		}
+		delivered = true
+	}
+	prints := "paused\n"
+	if b.segments != nil {
+		prints = ""
+		for _, segment := range b.segments {
+			prints += segment.Text
+		}
+	}
 	return Step{
-		Progress: &fakeProgress{b: b},
-		Prints:   "paused\n",
+		Progress:      &fakeProgress{b: b},
+		Prints:        prints,
+		PrintSegments: b.segments,
+
+		PrintsDelivered: delivered,
 		Desc: ProgressDesc{
 			Kind:         ProgressFunctionCall,
 			ScriptName:   "fake.py",
@@ -165,5 +192,60 @@ func TestReplRunsOverAnyBackendAndStaysUsable(t *testing.T) {
 		if got.Raw() != i*2 {
 			t.Fatalf("FeedRun %d = %v, want %d", i, got, i*2)
 		}
+	}
+}
+
+// A backend that can tell the streams apart has each run reported under its
+// own stream; one that cannot has everything reported as stdout.
+func TestPrintSegmentsReachTheCallbackByStream(t *testing.T) {
+	fake := &fakeBackend{segments: []PrintSegment{{Stream: "stdout", Text: "out\n"}, {Stream: "stderr", Text: "err\n"}}}
+	runner, err := New("ignored", CompileOptions{Backend: fake})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []PrintSegment
+	_, err = runner.Run(context.Background(), RunOptions{
+		Inputs:    map[string]Value{"x": Int(1)},
+		Functions: map[string]ExternalFunction{"double": doubleFunction},
+		Print:     func(stream, text string) { got = append(got, PrintSegment{stream, text}) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != fake.segments[0] || got[1] != fake.segments[1] {
+		t.Fatalf("got %v, want %v", got, fake.segments)
+	}
+}
+
+// A backend that streams reports output through the context's sink and says
+// so; the host layer must not report the same output again. Without a print
+// callback there is no sink to stream to.
+func TestStreamedPrintsAreReportedOnce(t *testing.T) {
+	fake := &fakeBackend{stream: true, segments: []PrintSegment{{Stream: "stdout", Text: "out\n"}, {Stream: "stderr", Text: "err\n"}}}
+	runner, err := New("ignored", CompileOptions{Backend: fake})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []PrintSegment
+	_, err = runner.Run(context.Background(), RunOptions{
+		Inputs:    map[string]Value{"x": Int(1)},
+		Functions: map[string]ExternalFunction{"double": doubleFunction},
+		Print:     func(stream, text string) { got = append(got, PrintSegment{stream, text}) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != fake.segments[0] || got[1] != fake.segments[1] {
+		t.Fatalf("got %v, want each run once", got)
+	}
+
+	if _, err = runner.Run(context.Background(), RunOptions{
+		Inputs:    map[string]Value{"x": Int(1)},
+		Functions: map[string]ExternalFunction{"double": doubleFunction},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if fake.sawSink.Load() {
+		t.Fatal("a call with no print callback carried a print sink")
 	}
 }

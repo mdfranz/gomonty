@@ -14,8 +14,13 @@
 // The Backend API it implements is experimental (see monty.Backend). Scripts
 // can call host functions, read names from the host, make OS calls through the
 // host's OSHandler and wait on futures, as they can locally. This version
-// supports REPLs only: runners, Dump and snapshots are not supported yet, and a
-// script that uses a method or attribute of a host object is stopped with
+// supports REPLs only. An idle REPL can be dumped with Repl.Dump and restored
+// with monty.LoadRepl on this backend, and emptied in place with Repl.Reset. A
+// snapshot is the worker's own opaque state: it is only valid on a worker with a
+// compatible Monty, a worker without session storage refuses to take one, and a
+// dump from the native library cannot be loaded here or the other way round.
+// Runners and snapshots of a paused snippet are not supported yet, and a script
+// that uses a method or attribute of a host object is stopped with
 // ErrUnsupported.
 //
 // The vendored protocol definition is in proto/ and the Go code generated from

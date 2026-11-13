@@ -51,13 +51,19 @@ func kw(name string, value monty.Value) monty.Pair {
 	return monty.Pair{Key: monty.String(name), Value: value}
 }
 
+// asyncSleepPlan is asyncio.sleep. The host layer answers it with a pending
+// future that resolves after the delay, so the script's other tasks keep
+// running; the plan is the same under the system and call_host sleep modes.
+func asyncSleepPlan(delay float64) osPlan {
+	return osPlan{name: "system.async_sleep", args: []monty.Value{monty.Float(delay)}}
+}
+
 // planOSCall projects a typed OsCall onto gomonty's name-and-arguments form.
 // values is the call's decoded arena, for the arms that carry value indexes.
 //
 // Not supported, so answered with "not handled": appending, open() and
-// exclusive creation (they need file handles, tracked in #58), date, time and
-// random calls (the worker answers those itself under the default policy), and
-// asyncio sleeps (they need futures resolved on a timer).
+// exclusive creation (they need file handles, tracked in #58), date, time
+// and random calls (the worker answers those itself under the default policy).
 func planOSCall(call *montyv1.OsCall, values []monty.Value) (osPlan, error) {
 	onePath := func(name, p string) (osPlan, error) {
 		return osPlan{name: name, args: []monty.Value{pathValue(p)}}, nil
@@ -152,6 +158,10 @@ func planOSCall(call *montyv1.OsCall, values []monty.Value) (osPlan, error) {
 		return osPlan{local: answerAfterSleep, sleep: seconds(c.Sleep.GetSeconds())}, nil
 	case *montyv1.OsCall_SystemSleep:
 		return osPlan{local: answerAfterSleep, sleep: seconds(c.SystemSleep.GetSeconds())}, nil
+	case *montyv1.OsCall_AsyncSystemSleep:
+		return asyncSleepPlan(c.AsyncSystemSleep.GetDelay()), nil
+	case *montyv1.OsCall_AsyncSleep_:
+		return asyncSleepPlan(c.AsyncSleep.GetDelay()), nil
 
 	default:
 		return osPlan{local: answerNotHandled}, nil

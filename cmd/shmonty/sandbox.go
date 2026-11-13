@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	monty "github.com/mdfranz/gomonty"
 	"github.com/mdfranz/gomonty/vfs"
@@ -131,3 +132,56 @@ func hostFail(_ context.Context, call monty.Call) (monty.Result, error) {
 func hostException(kind, message string) monty.Result {
 	return monty.Raise(monty.Exception{Type: kind, Arg: &message})
 }
+
+// delayWaiter resolves with value once its delay has elapsed. The deadline is
+// fixed when host_sleep is called, so waiting again after another future
+// resolved first never restarts the delay.
+type delayWaiter struct {
+	deadline time.Time
+	value    monty.Value
+}
+
+func (w delayWaiter) Wait(ctx context.Context) monty.Result {
+	timer := time.NewTimer(time.Until(w.deadline))
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return monty.Return(w.value)
+	case <-ctx.Done():
+		return hostException("TimeoutError", ctx.Err().Error())
+	}
+}
+
+// hostSleep is an async host function: it returns a pending future that
+// resolves with value after the delay, so scripts can await it and
+// asyncio.gather several, exercising futures end to end.
+func hostSleep(_ context.Context, call monty.Call) (monty.Result, error) {
+	names := []string{"seconds"}
+	if len(call.Args)+len(call.Kwargs) > 1 {
+		names = append(names, "value")
+	}
+	args, err := bindArguments(call, names...)
+	if err != nil {
+		return hostException("TypeError", err.Error()), nil
+	}
+	var seconds float64
+	switch n := args[0].Raw().(type) {
+	case int64:
+		seconds = float64(n)
+	case float64:
+		seconds = n
+	default:
+		return hostException("TypeError", "seconds must be a number"), nil
+	}
+	if seconds < 0 || seconds > maxHostSleepSeconds {
+		return hostException("ValueError", fmt.Sprintf("seconds must be between 0 and %d", maxHostSleepSeconds)), nil
+	}
+	value := monty.None()
+	if len(args) > 1 {
+		value = args[1]
+	}
+	return monty.Pending(delayWaiter{deadline: time.Now().Add(time.Duration(seconds * float64(time.Second))), value: value}), nil
+}
+
+// maxHostSleepSeconds keeps a typo from parking a session for long.
+const maxHostSleepSeconds = 30

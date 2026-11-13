@@ -75,6 +75,8 @@ Keep the three primary phases of execution time clearly distinguishable:
 
 On completion of the root span, record aggregate timing attributes, such as `monty.python_duration_ms` (calculated as `total_duration - callback_duration - wait_duration`), giving operators immediate visibility into Python compute time versus host I/O.
 
+When the interpreter runs on a remote worker, `ExecutionTiming.Worker` also carries what the worker measured itself: `monty.worker.feed_duration_ms` (in-sandbox time of the snippet) and `monty.worker.session_duration_ms` (cumulative for the session), plus `monty.worker.session_id` when the worker stores sessions. Those times exclude host callbacks, idle time and the network, unlike `monty.python_duration_ms`, which is wall time minus the host's own timings. SlogHandler logs the same values as `worker_feed_duration_*`, `worker_session_duration_*` and `worker_session_id`. A backend reports them through `monty.WithWorkerStatsSink`; the native library reports nothing, and `Worker` is nil.
+
 Millisecond attributes use floating-point values to preserve sub-millisecond timings. This applies to both `otelmonty` and the default `SlogHandler`; consumers expecting integer millisecond attributes must accept floats. Explicit slog microsecond and nanosecond units remain integers.
 
 ### 4. Data sanitization, limits, and stdout multiplexing

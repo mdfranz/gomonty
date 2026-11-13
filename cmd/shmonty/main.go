@@ -21,7 +21,12 @@
 // recall previous inputs, like a normal shell history. Ctrl+R rewinds
 // (bpython's term for it): pops the last input back into the prompt for
 // editing and replays everything before it against a fresh interpreter, so
-// a mistyped line can be fixed without restarting the whole session. exit
+// a mistyped line can be fixed without restarting the whole session. /reset,
+// /dump <path> and /load <path> empty the session, save it and restore it, and
+// /typecheck turns on type checking of each snippet (remote workers only).
+// Snippets run in the background, so Ctrl+C cancels a turn that is stuck.
+// With --remote host:port the interpreter runs on a remote worker instead of
+// the native library, for the REPL and for a script path alike. exit
 // and quit (bare, no parens) leave the REPL, matching Python 3.13's own
 // REPL convenience.
 //
@@ -39,6 +44,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -148,6 +154,17 @@ type model struct {
 	logScrollOffset int
 	logFollowing    bool
 
+	// running is true while a snippet is executing off the UI loop. cancel
+	// ends its context; cancelling is set once Ctrl+C has asked it to stop, so
+	// a second Ctrl+C quits instead of waiting for a turn that cannot stop.
+	running    bool
+	cancelling bool
+	cancel     context.CancelFunc
+
+	// typeCheck makes each snippet type-check before it runs. Only a remote
+	// worker can do that; see sessionCommand.
+	typeCheck bool
+
 	// width/height track the terminal size (via tea.WindowSizeMsg), used to
 	// size the log pane to roughly a quarter of the screen.
 	width, height int
@@ -184,7 +201,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
+	case runDoneMsg:
+		return m.finishRun(msg), nil
 	case tea.KeyMsg:
+		if m.running {
+			// A turn is in flight: Ctrl+C or Esc cancels it, a second one
+			// quits, and everything else waits for the prompt.
+			if msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyEsc {
+				if m.cancelling {
+					m.quitting = true
+					return m, tea.Quit
+				}
+				m.cancelling = true
+				m.cancel()
+			}
+			return m, nil
+		}
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			m.quitting = true
@@ -225,14 +257,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.entries = append(m.entries, m.debugStatusEntry())
 				return m, nil
 			}
-			m.entries = append(m.entries, m.runInput(code))
-			if len(m.entries) > maxHistoryEntries {
-				m.entries = m.entries[len(m.entries)-maxHistoryEntries:]
+			if next, ok := m.sessionCommand(code); ok {
+				return next, nil
 			}
-			m = m.appendLogLines(m.logs.drain())
-			m.history = append(m.history, code)
-			m.historyIdx = len(m.history)
-			return m, nil
+			return m.startRun(code)
 		case tea.KeyUp:
 			return m.navigateHistory(-1), nil
 		case tea.KeyDown:
@@ -287,7 +315,26 @@ func (m model) navigateHistory(delta int) model {
 const (
 	executeCmd    = "/execute"
 	executePrefix = executeCmd + " "
+	dumpCmd       = "/dump"
+	loadCmd       = "/load"
+	resetCmd      = "/reset"
+	typeCheckCmd  = "/typecheck"
 )
+
+// pathCommandPrefixes are the commands whose argument is a filesystem path,
+// and so complete with Tab.
+var pathCommandPrefixes = []string{executePrefix, dumpCmd + " ", loadCmd + " "}
+
+// pathArgument splits value into the command prefix that takes a path and the
+// path typed so far.
+func pathArgument(value string) (prefix, frag string, ok bool) {
+	for _, p := range pathCommandPrefixes {
+		if strings.HasPrefix(value, p) {
+			return p, value[len(p):], true
+		}
+	}
+	return "", "", false
+}
 
 // completePath implements shell-style Tab completion for /execute's path
 // argument — the only place shmonty takes a filesystem path. Outside that
@@ -297,11 +344,10 @@ const (
 // to their longest common prefix; and pressing Tab again once already at
 // that prefix lists every candidate, like bash's double-Tab.
 func (m model) completePath() model {
-	value := m.textInput.Value()
-	if !strings.HasPrefix(value, executePrefix) {
+	prefix, frag, ok := pathArgument(m.textInput.Value())
+	if !ok {
 		return m
 	}
-	frag := value[len(executePrefix):]
 
 	dir, base := filepath.Split(frag)
 	searchDir := dir
@@ -334,7 +380,7 @@ func (m model) completePath() model {
 
 	common := commonPrefix(matches)
 	if common != base {
-		m.textInput.SetValue(executePrefix + dir + common)
+		m.textInput.SetValue(prefix + dir + common)
 		m.textInput.CursorEnd()
 		return m
 	}
@@ -344,7 +390,7 @@ func (m model) completePath() model {
 
 	// Already at the longest common prefix with more than one candidate —
 	// show them instead of completing further, like a shell's double-Tab.
-	m.entries = append(m.entries, entry{code: value, result: strings.Join(matches, "  ")})
+	m.entries = append(m.entries, entry{code: prefix + frag, result: strings.Join(matches, "  ")})
 	if len(m.entries) > maxHistoryEntries {
 		m.entries = m.entries[len(m.entries)-maxHistoryEntries:]
 	}
@@ -540,14 +586,166 @@ func countRows(s string) int {
 // session state directly and is deliberately excluded from history, so it
 // never appears in the input rewind replays.
 func (m model) runInput(code string) entry {
+	return m.runInputCtx(context.Background(), code)
+}
+
+func (m model) runInputCtx(ctx context.Context, code string) entry {
 	if code == executeCmd || strings.HasPrefix(code, executePrefix) {
 		path := strings.TrimSpace(strings.TrimPrefix(code, executeCmd))
 		if path == "" {
 			return entry{code: code, result: "usage: /execute <path>", isErr: true}
 		}
-		return m.executeFile(code, path)
+		return m.executeFileCtx(ctx, code, path)
 	}
-	return m.run(code)
+	return m.runCodeCtx(ctx, code, code)
+}
+
+// runDoneMsg reports a snippet that finished running off the UI loop.
+type runDoneMsg struct {
+	code      string
+	entry     entry
+	cancelled bool
+}
+
+// startRun runs code in the background so the interface stays responsive and
+// Ctrl+C can cancel the turn: a slow or stalled remote worker no longer freezes
+// the screen.
+func (m model) startRun(code string) (model, tea.Cmd) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.running, m.cancelling, m.cancel = true, false, cancel
+	run := m // the goroutine reads this copy; Update only touches its own
+	return m, func() tea.Msg {
+		e := run.runInputCtx(ctx, code)
+		cancelled := ctx.Err() != nil
+		cancel()
+		return runDoneMsg{code: code, entry: e, cancelled: cancelled}
+	}
+}
+
+// finishRun records a finished snippet. A cancelled turn ends a remote session
+// (the worker cannot stop one turn and keep the session), so it starts a new
+// one rather than leaving a REPL that would only report it is closed.
+func (m model) finishRun(msg runDoneMsg) model {
+	m.running, m.cancelling, m.cancel = false, false, nil
+	m.entries = append(m.entries, msg.entry)
+	if len(m.entries) > maxHistoryEntries {
+		m.entries = m.entries[len(m.entries)-maxHistoryEntries:]
+	}
+	m = m.appendLogLines(m.logs.drain())
+	if msg.cancelled {
+		return m.restartAfterCancel()
+	}
+	m.history = append(m.history, msg.code)
+	m.historyIdx = len(m.history)
+	return m
+}
+
+func (m model) restartAfterCancel() model {
+	note := "cancelled: started a new session, so earlier variables and definitions are gone"
+	repl, err := newRepl()
+	if err != nil {
+		note = "cancelled, and a new session could not be opened: " + err.Error()
+		m.entries = append(m.entries, entry{code: "(cancelled)", result: note, isErr: true})
+		return m
+	}
+	m.repl = repl
+	m.sandbox = newSandbox()
+	m.history = nil
+	m.historyIdx = 0
+	m.entries = append(m.entries, entry{code: "(cancelled)", result: note})
+	return m
+}
+
+// sessionCommand handles the slash commands that act on the session itself
+// rather than running Python: /reset, /dump <path> and /load <path>. Like
+// /debug they are not added to history, which rewind replays.
+func (m model) sessionCommand(code string) (model, bool) {
+	name, arg, _ := strings.Cut(code, " ")
+	arg = strings.TrimSpace(arg)
+	switch name {
+	case resetCmd:
+		if err := m.repl.Reset(context.Background()); err != nil {
+			repl, openErr := newRepl()
+			if openErr != nil {
+				m.entries = append(m.entries, entry{code: code, result: errors.Join(err, openErr).Error(), isErr: true})
+				return m, true
+			}
+			m.repl = repl
+		}
+		m.sandbox = newSandbox()
+		m.history, m.historyIdx = nil, 0
+		m.entries = append(m.entries, entry{code: code, result: "session reset: variables, definitions and the in-memory filesystem are back to their starting state"})
+	case typeCheckCmd:
+		var e entry
+		m, e = m.setTypeCheck(code, arg)
+		m.entries = append(m.entries, e)
+	case dumpCmd:
+		m.entries = append(m.entries, m.dumpSession(code, arg))
+	case loadCmd:
+		var e entry
+		m, e = m.loadSession(code, arg)
+		m.entries = append(m.entries, e)
+	default:
+		return m, false
+	}
+	if len(m.entries) > maxHistoryEntries {
+		m.entries = m.entries[len(m.entries)-maxHistoryEntries:]
+	}
+	return m, true
+}
+
+// setTypeCheck handles /typecheck [on|off]: with no argument it toggles.
+func (m model) setTypeCheck(code, arg string) (model, entry) {
+	if remoteEndpoint == "" {
+		return m, entry{code: code, result: "type checking needs a remote worker: start shmonty with --remote host:port (the native library cannot type-check a REPL session)", isErr: true}
+	}
+	switch arg {
+	case "":
+		m.typeCheck = !m.typeCheck
+	case "on":
+		m.typeCheck = true
+	case "off":
+		m.typeCheck = false
+	default:
+		return m, entry{code: code, result: "usage: /typecheck [on|off]", isErr: true}
+	}
+	state := "off"
+	if m.typeCheck {
+		state = "on: a snippet with a type error is rejected before it runs"
+	}
+	return m, entry{code: code, result: "type checking " + state}
+}
+
+func (m model) dumpSession(code, path string) entry {
+	if path == "" {
+		return entry{code: code, result: "usage: /dump <path>", isErr: true}
+	}
+	data, err := m.repl.Dump()
+	if err != nil {
+		return entry{code: code, result: err.Error(), isErr: true}
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return entry{code: code, result: err.Error(), isErr: true}
+	}
+	return entry{code: code, result: fmt.Sprintf("dumped %d bytes to %s (the REPL's variables and definitions; not the in-memory filesystem)", len(data), path)}
+}
+
+func (m model) loadSession(code, path string) (model, entry) {
+	if path == "" {
+		return m, entry{code: code, result: "usage: /load <path>", isErr: true}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return m, entry{code: code, result: err.Error(), isErr: true}
+	}
+	repl, err := monty.LoadRepl(data, monty.ReplOptions{ScriptName: "shmonty.py", Backend: replBackend})
+	if err != nil {
+		return m, entry{code: code, result: err.Error(), isErr: true}
+	}
+	m.repl = repl
+	m.sandbox = newSandbox()
+	m.history, m.historyIdx = nil, 0
+	return m, entry{code: code, result: fmt.Sprintf("loaded %d bytes from %s (the in-memory filesystem starts fresh)", len(data), path)}
 }
 
 // rewind implements bpython's Rewind (Ctrl-R): pops the last input back
@@ -563,15 +761,18 @@ func (m model) rewind() model {
 	m.historyIdx = len(m.history)
 	m.pendingInput = ""
 
-	repl, err := monty.NewRepl(monty.ReplOptions{ScriptName: "shmonty.py"})
-	if err != nil {
-		// Extremely unlikely — NewRepl only fails on FFI init issues, and
-		// startup already proved it works. Leave the session untouched
-		// rather than lose it.
-		m.history = append(m.history, last)
-		return m
+	// Reset empties the session in place, so a remote worker's stream is
+	// reused instead of leaving the old session open until it is collected.
+	// If that fails the session may be gone, so open a new one.
+	if err := m.repl.Reset(context.Background()); err != nil {
+		repl, err := newRepl()
+		if err != nil {
+			// Leave the transcript as it was rather than lose it.
+			m.history = append(m.history, last)
+			return m
+		}
+		m.repl = repl
 	}
-	m.repl = repl
 	m.sandbox = newSandbox()
 
 	m.entries = nil
@@ -599,11 +800,15 @@ func (m model) run(code string) entry {
 // is what's echoed in the transcript (">>> /execute path"), so a large
 // script doesn't get dumped inline in place of the command that ran it.
 func (m model) executeFile(display, path string) entry {
+	return m.executeFileCtx(context.Background(), display, path)
+}
+
+func (m model) executeFileCtx(ctx context.Context, display, path string) entry {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return entry{code: display, result: err.Error(), isErr: true}
 	}
-	return m.runCode(display, string(data))
+	return m.runCodeCtx(ctx, display, string(data))
 }
 
 // hostFunctions returns the external functions registered for every run,
@@ -611,9 +816,10 @@ func (m model) executeFile(display, path string) entry {
 // Python exceptions as well as a host clock.
 func hostFunctions() map[string]monty.ExternalFunction {
 	return map[string]monty.ExternalFunction{
-		"host_calc": hostCalc,
-		"host_echo": hostEcho,
-		"host_fail": hostFail,
+		"host_calc":  hostCalc,
+		"host_echo":  hostEcho,
+		"host_fail":  hostFail,
+		"host_sleep": hostSleep,
 		"host_time": func(context.Context, monty.Call) (monty.Result, error) {
 			return monty.Return(monty.String(time.Now().Format(time.RFC3339))), nil
 		},
@@ -624,12 +830,18 @@ func hostFunctions() map[string]monty.ExternalFunction {
 // labeled with display rather than code itself so callers like
 // executeFile can show a short command in place of a whole file's contents.
 func (m model) runCode(display, code string) entry {
+	return m.runCodeCtx(context.Background(), display, code)
+}
+
+func (m model) runCodeCtx(ctx context.Context, display, code string) entry {
 	var stdout strings.Builder
 	opts := monty.FeedOptions{
 		OS:        m.sandbox.os,
 		Modules:   m.sandbox.modules,
 		Print:     monty.WriterPrintCallback(&stdout),
 		Functions: hostFunctions(),
+		// A session is opened able to type-check; each snippet opts in.
+		SkipTypeCheck: !m.typeCheck,
 	}
 	switch {
 	case m.otelHandler != nil:
@@ -653,11 +865,24 @@ func (m model) runCode(display, code string) entry {
 			RecordPrint:     true,
 		}
 	}
-	value, err := m.repl.FeedRun(context.Background(), code, opts)
+	value, err := m.repl.FeedRun(ctx, code, opts)
 	if err != nil {
-		return entry{code: display, output: stdout.String(), result: err.Error(), isErr: true}
+		return entry{code: display, output: stdout.String(), result: errorText(err), isErr: true}
 	}
 	return entry{code: display, output: stdout.String(), result: value.String()}
+}
+
+// errorText is what to show for a failed run: the traceback when the error can
+// render one (a local monty.RuntimeError or a remote PythonError), so a failure
+// says where it happened, and the plain message otherwise.
+func errorText(err error) string {
+	var tb interface{ TracebackString() string }
+	if errors.As(err, &tb) {
+		if text := tb.TracebackString(); text != "" {
+			return text
+		}
+	}
+	return err.Error()
 }
 
 // renderStatusLine renders a persistent one-line status bar shown just
@@ -681,6 +906,19 @@ func (m model) renderStatusLine() string {
 	}
 
 	parts := []string{mode, fmt.Sprintf("history:%d", len(m.history))}
+	if m.running {
+		state := "running (Ctrl+C cancels)"
+		if m.cancelling {
+			state = "cancelling (Ctrl+C again quits)"
+		}
+		parts = append(parts, state)
+	}
+	if m.typeCheck {
+		parts = append(parts, "typecheck:on")
+	}
+	if remoteEndpoint != "" {
+		parts = append([]string{"remote:" + remoteEndpoint}, parts...)
+	}
 	if m.debugEnabled && m.otelHandler == nil {
 		follow := "following"
 		if !m.logFollowing {
@@ -694,7 +932,7 @@ func (m model) renderStatusLine() string {
 
 func (m model) View() string {
 	var b strings.Builder
-	header := "shmonty  (Ctrl+C/Ctrl+D/exit to quit, Up/Down history, Ctrl+R rewind, /debug telemetry [PgUp/PgDn scroll], /execute <path> [Tab completes])"
+	header := "shmonty  (Ctrl+C/Ctrl+D/exit to quit, Up/Down history, Ctrl+R rewind, /debug telemetry [PgUp/PgDn scroll], /execute <path>, /dump <path>, /load <path>, /reset, /typecheck [Tab completes paths])"
 	b.WriteString(header)
 	b.WriteString("\n\n")
 
@@ -756,8 +994,18 @@ func (m model) View() string {
 }
 
 func main() {
-	if len(os.Args) > 1 {
-		runScript(os.Args[1])
+	endpoint, args, err := parseRemoteFlag(os.Args[1:])
+	if err != nil {
+		log.Fatal(err)
+	}
+	if endpoint != "" {
+		if err := useRemote(endpoint); err != nil {
+			log.Fatal(err)
+		}
+		defer remoteTransport.Close()
+	}
+	if len(args) > 0 {
+		runScript(args[0])
 		return
 	}
 
@@ -766,9 +1014,9 @@ func main() {
 	defer otelShutdown(ctx)
 
 	logs := &logBuffer{}
-	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})).With(workerAttrs()...)
 
-	repl, err := monty.NewRepl(monty.ReplOptions{ScriptName: "shmonty.py"})
+	repl, err := newRepl()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -791,6 +1039,9 @@ func main() {
 // matching Python's own unhandled-exception convention.
 func runScript(path string) {
 	if err := execScript(path, os.Stdout, os.Stderr); err != nil {
+		if remoteTransport != nil {
+			remoteTransport.Close() // os.Exit skips main's deferred Close
+		}
 		os.Exit(1)
 	}
 }
@@ -812,44 +1063,61 @@ func execScript(path string, stdout, stderr io.Writer) error {
 	defer otelShutdown(ctx)
 
 	logs := &logBuffer{}
-	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
-	runner, err := monty.New(string(data), monty.CompileOptions{ScriptName: filepath.Base(path)})
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return err
-	}
+	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})).With(workerAttrs()...)
 
 	sandbox := newSandbox()
-	opts := monty.RunOptions{
-		OS:        sandbox.os,
-		Modules:   sandbox.modules,
-		Print:     monty.WriterPrintCallback(stdout),
-		Functions: hostFunctions(),
-	}
-	if otelHandler != nil {
-		// See runCode's otelHandler branch: content recording stays off,
-		// unlike the local-only SlogHandler case below.
-		opts.Telemetry = otelHandler
-	} else {
-		opts.Telemetry = monty.SlogHandler{Logger: logger, DurationUnit: monty.DurationMicroseconds}
-		opts.TelemetryOptions = monty.TelemetryOptions{
-			RecordArguments: true,
-			RecordOutputs:   true,
-			RecordPrint:     true,
-		}
-	}
+	telemetry, telemetryOptions := scriptTelemetry(otelHandler, logger)
+	print := monty.WriterPrintCallback(stdout)
 
-	value, runErr := runner.Run(ctx, opts)
+	var value monty.Value
+	var runErr error
+	if remoteEndpoint != "" {
+		// A remote worker serves REPL sessions only, so the script is fed to
+		// one as a single snippet.
+		repl, err := newNamedRepl(filepath.Base(path))
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return err
+		}
+		value, runErr = repl.FeedRun(ctx, string(data), monty.FeedOptions{
+			SkipTypeCheck: true, // scripts run as they always have
+			OS:            sandbox.os, Modules: sandbox.modules, Print: print, Functions: hostFunctions(),
+			Telemetry: telemetry, TelemetryOptions: telemetryOptions,
+		})
+	} else {
+		runner, err := monty.New(string(data), monty.CompileOptions{ScriptName: filepath.Base(path)})
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return err
+		}
+		value, runErr = runner.Run(ctx, monty.RunOptions{
+			OS: sandbox.os, Modules: sandbox.modules, Print: print, Functions: hostFunctions(),
+			Telemetry: telemetry, TelemetryOptions: telemetryOptions,
+		})
+	}
 
 	if runErr != nil {
-		fmt.Fprintln(stderr, "error:", runErr)
+		fmt.Fprintln(stderr, "error:", errorText(runErr))
 		printDebugLogs(logs, stderr)
 		return runErr
 	}
 	fmt.Fprintln(stdout, value.String())
 	printDebugLogs(logs, stderr)
 	return nil
+}
+
+// scriptTelemetry picks the telemetry for a script run: always on, since there
+// is no REPL to toggle /debug in. See runCode's otelHandler branch for why an
+// exporting handler records no content, unlike the local-only slog handler.
+func scriptTelemetry(otelHandler monty.TelemetryHandler, logger *slog.Logger) (monty.TelemetryHandler, monty.TelemetryOptions) {
+	if otelHandler != nil {
+		return otelHandler, monty.TelemetryOptions{}
+	}
+	return monty.SlogHandler{Logger: logger, DurationUnit: monty.DurationMicroseconds}, monty.TelemetryOptions{
+		RecordArguments: true,
+		RecordOutputs:   true,
+		RecordPrint:     true,
+	}
 }
 
 // printDebugLogs writes captured telemetry lines to stderr as a labeled
