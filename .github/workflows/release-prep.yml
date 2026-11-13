@@ -264,6 +264,13 @@ jobs:
           sed -i -E 's#^(\s*github.com/mdfranz/gomonty) v[^ ]+$#\1 '"$version"'#' otelmonty/go.mod
           grep -q "github.com/mdfranz/gomonty $version\$" otelmonty/go.mod
 
+          # cmd/shmonty requires otelmonty through a replace, so the gomonty
+          # version otelmonty now asks for becomes the selected one. If
+          # shmonty still listed v0.0.0, `go build` there would fail with
+          # "updates to go.mod needed". Its replace keeps resolving locally.
+          sed -i -E 's#^(\s*github.com/mdfranz/gomonty) v[^ ]+$#\1 '"$version"'#' cmd/shmonty/go.mod
+          grep -q "github.com/mdfranz/gomonty $version\$" cmd/shmonty/go.mod
+
           find internal/ffi/lib -type f \( -name '*.a' -o -name '*.lib' \) -delete
 
           mkdir -p \
@@ -314,6 +321,12 @@ jobs:
             cd examples
             CGO_ENABLED=0 go run ./cmd/example
           )
+          # shmonty depends on the modules whose requirements were just
+          # pinned, so building it catches a go.mod that no longer resolves.
+          (
+            cd cmd/shmonty
+            CGO_ENABLED=0 go build -o /dev/null .
+          )
 
       - name: Prepare branch metadata
         shell: bash
@@ -326,7 +339,7 @@ jobs:
       - name: Commit and push changes
         shell: bash
         run: |
-          if ! git status --short -- Cargo.toml Cargo.lock otelmonty/go.mod internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt | grep -q .; then
+          if ! git status --short -- Cargo.toml Cargo.lock otelmonty/go.mod cmd/shmonty/go.mod internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt | grep -q .; then
             echo "Release tree is already current on main; skipping PR creation."
             echo "SKIP_PR=1" >> "$GITHUB_ENV"
             exit 0
@@ -335,7 +348,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$BRANCH_NAME"
-          git add Cargo.toml Cargo.lock otelmonty/go.mod internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt
+          git add Cargo.toml Cargo.lock otelmonty/go.mod cmd/shmonty/go.mod internal/ffi/include/monty_go_ffi.h internal/ffi/lib internal/ffi/checksums.txt
           git commit -m "Release $VERSION"
           git push --set-upstream origin "$BRANCH_NAME"
 
