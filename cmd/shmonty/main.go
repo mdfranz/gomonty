@@ -563,7 +563,7 @@ func (m model) rewind() model {
 	m.historyIdx = len(m.history)
 	m.pendingInput = ""
 
-	repl, err := monty.NewRepl(monty.ReplOptions{ScriptName: "shmonty.py"})
+	repl, err := newRepl()
 	if err != nil {
 		// Extremely unlikely — NewRepl only fails on FFI init issues, and
 		// startup already proved it works. Leave the session untouched
@@ -756,9 +756,22 @@ func (m model) View() string {
 }
 
 func main() {
-	if len(os.Args) > 1 {
-		runScript(os.Args[1])
+	endpoint, args, err := parseRemoteFlag(os.Args[1:])
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(args) > 0 {
+		if endpoint != "" {
+			log.Fatal("--remote works with the interactive REPL only, not with a script path")
+		}
+		runScript(args[0])
 		return
+	}
+	if endpoint != "" {
+		if err := useRemote(endpoint); err != nil {
+			log.Fatal(err)
+		}
+		defer remoteTransport.Close()
 	}
 
 	ctx := context.Background()
@@ -766,9 +779,9 @@ func main() {
 	defer otelShutdown(ctx)
 
 	logs := &logBuffer{}
-	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})).With(workerAttrs()...)
 
-	repl, err := monty.NewRepl(monty.ReplOptions{ScriptName: "shmonty.py"})
+	repl, err := newRepl()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -812,7 +825,7 @@ func execScript(path string, stdout, stderr io.Writer) error {
 	defer otelShutdown(ctx)
 
 	logs := &logBuffer{}
-	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})).With(workerAttrs()...)
 
 	runner, err := monty.New(string(data), monty.CompileOptions{ScriptName: filepath.Base(path)})
 	if err != nil {

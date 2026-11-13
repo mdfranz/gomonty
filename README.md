@@ -17,7 +17,7 @@ Changes since the fork (releases `v0.0.15` to `v0.0.17`, plus the docs on the un
 - **Newer Monty.** Refreshed the pinned upstream Monty several times, most recently to v1.6.0, and updated the wire format and Go types for the upstream changes (see [docs/UPSTREAM-REFRESH-PLAN.md](./docs/UPSTREAM-REFRESH-PLAN.md) and the `upstream-refresh` skill).
 - **Complex numbers and host modules.** `Complex` carries Python `complex` values as `complex128`. `RunOptions.Modules` and `FeedOptions.Modules` let sandbox code `import` a module you define in Go, and `vfs.Handler` now serves `os.scandir`, `os.walk` and `Path.glob`.
 - **Telemetry.** An opt-in `TelemetryHandler` API with a `log/slog` adapter, plus `otelmonty`, a separate module that exports OpenTelemetry traces.
-- **`shmonty`.** An interactive REPL and script runner, with history, rewind, a telemetry pane and OTLP export.
+- **`shmonty`.** An interactive REPL and script runner, with history, rewind, a telemetry pane and OTLP export. `shmonty --remote host:port` runs the REPL on a remote Monty worker over gRPC.
 - **Fixes.** `Value.String()` now renders containers, and `print()` results show `None` correctly.
 - **CI and release.** `--locked` Rust builds, a faster `verify` workflow that runs when a PR is opened, optional musl CI, and a release flow that publishes the committed release tree.
 - **Docs.** Architecture, Monty context, a Go + Rust implementation guide and a learning path under [`docs/`](./docs).
@@ -86,7 +86,7 @@ Run it from a checkout with `cd examples && CGO_ENABLED=0 go run ./cmd/example`.
 | Type checking | Check code against stubs before running it. | `Runner.TypeCheck`, `CompileOptions.TypeCheck` |
 | Resource limits | Bound duration, memory, recursion depth and host-call count. | `ResourceLimits` |
 | Telemetry | Opt-in structured logs or OpenTelemetry spans for runs, callbacks and waits. | `SlogHandler`, [`otelmonty/`](./otelmonty) |
-| `shmonty` | Interactive terminal REPL and script runner built on the library. | [`cmd/shmonty/`](./cmd/shmonty) |
+| `shmonty` | Interactive terminal REPL and script runner built on the library. `--remote host:port` runs the REPL on a remote worker. | [`cmd/shmonty/`](./cmd/shmonty) |
 
 ## What gomonty adds on top of upstream
 

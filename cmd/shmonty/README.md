@@ -29,3 +29,16 @@ Available host callbacks accept positional or keyword arguments:
 Invalid arguments to the new callbacks raise `TypeError`. Enable `/debug`
 to inspect callback spans. `open()` and sleep support remain separate work;
 use `Path.read_text()` and `Path.write_text()` for file examples.
+
+## Running against a remote worker
+
+`./shmonty --remote host:port` runs the interactive REPL on a Monty worker
+that serves `monty.v1.MontySession` over gRPC instead of the native library.
+TLS is on by default. Set `MONTY_REMOTE_TOKEN` to send a bearer token (only
+over TLS), or `MONTY_REMOTE_INSECURE=1` to dial a local worker without TLS
+(no token allowed). `--remote` does not work with a script path, which runs
+through the native library.
+
+```bash
+MONTY_REMOTE_TOKEN="$LOGFIRE_API_KEY" ./shmonty --remote logfire-us.pydantic.dev:443
+```

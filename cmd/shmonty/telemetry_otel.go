@@ -8,7 +8,9 @@ import (
 	monty "github.com/mdfranz/gomonty"
 	"github.com/mdfranz/gomonty/otelmonty"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
@@ -33,7 +35,17 @@ func initOTelTelemetry(ctx context.Context) (monty.TelemetryHandler, func(contex
 		return nil, noop
 	}
 
-	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter))
+	// Resource attributes mark every span from this process with where the
+	// interpreter ran, so remote and local sessions can be told apart.
+	attrs := []attribute.KeyValue{attribute.String("monty.worker", workerKind())}
+	if remoteEndpoint != "" {
+		attrs = append(attrs, attribute.String("monty.worker.endpoint", remoteEndpoint))
+	}
+	res, err := resource.Merge(resource.Default(), resource.NewSchemaless(attrs...))
+	if err != nil {
+		res = resource.Default()
+	}
+	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter), sdktrace.WithResource(res))
 	otel.SetTracerProvider(tp)
 	return otelmonty.Handler{Tracer: tp.Tracer("shmonty")}, tp.Shutdown
 }
