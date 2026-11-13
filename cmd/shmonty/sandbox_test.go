@@ -17,6 +17,7 @@ assert os.getenv("SHMONTY_ENV") == "sandbox"
 assert os.environ["HOME"] == "/sandbox"
 assert hostmod.name == "shmonty" and hostmod.root == "/sandbox"
 assert "Welcome" in Path("/sandbox/readme.txt").read_text()
+assert Path("/sandbox/readme.txt").stat().st_size == len(Path("/sandbox/readme.txt").read_text())
 Path("/sandbox/test.txt").write_text("saved")
 assert Path("/sandbox/test.txt").read_text() == "saved"
 assert len(list(Path("/sandbox").rglob("*.txt"))) == 3
@@ -32,6 +33,10 @@ except ValueError as error:
     assert str(error) == "demo failure"
 else:
     assert False, "host_fail must raise"
+import asyncio
+async def gather_sleeps():
+    return await asyncio.gather(host_sleep(0.05, "slow"), host_sleep(0.01, "fast"), host_sleep(0))
+assert await gather_sleeps() == ["slow", "fast", None]
 `
 
 func TestSandboxScript(t *testing.T) {
@@ -105,6 +110,10 @@ func TestHostCallbackErrorsAreCatchable(t *testing.T) {
 		{`host_calc("div", 1, 0)`, "ZeroDivisionError"},
 		{`host_echo()`, "TypeError"},
 		{`host_fail(1)`, "TypeError"},
+		{`host_sleep()`, "TypeError"},
+		{`host_sleep("x")`, "TypeError"},
+		{`host_sleep(-1)`, "ValueError"},
+		{`host_sleep(31)`, "ValueError"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.code, func(t *testing.T) {

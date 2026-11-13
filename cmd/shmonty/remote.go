@@ -74,5 +74,9 @@ func useRemote(endpoint string) error {
 }
 
 func newRepl() (*monty.Repl, error) {
-	return monty.NewRepl(monty.ReplOptions{ScriptName: "shmonty.py", Backend: replBackend})
+	return newNamedRepl("shmonty.py")
+}
+
+func newNamedRepl(scriptName string) (*monty.Repl, error) {
+	return monty.NewRepl(monty.ReplOptions{ScriptName: scriptName, Backend: replBackend})
 }
