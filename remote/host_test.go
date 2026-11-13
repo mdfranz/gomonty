@@ -418,3 +418,21 @@ func TestMethodCallsOnHostObjectsAreAborted(t *testing.T) {
 	got, err := feed(t, repl, "1", monty.FeedOptions{})
 	wantInt(t, got, err, 9)
 }
+
+// An undefined name arrives as a name lookup and then raises NameError on
+// resume. The error must be the Python exception alone, with no "handle is
+// closed" error joined on by the dispatcher's cleanup.
+func TestUndefinedNameErrorIsNotJoinedWithClosedHandle(t *testing.T) {
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.NameLookup("foo"))
+		s.RecvResumeNameLookup()
+		s.Send(fakeworker.Raised("NameError", "name 'foo' is not defined"))
+	}))
+	_, err := feed(t, repl, "print(foo)", monty.FeedOptions{})
+	if err == nil || err.Error() != "NameError: name 'foo' is not defined" {
+		t.Fatalf("err = %q, want only the NameError", err)
+	}
+	if errors.Is(err, monty.ErrClosed) {
+		t.Fatalf("err wraps ErrClosed: %v", err)
+	}
+}
