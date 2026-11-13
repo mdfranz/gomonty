@@ -4,11 +4,12 @@ Developer notes for building, testing, benchmarking and releasing gomonty. For t
 
 ## Testing each module
 
-There are four Go modules (library, `examples/`, `otelmonty/`, `cmd/shmonty/`). Run `go test` in each one separately, after building the native library for your host:
+There are five Go modules (library, `examples/`, `otelmonty/`, `cmd/shmonty/`, `remote/`). Run `go test` in each one separately (`remote/` uses an in-process fake worker and does not require the native library; the others do after building it for your host):
 
 ```bash
 MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh <host target triple>
 CGO_ENABLED=0 go test ./...
+(cd remote && CGO_ENABLED=0 go test ./...)
 cargo test -p monty-go-ffi --locked
 ```
 
@@ -16,7 +17,7 @@ The first build compiles all of upstream Monty and takes several minutes. Do not
 
 ## Testing the remote client against a real worker
 
-The `remote/` tests normally run against an in-process fake worker. `remote/realworker_test.go` runs the same kinds of scenarios (host functions, OS calls, name lookups, futures, large values, cancellation) against a real Monty worker. Run it with:
+For connecting to remote workers and distributed tracing, see [remote.md](./remote.md). The `remote/` tests normally run against an in-process fake worker. `remote/realworker_test.go` runs the same kinds of scenarios (host functions, OS calls, name lookups, futures, large values, cancellation) against a real Monty worker. Run it with:
 
 ```bash
 make remote-realworker

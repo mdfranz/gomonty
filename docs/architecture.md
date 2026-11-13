@@ -65,6 +65,7 @@ Telemetry is off unless `RunOptions.Telemetry` is set. `dispatchLoop` records a 
 | examples | `examples/` | Runnable programs; depends on the library through a `replace` directive. |
 | OpenTelemetry bridge | `otelmonty/` | Separate module so the OTel SDK is never a dependency of the library. |
 | REPL | `cmd/shmonty/` | Terminal REPL (`make shmonty`). |
+| Remote worker client | `remote/` | Remote `monty.Backend` over `monty.v1.MontySession` gRPC (see [docs/remote.md](./remote.md)). |
 
 The Rust crate lives in `crates/monty-go-ffi`. Prebuilt libraries under `internal/ffi/lib/` are committed only by the `release-prep` workflow; see [`RELEASING.md`](../RELEASING.md).
 

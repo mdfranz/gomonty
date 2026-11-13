@@ -26,12 +26,15 @@ import (
 //
 // A REPL can be dumped and restored with monty.LoadRepl, and reset in place; see
 // replHandle.Dump for what a snapshot is good for. Not supported yet: runners,
-// and snapshots of a snippet that is paused (a dump is only of an idle REPL);
-// methods and attributes
-// of host objects, which stop the script with ErrUnsupported; async host calls
-// started without waiting for the host, and asyncio sleeps. OS calls with no
-// gomonty equivalent (appending to files, open and exclusive creation) are
-// answered "not handled", so the script gets an ordinary Python error.
+// snapshots of a snippet that is paused (a dump is only of an idle REPL), and
+// methods and attributes of host objects, which stop the script with
+// ErrUnsupported. Async host calls are driven cleanly through Future; OS calls
+// with no gomonty equivalent (appending to files, open and exclusive creation)
+// are answered "not handled", so the script gets an ordinary Python error.
+//
+// When a context passed to FeedRun, FeedStart, or Reset carries an active
+// OpenTelemetry span context, outbound gRPC requests include a W3C traceparent
+// header so the worker can join the trace.
 //
 // A call's context bounds it: if the context ends while a feed is waiting on the
 // worker, the call returns the context's error and the session is closed,
