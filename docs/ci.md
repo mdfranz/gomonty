@@ -53,9 +53,9 @@ Turn it on when a change touches the build script, the FFI crate's dependencies 
 
 Jobs:
 
-1. `header-and-linux-amd64` builds the C header (with `cbindgen`, installed with `cargo install --locked`) and the linux/amd64 library, and uploads them and `Cargo.lock` as artifacts.
-2. `shared-libraries` (matrix: linux-arm64, darwin-arm64, windows-amd64) and the two musl jobs build the remaining libraries in parallel, each uploading its library as an artifact.
-3. `open-pr` downloads every artifact, then:
+1. `validate` verifies the workflow ran on `main` and that `version` matches `vN.N.N` with an optional suffix.
+2. `header-and-linux-amd64` (installing prebuilt `cbindgen` via `taiki-e/install-action`), `shared-libraries` (matrix: linux-arm64, darwin-arm64, windows-amd64), and the two musl jobs all depend on `validate` and build the C header, `Cargo.lock`, and all six native libraries in parallel, each uploading its outputs as artifacts.
+3. `open-pr` depends on `validate` and all four build jobs, downloads every artifact, then:
    - fails if the tag already exists;
    - bumps the version in `Cargo.toml` and in `Cargo.lock`'s own `monty-go-ffi` entry (the lockfile was generated before the bump, so without this, later `--locked` builds fail);
    - pins the `github.com/mdfranz/gomonty` requirement in `otelmonty/go.mod` and `cmd/shmonty/go.mod` to the release version (shmonty requires otelmonty through a `replace`, so without its own bump `go build` there fails with "updates to go.mod needed");
@@ -108,4 +108,4 @@ The workflows follow these rules:
 
 ## Known gaps
 
-Open issues: [#23](https://github.com/mdfranz/gomonty/issues/23) (release builds are not reproducible across runs) and [#52](https://github.com/mdfranz/gomonty/issues/52)–[#54](https://github.com/mdfranz/gomonty/issues/54) (CI build speed, platform scope, and release parallelism).
+Open issues: [#23](https://github.com/mdfranz/gomonty/issues/23) (release builds are not reproducible across runs), [#52](https://github.com/mdfranz/gomonty/issues/52) (CI build speed), and [#53](https://github.com/mdfranz/gomonty/issues/53) (platform scope).
