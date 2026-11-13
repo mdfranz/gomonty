@@ -222,3 +222,10 @@ func TestDumpAndLoadOverARemoteWorker(t *testing.T) {
 		t.Fatalf("after /load: %+v", e)
 	}
 }
+
+// The same scripts, with the same pinned results, run on a remote worker, so a
+// difference between the local library and a worker shows up as a failure here.
+func TestPythonScriptsOverARemoteWorker(t *testing.T) {
+	useRealWorker(t)
+	checkPythonScripts(t)
+}
