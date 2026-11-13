@@ -553,3 +553,159 @@ func TestOpenTimeoutDoesNotEndAnOpenSession(t *testing.T) {
 	got, err := feed(t, repl, "x", monty.FeedOptions{})
 	wantInt(t, got, err, 2)
 }
+
+func str(s string) *string { return &s }
+
+// A raised exception keeps its traceback, and TracebackString renders it the
+// way a local monty.RuntimeError does.
+func TestRaisedExceptionKeepsItsTraceback(t *testing.T) {
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.RaisedException(&montyv1.RaisedException{
+			ExcType: "KeyError",
+			Message: str("a"),
+			Traceback: []*montyv1.StackFrame{
+				{Filename: "<python-input-0>", Start: &montyv1.CodeLoc{Line: 3, Column: 1}, End: &montyv1.CodeLoc{Line: 3, Column: 6}, PreviewLine: str("f({})")},
+				{Filename: "<python-input-0>", Start: &montyv1.CodeLoc{Line: 2, Column: 12}, End: &montyv1.CodeLoc{Line: 2, Column: 18}, FrameName: str("f"), PreviewLine: str("    return x['a']")},
+				{Filename: "<python-input-0>", Start: &montyv1.CodeLoc{Line: 4, Column: 1}, End: &montyv1.CodeLoc{Line: 4, Column: 9}, PreviewLine: str("raise X"), HideCaret: true, HideFrameName: true},
+			},
+		}))
+	}))
+	_, err := feed(t, repl, "f({})", monty.FeedOptions{})
+	var pyErr *remote.PythonError
+	if !errors.As(err, &pyErr) {
+		t.Fatalf("err = %v, want a *remote.PythonError", err)
+	}
+	if pyErr.Type != "KeyError" || pyErr.Message != "a" || len(pyErr.Frames) != 3 {
+		t.Fatalf("got %+v", pyErr)
+	}
+	f := pyErr.Frames[1]
+	if f.Line != 2 || f.Column != 12 || f.EndColumn != 18 || f.FunctionName == nil || *f.FunctionName != "f" || f.SourceLine == nil {
+		t.Fatalf("frame 1 = %+v", f)
+	}
+	if pyErr.Frames[0].FunctionName != nil {
+		t.Fatalf("a module-level frame has no function name, got %q", *pyErr.Frames[0].FunctionName)
+	}
+	want := `Traceback (most recent call last):
+  File "<python-input-0>", line 3, in <module>
+    f({})
+    ~~~~~
+  File "<python-input-0>", line 2, in f
+    return x['a']
+           ~~~~~~
+  File "<python-input-0>", line 4
+    raise X
+KeyError: a`
+	if got := pyErr.TracebackString(); got != want {
+		t.Fatalf("TracebackString:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestExceptionWithNoTracebackRendersJustTheException(t *testing.T) {
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.Raised("ValueError", "boom"))
+	}))
+	_, err := feed(t, repl, "x", monty.FeedOptions{})
+	var pyErr *remote.PythonError
+	if !errors.As(err, &pyErr) {
+		t.Fatalf("err = %v", err)
+	}
+	if got := pyErr.TracebackString(); got != "ValueError: boom" {
+		t.Fatalf("TracebackString = %q", got)
+	}
+}
+
+func TestExceptionDataIsKept(t *testing.T) {
+	doc := `{bad`
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, n int, _ *montyv1.Feed) {
+		switch n {
+		case 1:
+			s.Send(fakeworker.RaisedException(&montyv1.RaisedException{
+				ExcType: "UnicodeDecodeError",
+				Message: str("'utf-8' codec can't decode byte 0xff in position 0: invalid start byte"),
+				Data: &montyv1.ExcData{Kind: &montyv1.ExcData_Unicode{Unicode: &montyv1.UnicodeErrorData{
+					Encoding: "utf-8",
+					Object:   &montyv1.UnicodeErrorData_ObjectBytes{ObjectBytes: []byte{0xff}},
+					Start:    0, End: 1, Reason: "invalid start byte",
+				}}},
+			}))
+		case 2:
+			s.Send(fakeworker.RaisedException(&montyv1.RaisedException{
+				ExcType: "json.JSONDecodeError",
+				Data: &montyv1.ExcData{Kind: &montyv1.ExcData_Json{Json: &montyv1.JsonErrorData{
+					Msg: "Expecting property name enclosed in double quotes", Doc: &doc, Pos: 1, Lineno: 1, Colno: 2,
+				}}},
+			}))
+		default:
+			s.Send(fakeworker.Raised("ValueError", "plain"))
+		}
+	}))
+	pyErr := func() *remote.PythonError {
+		_, err := feed(t, repl, "x", monty.FeedOptions{})
+		var pe *remote.PythonError
+		if !errors.As(err, &pe) {
+			t.Fatalf("err = %v", err)
+		}
+		return pe
+	}
+
+	u := pyErr().Unicode
+	if u == nil || u.Encoding != "utf-8" || u.Start != 0 || u.End != 1 || u.Reason != "invalid start byte" || u.Object.Kind() != "bytes" {
+		t.Fatalf("unicode data = %+v", u)
+	}
+	j := pyErr().JSON
+	if j == nil || j.Msg == "" || j.Doc == nil || *j.Doc != doc || j.Pos != 1 || j.Lineno != 1 || j.Colno != 2 {
+		t.Fatalf("json data = %+v", j)
+	}
+	plain := pyErr()
+	if plain.Unicode != nil || plain.JSON != nil {
+		t.Fatalf("a plain exception grew data: %+v", plain)
+	}
+}
+
+// Output keeps its stream and its order, so a host can tell stderr from stdout.
+func TestPrintStreamsAreKeptApart(t *testing.T) {
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.PrintedSegments(fakeworker.Stdout("one\n"), fakeworker.Stderr("warn\n"), fakeworker.Stdout("two\n")))
+		s.Send(fakeworker.Printed("three\n"))
+		s.Send(fakeworker.Complete(0, fakeworker.Int(1)))
+	}))
+
+	type run struct{ stream, text string }
+	var got []run
+	_, err := feed(t, repl, "x", monty.FeedOptions{Print: func(stream, text string) { got = append(got, run{stream, text}) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []run{{"stdout", "one\n"}, {"stderr", "warn\n"}, {"stdout", "two\n"}, {"stdout", "three\n"}}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+// Output printed before a Python error still reaches the callback with its
+// stream.
+func TestStderrBeforeAnErrorIsDelivered(t *testing.T) {
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, _ int, _ *montyv1.Feed) {
+		s.Send(fakeworker.PrintedSegments(fakeworker.Stderr("careful\n")))
+		s.Send(fakeworker.Raised("ValueError", "boom"))
+	}))
+	var stderr, stdout string
+	_, err := feed(t, repl, "x", monty.FeedOptions{Print: func(stream, text string) {
+		if stream == "stderr" {
+			stderr += text
+		} else {
+			stdout += text
+		}
+	}})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if stderr != "careful\n" || stdout != "" {
+		t.Fatalf("stderr = %q, stdout = %q", stderr, stdout)
+	}
+}

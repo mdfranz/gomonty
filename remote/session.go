@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	monty "github.com/mdfranz/gomonty"
 	montyv1 "github.com/mdfranz/gomonty/remote/internal/montyv1"
 )
 
@@ -92,8 +93,41 @@ func (s *session) send(req *montyv1.ClientRequest) error {
 // turn is a request's outcome: the output printed during it and the event that
 // ended it.
 type turn struct {
-	prints string
+	prints output
 	end    *montyv1.WorkerEvent
+}
+
+// output is what the sandbox printed, as runs on one stream each, in order.
+type output []monty.PrintSegment
+
+// plus returns o followed by more.
+func (o output) plus(more output) output {
+	return append(append(output(nil), o...), more...)
+}
+
+// text is every run joined, whatever its stream.
+func (o output) text() string {
+	var b strings.Builder
+	for _, segment := range o {
+		b.WriteString(segment.Text)
+	}
+	return b.String()
+}
+
+// step attaches the output to a Step.
+func (o output) step(s monty.Step) monty.Step {
+	if len(o) > 0 {
+		s.Prints = o.text()
+		s.PrintSegments = o
+	}
+	return s
+}
+
+func streamName(s montyv1.PrintStream) string {
+	if s == montyv1.PrintStream_PRINT_STREAM_STDERR {
+		return "stderr"
+	}
+	return "stdout"
 }
 
 // call sends one request and reads until the turn ends. Print events are
@@ -118,7 +152,7 @@ func (s *session) call(ctx context.Context, req *montyv1.ClientRequest) (turn, e
 	if err := s.send(req); err != nil {
 		return turn{}, s.fail(callError(ctx, "send", s.sendCause(err)))
 	}
-	var prints strings.Builder
+	var prints output
 	for {
 		event, err := s.recv()
 		if err != nil {
@@ -131,12 +165,14 @@ func (s *session) call(ctx context.Context, req *montyv1.ClientRequest) (turn, e
 		switch kind := event.GetKind().(type) {
 		case *montyv1.WorkerEvent_Print:
 			for _, segment := range kind.Print.GetSegments() {
-				prints.WriteString(segment.GetText())
+				if text := segment.GetText(); text != "" {
+					prints = append(prints, monty.PrintSegment{Stream: streamName(segment.GetStream()), Text: text})
+				}
 			}
 		case *montyv1.WorkerEvent_FatalError:
 			return turn{}, s.fail(fmt.Errorf("remote: the worker failed: %s", kind.FatalError.GetMessage()))
 		default:
-			return turn{prints: prints.String(), end: event}, nil
+			return turn{prints: prints, end: event}, nil
 		}
 	}
 }

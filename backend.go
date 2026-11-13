@@ -68,6 +68,13 @@ type ProgressHandle interface {
 	ResumeFutures(ctx context.Context, results map[uint32]Result) Step
 }
 
+// PrintSegment is one run of print output on a single stream, "stdout" or
+// "stderr".
+type PrintSegment struct {
+	Stream string
+	Text   string
+}
+
 // Step is the outcome of starting or resuming an execution.
 type Step struct {
 	// Progress is the next paused state, nil if the backend returned none.
@@ -75,8 +82,13 @@ type Step struct {
 	// Desc describes Progress; meaningful only when Progress is non-nil and Err
 	// is nil.
 	Desc ProgressDesc
-	// Prints is what the program printed during this step.
+	// Prints is what the program printed during this step, all streams joined.
 	Prints string
+	// PrintSegments is the same output split into runs by stream, in order.
+	// A backend that can tell stdout from stderr sets it; the host layer then
+	// reports each run to PrintCallback under its own stream. Prints must
+	// still hold the joined text. Empty means all of Prints is stdout.
+	PrintSegments []PrintSegment
 	// Repl is a REPL session handed back with this step (on the error path, or
 	// alongside a completed snippet).
 	Repl ReplHandle

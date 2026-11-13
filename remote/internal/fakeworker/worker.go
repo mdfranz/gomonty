@@ -147,6 +147,26 @@ func Printed(text string) *montyv1.WorkerEvent {
 	}}}
 }
 
+// PrintedSegments is a Print event with the given segments, in order.
+func PrintedSegments(segments ...*montyv1.PrintSegment) *montyv1.WorkerEvent {
+	return &montyv1.WorkerEvent{Kind: &montyv1.WorkerEvent_Print{Print: &montyv1.Print{Segments: segments}}}
+}
+
+// Stdout and Stderr build one print segment on that stream.
+func Stdout(text string) *montyv1.PrintSegment {
+	return &montyv1.PrintSegment{Stream: montyv1.PrintStream_PRINT_STREAM_STDOUT, Text: text}
+}
+
+func Stderr(text string) *montyv1.PrintSegment {
+	return &montyv1.PrintSegment{Stream: montyv1.PrintStream_PRINT_STREAM_STDERR, Text: text}
+}
+
+// RaisedException ends a turn with a fully specified exception, traceback and
+// data included.
+func RaisedException(exc *montyv1.RaisedException) *montyv1.WorkerEvent {
+	return &montyv1.WorkerEvent{Kind: &montyv1.WorkerEvent_Error{Error: &montyv1.Error{Exception: exc}}}
+}
+
 // Complete ends a turn with the node at root in the arena built from nodes.
 func Complete(root uint32, nodes ...*montyv1.MontyNode) *montyv1.WorkerEvent {
 	return &montyv1.WorkerEvent{Kind: &montyv1.WorkerEvent_Complete{Complete: &montyv1.Complete{

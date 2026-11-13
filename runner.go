@@ -587,7 +587,12 @@ func closeStep(st Step) {
 func consumeStep(ctx context.Context, st Step, owner *replState, print PrintCallback, pt printTelemetry) (Progress, error) {
 	if st.Prints != "" {
 		if print != nil {
-			print("stdout", st.Prints)
+			if len(st.PrintSegments) == 0 {
+				print("stdout", st.Prints)
+			}
+			for _, segment := range st.PrintSegments {
+				print(segment.Stream, segment.Text)
+			}
 		}
 		recordPrint(ctx, pt, st.Prints)
 	}

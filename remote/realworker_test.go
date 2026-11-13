@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -253,5 +254,75 @@ await main()`
 	}
 	if d := time.Since(start); d < 350*time.Millisecond || d > 1100*time.Millisecond {
 		t.Fatalf("three 0.4s sleeps took %v: want them to overlap (about 0.4s, not 1.2s)", d)
+	}
+}
+
+var inputNumber = regexp.MustCompile(`<python-input-\d+>`)
+
+// A remote traceback reads exactly like the local backend's, and structured
+// exception data comes through.
+func TestRealWorkerTracebackMatchesLocal(t *testing.T) {
+	remoteRepl := realRepl(t)
+	snippets := []string{
+		"1 / 0",
+		"def f(x):\n    return x['a']\nf({})",
+		"import json\njson.loads('{bad')",
+		"b'\\xff'.decode('utf-8')",
+		"raise ValueError('boom')",
+	}
+	for _, code := range snippets {
+		localRepl, err := monty.NewRepl(monty.ReplOptions{ScriptName: "real_worker_test.py"})
+		if err != nil {
+			t.Skipf("no local backend to compare with: %v", err)
+		}
+		_, localErr := feed(t, localRepl, code, monty.FeedOptions{})
+		_, remoteErr := feed(t, remoteRepl, code, monty.FeedOptions{})
+
+		var local *monty.RuntimeError
+		var pyErr *remote.PythonError
+		if !errors.As(localErr, &local) || !errors.As(remoteErr, &pyErr) {
+			t.Fatalf("%q: local %T (%v), remote %T (%v)", code, localErr, localErr, remoteErr, remoteErr)
+		}
+		// Each backend numbers its own feeds, so compare with that normalized.
+		norm := func(s string) string { return inputNumber.ReplaceAllString(s, "<python-input-0>") }
+		if got, want := norm(pyErr.TracebackString()), local.TracebackString(); got != want {
+			t.Errorf("%q: remote traceback differs from local\nremote:\n%s\nlocal:\n%s", code, got, want)
+		}
+		if len(pyErr.Frames) != len(local.Frames) {
+			t.Errorf("%q: %d remote frames, %d local", code, len(pyErr.Frames), len(local.Frames))
+		}
+	}
+}
+
+func TestRealWorkerExceptionData(t *testing.T) {
+	repl := realRepl(t)
+	_, err := feed(t, repl, "b'\\xff'.decode('utf-8')", monty.FeedOptions{})
+	var pyErr *remote.PythonError
+	if !errors.As(err, &pyErr) || pyErr.Unicode == nil || pyErr.Unicode.Encoding != "utf-8" || pyErr.Unicode.Reason == "" {
+		t.Fatalf("unicode error = %v (%+v)", err, pyErr)
+	}
+	_, err = feed(t, repl, "import json\njson.loads('{bad')", monty.FeedOptions{})
+	if !errors.As(err, &pyErr) || pyErr.JSON == nil || pyErr.JSON.Lineno != 1 || pyErr.JSON.Colno != 2 {
+		t.Fatalf("json error = %v (%+v)", err, pyErr)
+	}
+}
+
+func TestRealWorkerStderrIsReportedSeparately(t *testing.T) {
+	repl := realRepl(t)
+	var stdout, stderr string
+	_, err := feed(t, repl, "import sys\nprint('out')\nprint('err', file=sys.stderr)\nprint('out2')", monty.FeedOptions{
+		Print: func(stream, text string) {
+			if stream == "stderr" {
+				stderr += text
+			} else {
+				stdout += text
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stdout != "out\nout2\n" || stderr != "err\n" {
+		t.Fatalf("stdout = %q, stderr = %q", stdout, stderr)
 	}
 }

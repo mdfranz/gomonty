@@ -13,6 +13,9 @@ import (
 // over any backend, not only the native library.
 type fakeBackend struct {
 	closes atomic.Int32
+	// segments, when set, is what the backend prints per stream instead of
+	// the plain "paused" line.
+	segments []PrintSegment
 }
 
 type fakeRunner struct{ b *fakeBackend }
@@ -44,9 +47,17 @@ func (r *fakeRepl) FeedStart(_ context.Context, _ string, opts FeedStartOptions)
 }
 
 func pausedAtDouble(b *fakeBackend, x Value, isRepl bool) Step {
+	prints := "paused\n"
+	if b.segments != nil {
+		prints = ""
+		for _, segment := range b.segments {
+			prints += segment.Text
+		}
+	}
 	return Step{
-		Progress: &fakeProgress{b: b},
-		Prints:   "paused\n",
+		Progress:      &fakeProgress{b: b},
+		Prints:        prints,
+		PrintSegments: b.segments,
 		Desc: ProgressDesc{
 			Kind:         ProgressFunctionCall,
 			ScriptName:   "fake.py",
@@ -165,5 +176,27 @@ func TestReplRunsOverAnyBackendAndStaysUsable(t *testing.T) {
 		if got.Raw() != i*2 {
 			t.Fatalf("FeedRun %d = %v, want %d", i, got, i*2)
 		}
+	}
+}
+
+// A backend that can tell the streams apart has each run reported under its
+// own stream; one that cannot has everything reported as stdout.
+func TestPrintSegmentsReachTheCallbackByStream(t *testing.T) {
+	fake := &fakeBackend{segments: []PrintSegment{{Stream: "stdout", Text: "out\n"}, {Stream: "stderr", Text: "err\n"}}}
+	runner, err := New("ignored", CompileOptions{Backend: fake})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []PrintSegment
+	_, err = runner.Run(context.Background(), RunOptions{
+		Inputs:    map[string]Value{"x": Int(1)},
+		Functions: map[string]ExternalFunction{"double": doubleFunction},
+		Print:     func(stream, text string) { got = append(got, PrintSegment{stream, text}) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != fake.segments[0] || got[1] != fake.segments[1] {
+		t.Fatalf("got %v, want %v", got, fake.segments)
 	}
 }
