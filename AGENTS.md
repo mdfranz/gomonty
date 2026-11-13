@@ -40,7 +40,7 @@ cargo test -p monty-go-ffi --locked
 - The upstream pin in `Cargo.toml` (`monty`, `monty_type_checking`, `monty_types`) must use one full 40-character commit hash for all three entries.
 - The vendored proto in `remote/proto/` must come from the same upstream commit as the `Cargo.toml` pin. When you bump the pin, copy `crates/monty-proto/proto/monty/v1/monty.proto` from the new tag unchanged, update `remote/proto/UPSTREAM` (tag, commit, sha256), run `make proto` and commit the regenerated `remote/internal/montyv1`. `make check-proto` and `remote`'s tests catch drift. `make proto` needs `protoc`.
 - Never renumber `WIRE_VALUE_*` constants; Go uses `iota`, so their order must match the Rust values.
-- `verify.yml` runs only when a PR is first opened. To recheck later pushes, run `gh workflow run verify.yml --ref <branch>`.
+- `verify.yml` runs on `pull_request` (`opened`, `synchronize`, `reopened`) and cancels superseded in-progress runs; it can also be triggered manually with `gh workflow run verify.yml --ref <branch>`.
 - Releases: `make release` opens a release-prep PR. After it merges, run `make publish-release VERSION=vX.Y.Z`.
 
 ## Skills

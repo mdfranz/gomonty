@@ -304,7 +304,7 @@ git push -u origin <branch>
 gh pr create --title "..." --body "..."   # include the Step 7 results and the dump/load note
 ```
 
-`verify.yml` runs only when the PR is opened. After later pushes, recheck with `gh workflow run verify.yml --ref <branch>`.
+`verify.yml` runs automatically when the PR is opened and on subsequent pushes (`synchronize`). You can also re-run it manually with `gh workflow run verify.yml --ref <branch>`.
 
 ## Step 9: Release
 

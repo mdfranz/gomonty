@@ -2,8 +2,7 @@ name: zizmor
 
 # Lints the workflow files themselves for security problems (template
 # injection, over-broad permissions, unpinned actions, credential
-# persistence). The job is a few seconds, so unlike verify it also re-runs
-# on every push to a PR that touches workflows.
+# persistence). Runs on PRs that touch workflows.
 
 on:
   pull_request:

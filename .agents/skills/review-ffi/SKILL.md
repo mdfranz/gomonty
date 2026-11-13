@@ -39,6 +39,7 @@ Dumps are upstream types serialized by the FFI. Changes to wrapped upstream type
 ```bash
 MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh <host target triple>
 cargo test -p monty-go-ffi --locked
+cargo clippy -p monty-go-ffi --tests --locked -- -D warnings
 CGO_ENABLED=0 go test ./...
 CGO_ENABLED=0 go test -run '^$' -fuzz FuzzLoadRunner -fuzztime=30s .
 ```
@@ -47,4 +48,4 @@ Rebuild the host library first: Go tests run against it, so a stale library make
 
 ## Known gaps (do not treat as new findings)
 
-Issue #33 tracks 7 exports without panic guards and the unenforced clippy set. Report a new unguarded export, but link #33 rather than re-filing it.
+Issue #33 tracks 7 exports without panic guards. Report a new unguarded export, but link #33 rather than re-filing it.
