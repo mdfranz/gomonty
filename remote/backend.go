@@ -101,7 +101,7 @@ func (b *Backend) NewRepl(opts monty.ReplOptions) (monty.ReplHandle, error) {
 		cancel()
 		return nil, openErr(err)
 	}
-	sess := &session{stream: stream, cancel: cancel}
+	sess := newSession(stream, cancel)
 
 	configure := &montyv1.Configure{
 		ScriptName:      opts.ScriptName,

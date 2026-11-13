@@ -24,9 +24,69 @@ type session struct {
 	stream Stream
 	cancel context.CancelFunc
 
+	// A reader goroutine owns stream.Recv so that Ping is answered between
+	// turns too: the relay drops a client that goes quiet. It forwards every
+	// other event, then the stream's error, on events. sendMu keeps its Pong
+	// from interleaving with a request being sent.
+	sendMu sync.Mutex
+	events chan recvResult
+	done   chan struct{}
+
 	closeOnce sync.Once
 	// dead is set once the stream can no longer be used.
 	dead error
+}
+
+type recvResult struct {
+	event *montyv1.WorkerEvent
+	err   error
+}
+
+// newSession wraps stream and starts reading it.
+func newSession(stream Stream, cancel context.CancelFunc) *session {
+	s := &session{stream: stream, cancel: cancel, events: make(chan recvResult), done: make(chan struct{})}
+	go s.readLoop()
+	return s
+}
+
+func (s *session) readLoop() {
+	for {
+		event, err := s.stream.Recv()
+		if err == nil {
+			if _, ok := event.GetKind().(*montyv1.WorkerEvent_Ping); ok {
+				pong := &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Pong{Pong: &montyv1.Pong{}}}
+				s.sendMu.Lock()
+				_ = s.stream.Send(pong) // a dead stream fails the next Recv too
+				s.sendMu.Unlock()
+				continue
+			}
+		}
+		select {
+		case s.events <- recvResult{event, err}:
+		case <-s.done:
+			return
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// recv returns the next event or the stream's error.
+func (s *session) recv() (*montyv1.WorkerEvent, error) {
+	select {
+	case r := <-s.events:
+		return r.event, r.err
+	case <-s.done:
+		return nil, errors.New("remote: the session was closed")
+	}
+}
+
+// send writes one request, serialized with the reader's Pong.
+func (s *session) send(req *montyv1.ClientRequest) error {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	return s.stream.Send(req)
 }
 
 // turn is a request's outcome: the output printed during it and the event that
@@ -55,12 +115,12 @@ func (s *session) call(ctx context.Context, req *montyv1.ClientRequest) (turn, e
 	stop := context.AfterFunc(ctx, s.cancel)
 	defer stop()
 
-	if err := s.stream.Send(req); err != nil {
-		return turn{}, s.fail(callError(ctx, "send", err))
+	if err := s.send(req); err != nil {
+		return turn{}, s.fail(callError(ctx, "send", s.sendCause(err)))
 	}
 	var prints strings.Builder
 	for {
-		event, err := s.stream.Recv()
+		event, err := s.recv()
 		if err != nil {
 			if errors.Is(err, io.EOF) && ctx.Err() == nil {
 				// A worker that exits without a FatalError crashed.
@@ -73,15 +133,31 @@ func (s *session) call(ctx context.Context, req *montyv1.ClientRequest) (turn, e
 			for _, segment := range kind.Print.GetSegments() {
 				prints.WriteString(segment.GetText())
 			}
-		case *montyv1.WorkerEvent_Ping:
-			pong := &montyv1.ClientRequest{Kind: &montyv1.ClientRequest_Pong{Pong: &montyv1.Pong{}}}
-			if err := s.stream.Send(pong); err != nil {
-				return turn{}, s.fail(callError(ctx, "answer ping", err))
-			}
 		case *montyv1.WorkerEvent_FatalError:
 			return turn{}, s.fail(fmt.Errorf("remote: the worker failed: %s", kind.FatalError.GetMessage()))
 		default:
 			return turn{prints: prints.String(), end: event}, nil
+		}
+	}
+}
+
+// sendCause explains a failed send. gRPC reports a stream the worker already
+// ended as a bare io.EOF and keeps the real status (or a final FatalError
+// event) for Recv, so read it to say why the worker hung up.
+func (s *session) sendCause(err error) error {
+	if !errors.Is(err, io.EOF) {
+		return err
+	}
+	for {
+		event, rerr := s.recv()
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				return errors.New("the worker closed the stream before the request was sent")
+			}
+			return rerr
+		}
+		if fatal, ok := event.GetKind().(*montyv1.WorkerEvent_FatalError); ok {
+			return fmt.Errorf("the worker failed: %s", fatal.FatalError.GetMessage())
 		}
 	}
 }
@@ -106,6 +182,7 @@ func (s *session) fail(err error) error {
 // close ends the session. It is safe to call more than once.
 func (s *session) close() {
 	s.closeOnce.Do(func() {
+		close(s.done)
 		_ = s.stream.CloseSend()
 		s.cancel()
 	})

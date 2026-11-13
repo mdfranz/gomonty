@@ -321,6 +321,32 @@ func TestPingIsAnswered(t *testing.T) {
 	}
 }
 
+// A relay pings between turns and drops a client that stays quiet, so the
+// Pong must come while the client is idle, not only while it awaits a reply.
+func TestPingBetweenTurnsIsAnswered(t *testing.T) {
+	answered := make(chan bool, 1)
+	repl := newRepl(t, serve(func(s *fakeworker.Stream, n int, _ *montyv1.Feed) {
+		s.Send(fakeworker.Complete(0, fakeworker.Int(5)))
+		if n == 1 {
+			s.Send(fakeworker.Ping())
+			req := s.Recv()
+			answered <- req != nil && req.GetPong() != nil
+		}
+	}))
+	got, err := feed(t, repl, "x", monty.FeedOptions{})
+	wantInt(t, got, err, 5)
+	select {
+	case ok := <-answered:
+		if !ok {
+			t.Fatal("the worker received something other than Pong")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the client did not answer a Ping sent between turns")
+	}
+	got, err = feed(t, repl, "y", monty.FeedOptions{})
+	wantInt(t, got, err, 5)
+}
+
 func TestUnsendableInputIsRejectedBeforeAnythingIsSent(t *testing.T) {
 	feeds := 0
 	var mu sync.Mutex
