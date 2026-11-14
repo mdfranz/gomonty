@@ -212,6 +212,121 @@ jobs:
           name: ffi-linux-arm64-musl
           path: internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so
 
+  test-libraries:
+    name: test ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    needs:
+      - header-and-linux-amd64
+      - shared-libraries
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            runner: ubuntu-latest
+            artifact_name: ffi-linux-amd64
+            artifact_path: internal/ffi/lib/linux_amd64/libmonty_go_ffi.so
+            lib_filename: libmonty_go_ffi.so
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            artifact_name: ffi-linux-arm64
+            artifact_path: internal/ffi/lib/linux_arm64/libmonty_go_ffi.so
+            lib_filename: libmonty_go_ffi.so
+          - name: darwin-arm64
+            runner: macos-15
+            artifact_name: ffi-darwin-arm64
+            artifact_path: internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib
+            lib_filename: libmonty_go_ffi.dylib
+          - name: windows-amd64
+            runner: windows-latest
+            artifact_name: ffi-windows-amd64
+            artifact_path: internal/ffi/lib/windows_amd64/monty_go_ffi.dll
+            lib_filename: monty_go_ffi.dll
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Download shared library artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: .artifacts
+
+      - name: Install downloaded shared library
+        env:
+          LIB_FILENAME: ${{ matrix.lib_filename }}
+          TARGET_PATH: ${{ matrix.artifact_path }}
+        shell: bash
+        run: |
+          mkdir -p "$(dirname "$TARGET_PATH")"
+          cp ".artifacts/$LIB_FILENAME" "$TARGET_PATH"
+
+      - name: Run artifact smoke test
+        env:
+          CGO_ENABLED: "0"
+        shell: bash
+        run: go test -v -run '^TestPlatformSmoke$' .
+
+  test-musl-libraries:
+    name: test ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    needs:
+      - musl-shared-library-amd64
+      - musl-shared-library-arm64
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64-musl
+            runner: ubuntu-latest
+            artifact_name: ffi-linux-amd64-musl
+            artifact_path: internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so
+            musl_ld: /lib/ld-musl-x86_64.so.1
+          - name: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            artifact_name: ffi-linux-arm64-musl
+            artifact_path: internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so
+            musl_ld: /lib/ld-musl-aarch64.so.1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Download shared library artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: .artifacts
+
+      - name: Run musl artifact smoke test in container
+        env:
+          TARGET_PATH: ${{ matrix.artifact_path }}
+          MUSL_LD: ${{ matrix.musl_ld }}
+        shell: bash
+        run: |
+          mkdir -p "$(dirname "$TARGET_PATH")"
+          cp ".artifacts/libmonty_go_ffi.so" "$TARGET_PATH"
+          trap 'rm -f .musl-smoke.test' EXIT
+          CGO_ENABLED=0 go test -c -tags musl -ldflags "-I $MUSL_LD" -o .musl-smoke.test .
+          docker run --rm -v "$PWD:/work" -w /work rust:1.98-alpine /work/.musl-smoke.test -test.v -test.run '^TestPlatformSmoke$'
+
   open-pr:
     runs-on: ubuntu-latest
     permissions:
@@ -223,6 +338,8 @@ jobs:
       - shared-libraries
       - musl-shared-library-amd64
       - musl-shared-library-arm64
+      - test-libraries
+      - test-musl-libraries
     steps:
       # No explicit ref: use the same commit the build jobs compiled, not
       # whatever main points at by the time the builds finish.
