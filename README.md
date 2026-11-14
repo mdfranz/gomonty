@@ -86,7 +86,7 @@ Run it from a checkout with `cd examples && CGO_ENABLED=0 go run ./cmd/example`.
 | Pause/resume | Step through execution with `Start`, and serialize snapshots with `Dump`/`Load*`. | `Runner.Start`, `Snapshot` |
 | REPL | Feed successive snippets into one persistent interpreter. | `NewRepl`, `Repl.FeedRun` |
 | Type checking | Check code against stubs before running it. | `Runner.TypeCheck`, `CompileOptions.TypeCheck` |
-| Resource limits | Bound duration, memory, recursion depth and host-call count. | `ResourceLimits` |
+| Resource limits | Bound duration, per-allocation memory in-process (or total heap on `remote` workers with `monty-alloc`), GC interval, and recursion depth; `MaxSuspensions` is forwarded to the backend. | `ResourceLimits` |
 | Telemetry | Opt-in structured logs or OpenTelemetry spans for runs, callbacks and waits. | `SlogHandler`, [`otelmonty/`](./otelmonty) |
 | Remote workers | Run REPL sessions on an out-of-process `monty.v1.MontySession` gRPC worker with host callbacks, VFS, limits, snapshots, and W3C `traceparent` propagation. | [`remote/`](./remote), [docs/remote.md](./docs/remote.md) |
 | `shmonty` | Interactive terminal REPL and script runner built on the library. `--remote host:port` runs the REPL on a remote worker. | [`cmd/shmonty/`](./cmd/shmonty) |

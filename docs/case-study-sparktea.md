@@ -15,7 +15,7 @@ PydanticAI's "code mode" replaces one-tool-call-per-turn with a single `run_code
 | gomonty feature | How sparktea uses it |
 | --- | --- |
 | `monty.New` + `Runner.Run` | One runner per `run_code` call, script name `run_code.py`. |
-| `ResourceLimits` | 5 s wall clock, 64 MiB memory, recursion depth 100, `MaxSuspensions` 10 as a backstop. |
+| `ResourceLimits` | 5 s wall clock, 64 MiB per-allocation memory cap in-process, recursion depth 100, `MaxSuspensions` 10 forwarded to backend. |
 | `WriterPrintCallback` | Captures `print()` output into a `strings.Builder` returned with the result. |
 | Error types | Syntax errors, runtime errors, limit violations and type errors are all returned to the model as retry prompts. |
 | `Telemetry` / `TelemetryOptions` | Wraps `otelmonty.Handler` so `monty.run` spans nest under the model-request spans exported to Logfire. |
