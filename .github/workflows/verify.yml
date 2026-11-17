@@ -1,16 +1,23 @@
 name: verify
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
     types: [opened, synchronize, reopened]
   schedule:
-    # Weekly full-platform run (Mondays 06:00 UTC) so Windows, macOS, and musl stay tested.
+    # Weekly full-platform run (Mondays 06:00 UTC) runs with the production
+    # release profile so Windows, macOS, and musl stay tested with LTO enabled.
     - cron: "0 6 * * 1"
   workflow_dispatch: {}
 
+env:
+  MONTY_GO_FFI_PROFILE: ${{ github.event_name == 'schedule' && 'release' || 'ci' }}
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions: {}
 
@@ -48,14 +55,16 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
+          toolchain: "1.98.0"
           targets: x86_64-unknown-linux-gnu
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
+          prefix-key: ${{ env.MONTY_GO_FFI_PROFILE }}
           cache-on-failure: true
 
-      - name: Check formatting
+      - name: Check formatting and toolchain pin
         shell: bash
         run: |
           unformatted="$(gofmt -l .)"
@@ -65,6 +74,23 @@ jobs:
             exit 1
           fi
           cargo fmt --all --check
+          toolchain_channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          toolchain_major_minor="${toolchain_channel%.*}"
+          test -n "$toolchain_major_minor"
+          for wf in .github/workflows/verify.yml .github/workflows/release-prep.yml; do
+            for img in $(grep -oE 'rust:[0-9]+\.[0-9]+-alpine' "$wf" | sort -u); do
+              if [ "$img" != "rust:${toolchain_major_minor}-alpine" ]; then
+                echo "$wf uses $img, expected rust:${toolchain_major_minor}-alpine from rust-toolchain.toml" >&2
+                exit 1
+              fi
+            done
+            for tc in $(sed -n 's/^[[:space:]]*toolchain:[[:space:]]*"\(.*\)"/\1/p' "$wf"); do
+              if [ "$tc" != "$toolchain_channel" ]; then
+                echo "$wf sets dtolnay/rust-toolchain toolchain=$tc, expected $toolchain_channel" >&2
+                exit 1
+              fi
+            done
+          done
 
       - name: Build native shared library
         shell: bash
@@ -79,13 +105,13 @@ jobs:
         shell: bash
         run: |
           export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
-          cargo test -p monty-go-ffi --locked
+          cargo test -p monty-go-ffi --locked --profile "$MONTY_GO_FFI_PROFILE" --target x86_64-unknown-linux-gnu
 
       - name: Run clippy
         shell: bash
         run: |
           export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
-          cargo clippy -p monty-go-ffi --tests --locked -- -D warnings
+          cargo clippy -p monty-go-ffi --tests --locked --profile "$MONTY_GO_FFI_PROFILE" --target x86_64-unknown-linux-gnu -- -D warnings
 
       - name: Run CGO-disabled tests
         env:
@@ -187,10 +213,12 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
+          toolchain: "1.98.0"
           targets: ${{ matrix.rust_target }}
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
+          prefix-key: ${{ env.MONTY_GO_FFI_PROFILE }}
           cache-on-failure: true
 
       - name: Build native shared library
@@ -241,10 +269,12 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
+          toolchain: "1.98.0"
           targets: x86_64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
+          prefix-key: ${{ env.MONTY_GO_FFI_PROFILE }}
           cache-on-failure: true
 
       - name: Build native shared library
@@ -280,7 +310,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          prefix-key: musl-amd64
+          prefix-key: musl-amd64-${{ env.MONTY_GO_FFI_PROFILE }}
           cache-on-failure: true
 
       - name: Build native shared library in musl container
@@ -288,6 +318,7 @@ jobs:
         run: |
           mkdir -p ~/.cargo/registry ~/.cargo/git
           docker run --rm \
+            -e MONTY_GO_FFI_PROFILE \
             -v "$PWD:/work" \
             -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
             -v "$HOME/.cargo/git:/usr/local/cargo/git" \
@@ -331,7 +362,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          prefix-key: musl-arm64
+          prefix-key: musl-arm64-${{ env.MONTY_GO_FFI_PROFILE }}
           cache-on-failure: true
 
       - name: Build native shared library in musl container
@@ -339,6 +370,7 @@ jobs:
         run: |
           mkdir -p ~/.cargo/registry ~/.cargo/git
           docker run --rm \
+            -e MONTY_GO_FFI_PROFILE \
             -v "$PWD:/work" \
             -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
             -v "$HOME/.cargo/git:/usr/local/cargo/git" \

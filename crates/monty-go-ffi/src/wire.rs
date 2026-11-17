@@ -855,8 +855,7 @@ mod tests {
         let original = WireValue::from_monty(&MontyObject::float(-0.0));
         let encoded = rmp_serde::to_vec_named(&original).expect("float should encode");
         let decoded: WireValue = rmp_serde::from_slice(&encoded).expect("float should decode");
-        assert!(decoded.float_value.is_sign_negative());
-        assert_eq!(decoded.float_value, 0.0);
+        assert_eq!(decoded.float_value.to_bits(), (-0.0_f64).to_bits());
     }
 
     #[test]

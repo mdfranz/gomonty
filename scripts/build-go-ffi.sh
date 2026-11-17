@@ -32,9 +32,37 @@ if [[ "$SKIP_HEADER" != "1" ]] && ! command -v cbindgen >/dev/null 2>&1; then
   exit 1
 fi
 
+PROFILE="${MONTY_GO_FFI_PROFILE:-release}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "--profile requires a value" >&2
+        exit 1
+      fi
+      PROFILE="$2"
+      shift 2
+      ;;
+    --profile=*)
+      PROFILE="${1#*=}"
+      shift
+      ;;
+    -*)
+      echo "unknown option: $1" >&2
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
 if [[ $# -ne 1 ]]; then
   cat >&2 <<'EOF'
-usage: scripts/build-go-ffi.sh <target-triple>
+usage: scripts/build-go-ffi.sh [--profile <profile>] <target-triple>
+
+Set MONTY_GO_FFI_PROFILE (or pass --profile) to select a Cargo profile
+(defaults to release).
 
 Supported targets:
   aarch64-apple-darwin
@@ -107,15 +135,19 @@ fi
 
 mkdir -p "$lib_dir"
 
-echo "Building monty-go-ffi for $target"
-cargo build --locked --manifest-path "$ROOT_DIR/Cargo.toml" -p monty-go-ffi --release --target "$target"
+echo "Building monty-go-ffi for $target (profile: $PROFILE)"
+cargo build --locked --manifest-path "$ROOT_DIR/Cargo.toml" -p monty-go-ffi --profile "$PROFILE" --target "$target"
 
 if [[ "$SKIP_HEADER" != "1" ]]; then
   echo "Refreshing C header"
   cbindgen --config "$CRATE_DIR/cbindgen.toml" --crate monty-go-ffi --output "$HEADER_PATH" "$CRATE_DIR"
 fi
 
-artifact="$ROOT_DIR/target/$target/release/$lib_name"
+profile_dir="$PROFILE"
+if [[ "$PROFILE" == "dev" ]]; then
+  profile_dir="debug"
+fi
+artifact="$ROOT_DIR/target/$target/$profile_dir/$lib_name"
 if [[ ! -f "$artifact" ]]; then
   echo "expected artifact not found: $artifact" >&2
   exit 1
