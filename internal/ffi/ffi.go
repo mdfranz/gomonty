@@ -76,6 +76,7 @@ type nativeAPI struct {
 	progressResumeCall    func(progress *cProgress, resultPtr *byte, resultLen uintptr, out *cOpResult)
 	progressResumeLookup  func(progress *cProgress, resultPtr *byte, resultLen uintptr, out *cOpResult)
 	progressResumeFutures func(progress *cProgress, resultPtr *byte, resultLen uintptr, out *cOpResult)
+	progressAbort         func(progress *cProgress, resultPtr *byte, resultLen uintptr, out *cOpResult)
 }
 
 var api nativeAPI
@@ -168,6 +169,7 @@ func (a *nativeAPI) register(handle uintptr) error {
 		{"monty_go_progress_resume_call", &a.progressResumeCall},
 		{"monty_go_progress_resume_lookup", &a.progressResumeLookup},
 		{"monty_go_progress_resume_futures", &a.progressResumeFutures},
+		{"monty_go_progress_abort", &a.progressAbort},
 	} {
 		if err := registerLibraryFunc(handle, binding.name, binding.dst); err != nil {
 			return err
@@ -603,6 +605,18 @@ func (p *Progress) ResumeFutures(result []byte) OpResult {
 	resultPtr, resultLen := byteArgs(result)
 	var out cOpResult
 	api.progressResumeFutures(p.ptr, resultPtr, resultLen, &out)
+	runtime.KeepAlive(result)
+	return opResultFromC(out)
+}
+
+// Abort terminates a paused progress handle with an uncatchable exception.
+func (p *Progress) Abort(result []byte) OpResult {
+	if p == nil || p.ptr == nil {
+		return OpResult{}
+	}
+	resultPtr, resultLen := byteArgs(result)
+	var out cOpResult
+	api.progressAbort(p.ptr, resultPtr, resultLen, &out)
 	runtime.KeepAlive(result)
 	return opResultFromC(out)
 }

@@ -154,3 +154,8 @@ func (*Progress) ResumeLookup([]byte) OpResult {
 func (*Progress) ResumeFutures([]byte) OpResult {
 	return OpResult{Error: unavailableError()}
 }
+
+// Abort returns an unavailable error on unsupported targets.
+func (*Progress) Abort([]byte) OpResult {
+	return OpResult{Error: unavailableError()}
+}

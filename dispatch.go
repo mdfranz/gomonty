@@ -132,13 +132,14 @@ func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfi
 		return result, err
 	}
 
-	// Upstream now routes a method call to a host-object receiver by
-	// identity (a uuid, not carried on Snapshot yet) rather than passing
-	// self as Args[0] — gomonty does not yet track registered class
-	// instances, so a method call is dispatched the same way as a plain
-	// external function, keyed by name only. IsMethodCall stays available
-	// so callers driving the low-level Start/Progress API directly can
-	// tell the two apart.
+	// Upstream routes a method call on a host object by receiver UUID rather
+	// than passing self in Args. Until full receiver routing is implemented
+	// (#57), refuse method calls carrying an object receiver instead of letting
+	// them fall through to same-named global functions.
+	if snapshot.IsMethodCall || snapshot.ObjectID != "" {
+		message := fmt.Sprintf("host object method call %q is not supported", snapshot.FunctionName)
+		return Raise(Exception{Type: "NotImplementedError", Arg: &message}), nil
+	}
 	handler, ok := cfg.functions[snapshot.FunctionName]
 	if !ok {
 		// No call was actually attempted (no matching handler registered),
@@ -161,6 +162,7 @@ func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfi
 		Kwargs:       snapshot.Kwargs,
 		CallID:       snapshot.CallID,
 		IsMethodCall: snapshot.IsMethodCall,
+		ObjectID:     snapshot.ObjectID,
 	}))
 	endCallbackSpan(span, result, err, cfg.telemetryOptions)
 	return result, err
@@ -254,6 +256,11 @@ func dispatchSystemSleep(ctx context.Context, snapshot *Snapshot, cfg dispatchCo
 
 func dispatchNameLookup(ctx context.Context, lookup *NameLookupSnapshot, cfg dispatchConfig) (Progress, error) {
 	pt := printTelemetry{handler: cfg.telemetry, opts: cfg.telemetryOptions}
+	if lookup.ObjectID != "" {
+		// Host-object attribute lookup must not fall through to global
+		// functions (#57); returning undefined lets Monty raise AttributeError.
+		return lookup.progressBase.resumeLookup(ctx, Value{}, false, cfg.print, pt)
+	}
 	if handler, ok := cfg.functions[lookup.VariableName]; ok && handler != nil {
 		value := FunctionValue(Function{Name: lookup.VariableName})
 		return lookup.progressBase.resumeLookup(ctx, value, true, cfg.print, pt)

@@ -90,6 +90,12 @@ type ProgressHandle interface {
 	ResumeFutures(ctx context.Context, results map[uint32]Result) Step
 }
 
+// ProgressAborter is implemented by a ProgressHandle that can terminate a
+// paused execution with an uncatchable exception.
+type ProgressAborter interface {
+	Abort(ctx context.Context, exception Exception) Step
+}
+
 // PrintSegment is one run of print output on a single stream, "stdout" or
 // "stderr".
 type PrintSegment struct {
@@ -231,6 +237,7 @@ type ProgressDesc struct {
 	CallID       uint32
 	IsOSFunction bool
 	IsMethodCall bool
+	ObjectID     string
 
 	// ProgressNameLookup
 	VariableName string

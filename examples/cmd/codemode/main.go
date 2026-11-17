@@ -72,8 +72,8 @@ func run(out io.Writer) error {
 		Functions: tools,
 		OS:        vfs.Handler(fs, vfs.MapEnvironment{}),
 		Print:     monty.WriterPrintCallback(out),
-		// Generated code is untrusted: bound duration and per-allocation memory
-		// in-process (MaxSuspensions is forwarded to the backend).
+		// Generated code is untrusted: bound duration, per-allocation memory
+		// in-process, and host-call suspension count.
 		Limits: &monty.ResourceLimits{
 			MaxDuration:    2 * time.Second,
 			MaxMemory:      16 << 20,

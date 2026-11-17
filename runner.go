@@ -39,12 +39,14 @@ type Snapshot struct {
 	CallID       uint32
 	IsOSFunction bool
 	IsMethodCall bool
+	ObjectID     string
 }
 
 // NameLookupSnapshot is a paused unresolved-name lookup.
 type NameLookupSnapshot struct {
 	progressBase
 	VariableName string
+	ObjectID     string
 }
 
 // FutureSnapshot is a paused future-resolution state.
@@ -462,6 +464,21 @@ func (s *FutureSnapshot) ResumeResults(ctx context.Context, results map[uint32]R
 	return s.progressBase.resumeFutures(ctx, results, nil, printTelemetry{})
 }
 
+// Abort terminates execution uncatchably at this paused snapshot and restores any REPL owner.
+func (s *Snapshot) Abort(ctx context.Context, exception Exception) error {
+	return s.progressBase.abort(ctx, exception, nil, printTelemetry{})
+}
+
+// Abort terminates execution uncatchably at this paused lookup and restores any REPL owner.
+func (s *NameLookupSnapshot) Abort(ctx context.Context, exception Exception) error {
+	return s.progressBase.abort(ctx, exception, nil, printTelemetry{})
+}
+
+// Abort terminates execution uncatchably at this paused future snapshot and restores any REPL owner.
+func (s *FutureSnapshot) Abort(ctx context.Context, exception Exception) error {
+	return s.progressBase.abort(ctx, exception, nil, printTelemetry{})
+}
+
 func (s *Snapshot) isProgress()           {}
 func (s *NameLookupSnapshot) isProgress() {}
 func (s *FutureSnapshot) isProgress()     {}
@@ -503,6 +520,48 @@ func (b *progressBase) resumeLookup(ctx context.Context, value Value, found bool
 
 func (b *progressBase) resumeFutures(ctx context.Context, results map[uint32]Result, print PrintCallback, pt printTelemetry) (Progress, error) {
 	return b.resume(ctx, print, pt, func(h ProgressHandle) Step { return h.ResumeFutures(printSinkContext(ctx, print), results) })
+}
+
+func (b *progressBase) abort(ctx context.Context, exception Exception, print PrintCallback, pt printTelemetry) error {
+	if err := ctx.Err(); err != nil {
+		if restoreErr := b.restoreOwner(); restoreErr != nil {
+			return errors.Join(err, restoreErr)
+		}
+		return err
+	}
+
+	handle, owner, err := b.state.take()
+	if err != nil {
+		return err
+	}
+
+	aborter, ok := handle.(ProgressAborter)
+	if !ok {
+		defer handle.Close()
+		msg := exception.Type
+		if exception.Arg != nil {
+			msg = fmt.Sprintf("%s: %s", exception.Type, *exception.Arg)
+		}
+		abortErr := fmt.Errorf("monty backend aborted execution: %s", msg)
+		if owner != nil {
+			if repl, takeErr := handle.TakeRepl(); takeErr != nil {
+				owner.clear()
+				return errors.Join(abortErr, takeErr)
+			} else {
+				owner.restore(repl)
+			}
+		}
+		return abortErr
+	}
+
+	st := aborter.Abort(printSinkContext(ctx, print), exception)
+	if st.Retained {
+		b.state.putBack(handle)
+		return st.Err
+	}
+	handle.Close()
+	_, err = consumeStep(ctx, st, owner, print, pt)
+	return err
 }
 
 // resume takes the paused handle, resumes it through call and consumes the
@@ -728,11 +787,13 @@ func progressFromStep(st Step, owner *replState) (Progress, error) {
 			CallID:       desc.CallID,
 			IsOSFunction: desc.IsOSFunction,
 			IsMethodCall: desc.IsMethodCall,
+			ObjectID:     desc.ObjectID,
 		}, nil
 	case ProgressNameLookup:
 		return &NameLookupSnapshot{
 			progressBase: base,
 			VariableName: desc.VariableName,
+			ObjectID:     desc.ObjectID,
 		}, nil
 	case ProgressFuture:
 		return &FutureSnapshot{

@@ -28,7 +28,9 @@ use std::{
     ptr,
 };
 
-use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef, dump};
+use monty::{
+    Dump, MontyRepl, MontyRun, ReplProgress, ReplStartError, RunProgress, Session, SessionRef, dump,
+};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, ModuleFile, MontyException, MontyObject,
@@ -199,7 +201,40 @@ where
 }
 
 #[derive(Debug)]
-struct StoredRepl(MontyRepl);
+struct StoredRepl {
+    repl: MontyRepl,
+    suspensions_seen: usize,
+}
+
+const SUSPENSION_HEADER_MAGIC: &[u8; 8] = b"GMSUSP\x00\x01";
+const SUSPENSION_HEADER_LEN: usize = SUSPENSION_HEADER_MAGIC.len() + std::mem::size_of::<u64>();
+
+fn encode_dump_with_suspensions(raw: &[u8], suspensions_seen: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(SUSPENSION_HEADER_LEN + raw.len());
+    out.extend_from_slice(SUSPENSION_HEADER_MAGIC);
+    out.extend_from_slice(&(suspensions_seen as u64).to_le_bytes());
+    out.extend_from_slice(raw);
+    out
+}
+
+fn decode_dump_with_suspensions(
+    data: &[u8],
+    default_suspensions: usize,
+) -> Result<(usize, &[u8]), FfiError> {
+    if let Some(rest) = data.strip_prefix(SUSPENSION_HEADER_MAGIC) {
+        if rest.len() < std::mem::size_of::<u64>() {
+            return Err(FfiError::Api(
+                "truncated suspension header in dump".to_owned(),
+            ));
+        }
+        let (count_bytes, payload) = rest.split_at(std::mem::size_of::<u64>());
+        let mut buf = [0_u8; 8];
+        buf.copy_from_slice(count_bytes);
+        let count = usize::try_from(u64::from_le_bytes(buf)).unwrap_or(usize::MAX);
+        return Ok((count, payload));
+    }
+    Ok((default_suspensions, data))
+}
 
 // `MontyRun` is compiled code, not a session, so upstream has no `dump` framing
 // for it: it is encoded directly as self-describing CBOR, in these two shapes.
@@ -229,10 +264,12 @@ enum StoredProgress {
     Run {
         progress: RunProgress,
         script_name: String,
+        suspensions_seen: usize,
     },
     Repl {
         progress: ReplProgress,
         script_name: String,
+        suspensions_seen: usize,
     },
 }
 
@@ -451,10 +488,12 @@ impl StoredProgress {
             Self::Run {
                 progress,
                 script_name,
+                ..
             } => describe_run_progress(progress, script_name, false),
             Self::Repl {
                 progress,
                 script_name,
+                ..
             } => describe_repl_progress(progress, script_name, true),
         }
     }
@@ -464,9 +503,13 @@ impl StoredProgress {
             Self::Repl {
                 progress,
                 script_name,
+                suspensions_seen,
             } => Ok(MontyGoRepl {
                 script_name,
-                inner: Some(StoredRepl(progress.into_repl())),
+                inner: Some(StoredRepl {
+                    repl: progress.into_repl(),
+                    suspensions_seen,
+                }),
             }),
             Self::Run { .. } => Err(FfiError::Api(
                 "progress handle does not own a REPL session".to_owned(),
@@ -474,19 +517,32 @@ impl StoredProgress {
         }
     }
 
-    /// Serializes the suspended state with upstream's versioned dump framing.
+    /// Serializes the suspended state with upstream's versioned dump framing,
+    /// prefixed with gomonty's suspension counter.
     fn dump(&self) -> Result<Vec<u8>, FfiError> {
-        let (script_name, session) = match self {
+        let (script_name, session, suspensions_seen) = match self {
             Self::Run {
                 progress,
                 script_name,
-            } => (script_name, SessionRef::Running(progress)),
+                suspensions_seen,
+            } => (
+                script_name,
+                SessionRef::Running(progress),
+                *suspensions_seen,
+            ),
             Self::Repl {
                 progress,
                 script_name,
-            } => (script_name, SessionRef::Suspended(progress)),
+                suspensions_seen,
+            } => (
+                script_name,
+                SessionRef::Suspended(progress),
+                *suspensions_seen,
+            ),
         };
-        dump(script_name, None, &[], session).map_err(|e| FfiError::Api(e.to_string()))
+        let raw =
+            dump(script_name, None, &[], session).map_err(|e| FfiError::Api(e.to_string()))?;
+        Ok(encode_dump_with_suspensions(&raw, suspensions_seen))
     }
 }
 
@@ -503,6 +559,7 @@ fn describe_run_progress(
             is_repl,
             is_os_function: false,
             is_method_call: call.object_id.is_some(),
+            object_id: call.object_id.map(|id| id.to_string()),
             function_name: call.function_name.clone(),
             args: call.args.args().map(WireValue::from_object_ref).collect(),
             kwargs: call
@@ -527,6 +584,7 @@ fn describe_run_progress(
             version: wire::WIRE_VERSION,
             script_name: script_name.to_owned(),
             is_repl,
+            object_id: lookup.object_id().map(|id| id.to_string()),
             variable_name: lookup.name.clone(),
             ..WireProgressPayload::default()
         },
@@ -562,6 +620,7 @@ fn describe_repl_progress(
             is_repl,
             is_os_function: false,
             is_method_call: call.object_id.is_some(),
+            object_id: call.object_id.map(|id| id.to_string()),
             function_name: call.function_name.clone(),
             args: call.args.args().map(WireValue::from_object_ref).collect(),
             kwargs: call
@@ -586,6 +645,7 @@ fn describe_repl_progress(
             version: wire::WIRE_VERSION,
             script_name: script_name.to_owned(),
             is_repl,
+            object_id: lookup.object_id().map(|id| id.to_string()),
             variable_name: lookup.name.clone(),
             ..WireProgressPayload::default()
         },
@@ -773,6 +833,144 @@ fn wrap_repl_handle(script_name: &str, inner: StoredRepl) -> MontyGoRepl {
     }
 }
 
+fn suspension_limit_exceeded(limit: usize) -> MontyException {
+    MontyException::new(
+        ExcType::RuntimeError,
+        Some(format!("suspension limit {limit} exceeded")),
+    )
+}
+
+fn run_progress_suspension_limit(progress: &RunProgress) -> Option<usize> {
+    match progress {
+        RunProgress::FunctionCall(call) => Some(call.tracker().max_suspensions()),
+        RunProgress::OsCall(call) => Some(call.tracker().max_suspensions()),
+        RunProgress::NameLookup(lookup) => Some(lookup.tracker().max_suspensions()),
+        RunProgress::ResolveFutures(state) => Some(state.tracker().max_suspensions()),
+        RunProgress::Complete(_) => None,
+    }
+}
+
+const fn repl_progress_is_suspension(progress: &ReplProgress) -> bool {
+    matches!(
+        progress,
+        ReplProgress::FunctionCall(_)
+            | ReplProgress::OsCall(_)
+            | ReplProgress::NameLookup(_)
+            | ReplProgress::ResolveFutures(_)
+    )
+}
+
+fn abort_run_progress(
+    progress: RunProgress,
+    exc: MontyException,
+    prints: &mut PrintCollector,
+) -> FfiError {
+    let res = match progress {
+        RunProgress::FunctionCall(call) => call.abort(exc, PrintWriter::Callback(prints)),
+        RunProgress::OsCall(call) => call.abort(exc, PrintWriter::Callback(prints)),
+        RunProgress::NameLookup(lookup) => lookup.abort(exc, PrintWriter::Callback(prints)),
+        RunProgress::ResolveFutures(state) => state.abort(exc, PrintWriter::Callback(prints)),
+        RunProgress::Complete(_) => {
+            return FfiError::Api("completed execution cannot be aborted".to_owned());
+        }
+    };
+    match res {
+        Err(error) => FfiError::Exception(error),
+        Ok(_) => FfiError::Api("abort unexpectedly returned a progress state".to_owned()),
+    }
+}
+
+fn abort_repl_progress(
+    progress: ReplProgress,
+    exc: MontyException,
+    prints: &mut PrintCollector,
+) -> (FfiError, MontyRepl) {
+    let res = match progress {
+        ReplProgress::FunctionCall(call) => call.abort(exc, PrintWriter::Callback(prints)),
+        ReplProgress::OsCall(call) => call.abort(exc, PrintWriter::Callback(prints)),
+        ReplProgress::NameLookup(lookup) => lookup.abort(exc, PrintWriter::Callback(prints)),
+        ReplProgress::ResolveFutures(state) => state.abort(exc, PrintWriter::Callback(prints)),
+        ReplProgress::Complete { repl, .. } => {
+            return (
+                FfiError::Api("completed execution cannot be aborted".to_owned()),
+                repl,
+            );
+        }
+    };
+    match res {
+        Err(error) => {
+            let ReplStartError { repl, error } = *error;
+            (FfiError::Exception(error), repl)
+        }
+        Ok(other) => (
+            FfiError::Api("abort unexpectedly returned a progress state".to_owned()),
+            other.into_repl(),
+        ),
+    }
+}
+
+fn finish_run_step(
+    progress: RunProgress,
+    script_name: String,
+    mut suspensions_seen: usize,
+    mut prints: PrintCollector,
+) -> Result<(StoredProgress, String), (FfiError, String)> {
+    if let Some(limit) = run_progress_suspension_limit(&progress) {
+        suspensions_seen = suspensions_seen.saturating_add(1);
+        if suspensions_seen > limit {
+            let err = abort_run_progress(progress, suspension_limit_exceeded(limit), &mut prints);
+            return Err((err, prints.into_string()));
+        }
+    }
+    Ok((
+        StoredProgress::Run {
+            progress,
+            script_name,
+            suspensions_seen,
+        },
+        prints.into_string(),
+    ))
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "the error carries the REPL session back to the caller so it is not lost"
+)]
+fn finish_repl_step(
+    progress: ReplProgress,
+    script_name: String,
+    mut suspensions_seen: usize,
+    mut prints: PrintCollector,
+) -> Result<(StoredProgress, String), (FfiError, Option<MontyGoRepl>, String)> {
+    if repl_progress_is_suspension(&progress) {
+        suspensions_seen = suspensions_seen.saturating_add(1);
+        let limit = progress.tracker().max_suspensions();
+        if suspensions_seen > limit {
+            let (err, repl) =
+                abort_repl_progress(progress, suspension_limit_exceeded(limit), &mut prints);
+            return Err((
+                err,
+                Some(wrap_repl_handle(
+                    &script_name,
+                    StoredRepl {
+                        repl,
+                        suspensions_seen,
+                    },
+                )),
+                prints.into_string(),
+            ));
+        }
+    }
+    Ok((
+        StoredProgress::Repl {
+            progress,
+            script_name,
+            suspensions_seen,
+        },
+        prints.into_string(),
+    ))
+}
+
 fn start_runner_internal(
     handle: &MontyGoRunner,
     options: WireStartOptions,
@@ -782,17 +980,14 @@ fn start_runner_internal(
     let mut prints = PrintCollector::new();
     let tracker = ResourceTracker::new(options.limits.map_or_default(Into::into));
 
-    let start_result = handle
-        .runner
-        .clone()
-        .start(inputs, tracker, PrintWriter::Callback(&mut prints))
-        .map(|progress| StoredProgress::Run {
-            progress,
-            script_name: handle.script_name.clone(),
-        });
+    let start_result =
+        handle
+            .runner
+            .clone()
+            .start(inputs, tracker, PrintWriter::Callback(&mut prints));
 
     match start_result {
-        Ok(progress) => Ok((progress, prints.into_string())),
+        Ok(progress) => finish_run_step(progress, handle.script_name.clone(), 0, prints),
         Err(error) => Err((FfiError::Exception(error), prints.into_string())),
     }
 }
@@ -806,7 +1001,7 @@ fn feed_start_internal(
     code: &[u8],
     options: WireFeedOptions,
 ) -> Result<(StoredProgress, String), (FfiError, MontyGoRepl, String)> {
-    let Some(repl) = repl_handle.inner.take() else {
+    let Some(stored) = repl_handle.inner.take() else {
         return Err((
             FfiError::Api("repl handle is not available for execution".to_owned()),
             MontyGoRepl {
@@ -822,7 +1017,7 @@ fn feed_start_internal(
         Err(error) => {
             return Err((
                 error,
-                wrap_repl_handle(&repl_handle.script_name, repl),
+                wrap_repl_handle(&repl_handle.script_name, stored),
                 String::new(),
             ));
         }
@@ -833,7 +1028,7 @@ fn feed_start_internal(
         Err(error) => {
             return Err((
                 error,
-                wrap_repl_handle(&repl_handle.script_name, repl),
+                wrap_repl_handle(&repl_handle.script_name, stored),
                 String::new(),
             ));
         }
@@ -841,23 +1036,35 @@ fn feed_start_internal(
 
     let mut prints = PrintCollector::new();
     let script_name = repl_handle.script_name.clone();
+    let StoredRepl {
+        repl,
+        suspensions_seen,
+    } = stored;
 
-    match repl
-        .0
-        .feed_start(code, inputs, PrintWriter::Callback(&mut prints))
-    {
-        Ok(progress) => Ok((
-            StoredProgress::Repl {
-                progress,
-                script_name,
+    match repl.feed_start(code, inputs, PrintWriter::Callback(&mut prints)) {
+        Ok(progress) => finish_repl_step(progress, script_name, suspensions_seen, prints).map_err(
+            |(error, repl, prints)| {
+                (
+                    error,
+                    repl.unwrap_or_else(|| MontyGoRepl {
+                        script_name: repl_handle.script_name.clone(),
+                        inner: None,
+                    }),
+                    prints,
+                )
             },
-            prints.into_string(),
-        )),
+        ),
         Err(error) => {
             let error = *error;
             Err((
                 FfiError::Exception(error.error),
-                wrap_repl_handle(&script_name, StoredRepl(error.repl)),
+                wrap_repl_handle(
+                    &script_name,
+                    StoredRepl {
+                        repl: error.repl,
+                        suspensions_seen,
+                    },
+                ),
                 prints.into_string(),
             ))
         }
@@ -877,65 +1084,55 @@ fn resume_call_internal(
         StoredProgress::Run {
             progress: RunProgress::FunctionCall(call),
             script_name,
+            suspensions_seen,
         } => {
             let call_id = call.call_id;
             match call.resume(
                 adjust_pending_result(ext_result, call_id),
                 PrintWriter::Callback(&mut prints),
             ) {
-                Ok(progress) => Ok((
-                    StoredProgress::Run {
-                        progress,
-                        script_name,
-                    },
-                    prints.into_string(),
-                )),
+                Ok(progress) => finish_run_step(progress, script_name, suspensions_seen, prints)
+                    .map_err(|(error, prints)| (error, None, prints)),
                 Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
             }
         }
         StoredProgress::Run {
             progress: RunProgress::OsCall(call),
             script_name,
+            suspensions_seen,
         } => {
             let call_id = call.call_id;
             match call.resume(
                 adjust_pending_result(ext_result, call_id),
                 PrintWriter::Callback(&mut prints),
             ) {
-                Ok(progress) => Ok((
-                    StoredProgress::Run {
-                        progress,
-                        script_name,
-                    },
-                    prints.into_string(),
-                )),
+                Ok(progress) => finish_run_step(progress, script_name, suspensions_seen, prints)
+                    .map_err(|(error, prints)| (error, None, prints)),
                 Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
             }
         }
         StoredProgress::Repl {
             progress: ReplProgress::FunctionCall(call),
             script_name,
+            suspensions_seen,
         } => {
             let call_id = call.call_id;
             match call.resume(
                 adjust_pending_result(ext_result, call_id),
                 PrintWriter::Callback(&mut prints),
             ) {
-                Ok(progress) => Ok((
-                    StoredProgress::Repl {
-                        progress,
-                        script_name,
-                    },
-                    prints.into_string(),
-                )),
+                Ok(progress) => finish_repl_step(progress, script_name, suspensions_seen, prints),
                 Err(error) => {
                     let error = *error;
                     Err((
                         FfiError::Exception(error.error),
-                        Some(MontyGoRepl {
-                            script_name,
-                            inner: Some(StoredRepl(error.repl)),
-                        }),
+                        Some(wrap_repl_handle(
+                            &script_name,
+                            StoredRepl {
+                                repl: error.repl,
+                                suspensions_seen,
+                            },
+                        )),
                         prints.into_string(),
                     ))
                 }
@@ -944,27 +1141,25 @@ fn resume_call_internal(
         StoredProgress::Repl {
             progress: ReplProgress::OsCall(call),
             script_name,
+            suspensions_seen,
         } => {
             let call_id = call.call_id;
             match call.resume(
                 adjust_pending_result(ext_result, call_id),
                 PrintWriter::Callback(&mut prints),
             ) {
-                Ok(progress) => Ok((
-                    StoredProgress::Repl {
-                        progress,
-                        script_name,
-                    },
-                    prints.into_string(),
-                )),
+                Ok(progress) => finish_repl_step(progress, script_name, suspensions_seen, prints),
                 Err(error) => {
                     let error = *error;
                     Err((
                         FfiError::Exception(error.error),
-                        Some(MontyGoRepl {
-                            script_name,
-                            inner: Some(StoredRepl(error.repl)),
-                        }),
+                        Some(wrap_repl_handle(
+                            &script_name,
+                            StoredRepl {
+                                repl: error.repl,
+                                suspensions_seen,
+                            },
+                        )),
                         prints.into_string(),
                     ))
                 }
@@ -998,35 +1193,29 @@ fn resume_lookup_internal(
         StoredProgress::Run {
             progress: RunProgress::NameLookup(lookup),
             script_name,
+            suspensions_seen,
         } => match lookup.resume(lookup_result, PrintWriter::Callback(&mut prints)) {
-            Ok(progress) => Ok((
-                StoredProgress::Run {
-                    progress,
-                    script_name,
-                },
-                prints.into_string(),
-            )),
+            Ok(progress) => finish_run_step(progress, script_name, suspensions_seen, prints)
+                .map_err(|(error, prints)| (error, None, prints)),
             Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
         },
         StoredProgress::Repl {
             progress: ReplProgress::NameLookup(lookup),
             script_name,
+            suspensions_seen,
         } => match lookup.resume(lookup_result, PrintWriter::Callback(&mut prints)) {
-            Ok(progress) => Ok((
-                StoredProgress::Repl {
-                    progress,
-                    script_name,
-                },
-                prints.into_string(),
-            )),
+            Ok(progress) => finish_repl_step(progress, script_name, suspensions_seen, prints),
             Err(error) => {
                 let error = *error;
                 Err((
                     FfiError::Exception(error.error),
-                    Some(MontyGoRepl {
-                        script_name,
-                        inner: Some(StoredRepl(error.repl)),
-                    }),
+                    Some(wrap_repl_handle(
+                        &script_name,
+                        StoredRepl {
+                            repl: error.repl,
+                            suspensions_seen,
+                        },
+                    )),
                     prints.into_string(),
                 ))
             }
@@ -1052,35 +1241,29 @@ fn resume_futures_internal(
         StoredProgress::Run {
             progress: RunProgress::ResolveFutures(state),
             script_name,
+            suspensions_seen,
         } => match state.resume(decoded, PrintWriter::Callback(&mut prints)) {
-            Ok(progress) => Ok((
-                StoredProgress::Run {
-                    progress,
-                    script_name,
-                },
-                prints.into_string(),
-            )),
+            Ok(progress) => finish_run_step(progress, script_name, suspensions_seen, prints)
+                .map_err(|(error, prints)| (error, None, prints)),
             Err(error) => Err((FfiError::Exception(error), None, prints.into_string())),
         },
         StoredProgress::Repl {
             progress: ReplProgress::ResolveFutures(state),
             script_name,
+            suspensions_seen,
         } => match state.resume(decoded, PrintWriter::Callback(&mut prints)) {
-            Ok(progress) => Ok((
-                StoredProgress::Repl {
-                    progress,
-                    script_name,
-                },
-                prints.into_string(),
-            )),
+            Ok(progress) => finish_repl_step(progress, script_name, suspensions_seen, prints),
             Err(error) => {
                 let error = *error;
                 Err((
                     FfiError::Exception(error.error),
-                    Some(MontyGoRepl {
-                        script_name,
-                        inner: Some(StoredRepl(error.repl)),
-                    }),
+                    Some(wrap_repl_handle(
+                        &script_name,
+                        StoredRepl {
+                            repl: error.repl,
+                            suspensions_seen,
+                        },
+                    )),
                     prints.into_string(),
                 ))
             }
@@ -1090,6 +1273,41 @@ fn resume_futures_internal(
             None,
             prints.into_string(),
         )),
+    }
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "the error carries the REPL session back to the caller so it is not lost"
+)]
+fn abort_internal(
+    progress: StoredProgress,
+    exc: MontyException,
+) -> Result<(StoredProgress, String), (FfiError, Option<MontyGoRepl>, String)> {
+    let mut prints = PrintCollector::new();
+    match progress {
+        StoredProgress::Run { progress, .. } => {
+            let err = abort_run_progress(progress, exc, &mut prints);
+            Err((err, None, prints.into_string()))
+        }
+        StoredProgress::Repl {
+            progress,
+            script_name,
+            suspensions_seen,
+        } => {
+            let (err, repl) = abort_repl_progress(progress, exc, &mut prints);
+            Err((
+                err,
+                Some(wrap_repl_handle(
+                    &script_name,
+                    StoredRepl {
+                        repl,
+                        suspensions_seen,
+                    },
+                )),
+                prints.into_string(),
+            ))
+        }
     }
 }
 
@@ -1432,11 +1650,10 @@ pub extern "C" fn monty_go_repl_new(
         };
         let script_name = options.script_name.unwrap_or_else(|| "main.py".to_owned());
         let tracker = ResourceTracker::new(options.limits.map_or_default(Into::into));
-        let inner = StoredRepl(MontyRepl::new(
-            &script_name,
-            tracker,
-            CompileOptions::default(),
-        ));
+        let inner = StoredRepl {
+            repl: MontyRepl::new(&script_name, tracker, CompileOptions::default()),
+            suspensions_seen: 0,
+        };
 
         MontyGoReplResult::ok(MontyGoRepl {
             script_name,
@@ -1458,6 +1675,10 @@ pub extern "C" fn monty_go_repl_load(
     let result = catch_repl_result(|| {
         // SAFETY: the caller passes a readable (ptr, len) pair; null or zero length yields an empty slice
         let data = unsafe { slice_from_raw(data_ptr, data_len) };
+        let (suspensions_seen, data) = match decode_dump_with_suspensions(data, 0) {
+            Ok(decoded) => decoded,
+            Err(error) => return MontyGoReplResult::err(error),
+        };
         match Dump::load(data) {
             Ok(Dump {
                 script_name,
@@ -1465,7 +1686,10 @@ pub extern "C" fn monty_go_repl_load(
                 ..
             }) => MontyGoReplResult::ok(MontyGoRepl {
                 script_name,
-                inner: Some(StoredRepl(*repl)),
+                inner: Some(StoredRepl {
+                    repl: *repl,
+                    suspensions_seen,
+                }),
             }),
             Ok(_) => MontyGoReplResult::err(FfiError::Api(
                 "dump does not hold an idle REPL session".to_owned(),
@@ -1514,8 +1738,10 @@ pub extern "C" fn monty_go_repl_dump(
             }
             return MontyGoBytes::empty();
         };
-        match dump(&repl.script_name, None, &[], SessionRef::Idle(&inner.0)) {
-            Ok(bytes) => MontyGoBytes::from_vec(bytes),
+        match dump(&repl.script_name, None, &[], SessionRef::Idle(&inner.repl)) {
+            Ok(bytes) => {
+                MontyGoBytes::from_vec(encode_dump_with_suspensions(&bytes, inner.suspensions_seen))
+            }
             Err(error) => {
                 if !error_out.is_null() {
                     // SAFETY: the caller owns `error_out`, and it was null-checked just above
@@ -1686,23 +1912,45 @@ pub extern "C" fn monty_go_progress_load(
     let result = catch_op_result(|| {
         // SAFETY: the caller passes a readable (ptr, len) pair; null or zero length yields an empty slice
         let data = unsafe { slice_from_raw(data_ptr, data_len) };
+        let (suspensions_seen, data) = match decode_dump_with_suspensions(data, 1) {
+            Ok(decoded) => decoded,
+            Err(error) => return MontyGoOpResult::err(error, None, String::new()),
+        };
         let progress = match Dump::load(data) {
             Ok(Dump {
                 script_name,
                 state: Session::Running(progress),
                 ..
-            }) => StoredProgress::Run {
-                progress: *progress,
-                script_name,
-            },
+            }) => {
+                let progress = *progress;
+                let suspensions_seen = if matches!(&progress, RunProgress::Complete(_)) {
+                    suspensions_seen
+                } else {
+                    suspensions_seen.max(1)
+                };
+                StoredProgress::Run {
+                    progress,
+                    script_name,
+                    suspensions_seen,
+                }
+            }
             Ok(Dump {
                 script_name,
                 state: Session::Suspended(progress),
                 ..
-            }) => StoredProgress::Repl {
-                progress: *progress,
-                script_name,
-            },
+            }) => {
+                let progress = *progress;
+                let suspensions_seen = if matches!(&progress, ReplProgress::Complete { .. }) {
+                    suspensions_seen
+                } else {
+                    suspensions_seen.max(1)
+                };
+                StoredProgress::Repl {
+                    progress,
+                    script_name,
+                    suspensions_seen,
+                }
+            }
             Ok(_) => {
                 return MontyGoOpResult::err(
                     FfiError::Api("dump does not hold a suspended session".to_owned()),
@@ -1944,6 +2192,80 @@ pub extern "C" fn monty_go_progress_resume_futures(
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn monty_go_progress_abort(
+    progress: *mut MontyGoProgress,
+    result_ptr: *const u8,
+    result_len: usize,
+    out: *mut MontyGoOpResult,
+) {
+    let result = catch_op_result(|| {
+        if progress.is_null() {
+            return MontyGoOpResult::err(
+                FfiError::Api("progress handle is null".to_owned()),
+                None,
+                String::new(),
+            );
+        }
+        // SAFETY: the caller passes a valid handle pointer and does not use it concurrently (the Go wrapper enforces this with borrow())
+        let progress = unsafe { &mut *progress };
+        // SAFETY: the caller passes a readable (ptr, len) pair; null or zero length yields an empty slice
+        let result = unsafe { slice_from_raw(result_ptr, result_len) };
+        let result: WireCallResult = match decode_wire(result) {
+            Ok(result) => result,
+            Err(error) => return MontyGoOpResult::err(error, None, String::new()),
+        };
+        if result.kind != WIRE_CALL_RESULT_EXCEPTION {
+            return MontyGoOpResult::err(
+                FfiError::Api(format!(
+                    "expected exception result for abort, got kind {}",
+                    result.kind
+                )),
+                None,
+                String::new(),
+            );
+        }
+        let exc_type = match parse_exc_type(&result.exc_type) {
+            Ok(exc_type) => exc_type,
+            Err(error) => return MontyGoOpResult::err(error, None, String::new()),
+        };
+        let exc = MontyException::new(exc_type, result.arg);
+        if matches!(
+            progress.inner.as_ref(),
+            Some(
+                StoredProgress::Run {
+                    progress: RunProgress::Complete(_),
+                    ..
+                } | StoredProgress::Repl {
+                    progress: ReplProgress::Complete { .. },
+                    ..
+                }
+            )
+        ) {
+            return MontyGoOpResult::err(
+                FfiError::Api("completed execution cannot be aborted".to_owned()),
+                None,
+                String::new(),
+            );
+        }
+        let Some(inner) = progress.inner.take() else {
+            return MontyGoOpResult::err(
+                FfiError::Api("progress handle is no longer available".to_owned()),
+                None,
+                String::new(),
+            );
+        };
+        match abort_internal(inner, exc) {
+            Ok((progress, prints)) => MontyGoOpResult::ok(progress, prints),
+            Err((error, repl, prints)) => MontyGoOpResult::err(error, repl, prints),
+        }
+    });
+    if !out.is_null() {
+        // SAFETY: caller owns the out pointer
+        unsafe { *out = result };
+    }
+}
+
 #[cfg(test)]
 mod panic_guard_tests {
     use super::*;
@@ -2016,5 +2338,68 @@ mod panic_guard_tests {
     fn panic_summary_is_valid_json() {
         let json = serde_json::to_string(&panic_summary()).expect("serializes");
         assert!(json.contains(PANIC_RENDERING_ERROR));
+    }
+
+    #[test]
+    fn progress_abort_handles_null_and_uncatchable_exception() {
+        let mut out = MontyGoOpResult {
+            progress: ptr::null_mut(),
+            progress_payload: MontyGoBytes::empty(),
+            error: ptr::null_mut(),
+            repl: ptr::null_mut(),
+            prints: MontyGoBytes::empty(),
+        };
+        monty_go_progress_abort(ptr::null_mut(), ptr::null(), 0, &raw mut out);
+        assert!(!out.error.is_null());
+        monty_go_error_free(out.error);
+
+        let runner = MontyRun::new(
+            "try:\n    ext()\nexcept BaseException:\n    'caught'".to_owned(),
+            "abort.py",
+            Vec::new(),
+            CompileOptions::default(),
+        )
+        .expect("compiles");
+        let progress = runner
+            .start(
+                Vec::new(),
+                ResourceTracker::default(),
+                PrintWriter::Callback(&mut PrintCollector::new()),
+            )
+            .expect("starts");
+        let progress_ptr = Box::into_raw(Box::new(MontyGoProgress {
+            inner: Some(StoredProgress::Run {
+                progress,
+                script_name: "abort.py".to_owned(),
+                suspensions_seen: 1,
+            }),
+        }));
+        let payload = rmp_serde::to_vec_named(&WireCallResult {
+            kind: WIRE_CALL_RESULT_EXCEPTION,
+            exc_type: "RuntimeError".to_owned(),
+            arg: Some("stopped by host".to_owned()),
+            ..WireCallResult::default()
+        })
+        .expect("encodes abort exception");
+        let mut abort_out = MontyGoOpResult {
+            progress: ptr::null_mut(),
+            progress_payload: MontyGoBytes::empty(),
+            error: ptr::null_mut(),
+            repl: ptr::null_mut(),
+            prints: MontyGoBytes::empty(),
+        };
+        monty_go_progress_abort(
+            progress_ptr,
+            payload.as_ptr(),
+            payload.len(),
+            &raw mut abort_out,
+        );
+        assert!(abort_out.progress.is_null());
+        assert!(!abort_out.error.is_null());
+        let mut json = MontyGoBytes::empty();
+        monty_go_error_json(abort_out.error, &raw mut json);
+        assert!(bytes_to_string(&json).contains("stopped by host"));
+        monty_go_error_free(abort_out.error);
+        monty_go_progress_free(progress_ptr);
     }
 }
