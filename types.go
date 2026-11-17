@@ -420,10 +420,18 @@ type ResourceLimits struct {
 	MaxRecursionDepth int
 	// MaxSuspensions caps how many external/OS/lookup/future suspensions a session
 	// may perform (defaulting to 1000 when 0) — a backstop against sandboxed code
-	// looping on host calls while MaxDuration is paused. Both the in-process FFI
-	// backend and out-of-process remote workers abort execution with an uncatchable
-	// RuntimeError("suspension limit N exceeded") when this budget is exceeded,
-	// and preserve the suspension count across Dump/Load.
+	// looping on host calls while MaxDuration is paused. The in-process FFI
+	// backend aborts execution with an uncatchable
+	// RuntimeError("suspension limit N exceeded") when the budget is exceeded.
+	//
+	// The count is cumulative for the session, not per run: a Repl keeps
+	// counting across successive feeds (and across Dump/Load of a suspended
+	// snapshot or REPL) until Repl.Reset clears it. Once a REPL has exceeded the
+	// budget, every later feed that suspends aborts again until it is reset.
+	//
+	// Out-of-process remote workers do not enforce this limit yet: the value is
+	// only forwarded in Configure, and the client is expected to enforce it
+	// (tracked in #135).
 	MaxSuspensions int
 }
 
