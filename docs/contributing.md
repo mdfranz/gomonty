@@ -40,6 +40,8 @@ On PRs, the `verify` workflow runs `CGO_ENABLED=0` Go tests on native Linux (amd
 To build or refresh the shared library for the current host:
 
 ```bash
+MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh --profile ci <host-triple>  # or set MONTY_GO_FFI_PROFILE=ci
+# or using default production release profile:
 scripts/build-go-ffi.sh aarch64-apple-darwin
 CGO_ENABLED=0 go test ./...
 ```
@@ -47,7 +49,7 @@ CGO_ENABLED=0 go test ./...
 Requirements:
 
 - Go 1.27.4+
-- Rust toolchain
+- Rust toolchain pinned in [`rust-toolchain.toml`](../rust-toolchain.toml) (`1.98.0`)
 - Python available on `PATH`, or `PYO3_PYTHON` set explicitly
 - `cbindgen` only when regenerating `internal/ffi/include/monty_go_ffi.h`
 

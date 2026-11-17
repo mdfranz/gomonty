@@ -19,6 +19,15 @@ lto = "fat"
 codegen-units = 1
 strip = true
 
+# Fast verification profile for CI PRs: keeps release optimizations so runtime
+# and fuzz tests run at full speed, but skips fat LTO and uses parallel codegen
+# units to avoid the multi-minute single-threaded LTO link step.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = false
+
 [workspace.dependencies]
 # Upstream Monty pin. Keep both rev values aligned when bumping.
 monty = { git = "https://github.com/pydantic/monty.git", rev = "3f89dcbf82071896efb5e3ded507db4191e8d829" }
