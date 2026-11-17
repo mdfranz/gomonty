@@ -22,6 +22,48 @@ concurrency:
 permissions: {}
 
 jobs:
+  changes:
+    name: classify changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      proto: ${{ steps.classify.outputs.proto }}
+      native: ${{ steps.classify.outputs.native }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Classify changed files
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            {
+              echo "code=true"
+              echo "proto=true"
+              echo "native=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "$BASE_SHA" || git fetch --no-tags origin
+          fi
+          if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "$HEAD_SHA" || git fetch --no-tags origin
+          fi
+          changed="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")"
+          echo "Changed files in ${BASE_SHA}...${HEAD_SHA}:"
+          echo "$changed"
+          printf '%s\n' "$changed" | bash scripts/ci-classify-changes.sh | tee -a "$GITHUB_OUTPUT"
+
   # The full linux-amd64 (x86-64) check: builds the native library for
   # x86_64-unknown-linux-gnu and runs formatting, the Rust tests, the Go tests,
   # vet, a short fuzz and the example/submodule tests. The job id stays
@@ -29,6 +71,8 @@ jobs:
   go-pure:
     name: verify linux-amd64
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     permissions:
       contents: read
     steps:
@@ -156,6 +200,8 @@ jobs:
   check-proto:
     name: check generated proto
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.proto == 'true'
     permissions:
       contents: read
     steps:
@@ -181,16 +227,17 @@ jobs:
   platform-verify:
     name: verify ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.native == 'true' || vars.RUN_MACOS_CI == 'true'
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        # macOS is the slowest job on a PR, so it is off by default on PRs.
-        # It always runs on weekly schedule and manual dispatch, or when enabled with:
-        #   gh variable set RUN_MACOS_CI --body true --repo mdfranz/gomonty
-        # release-prep.yml still builds the macOS library for every release.
-        include: ${{ fromJSON((vars.RUN_MACOS_CI == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '[{"name":"linux-arm64","runner":"ubuntu-24.04-arm","rust_target":"aarch64-unknown-linux-gnu","run_go_tests":true,"build_only_note":""},{"name":"darwin-arm64","runner":"macos-15","rust_target":"aarch64-apple-darwin","run_go_tests":true,"build_only_note":""}]' || '[{"name":"linux-arm64","runner":"ubuntu-24.04-arm","rust_target":"aarch64-unknown-linux-gnu","run_go_tests":true,"build_only_note":""}]') }}
+        # Native-affecting PRs, scheduled runs, and manual dispatches run both
+        # linux-arm64 and darwin-arm64 (unless RUN_MACOS_CI == 'false').
+        # Main push cache-seeding runs linux-arm64 unless RUN_MACOS_CI == 'true'.
+        include: ${{ fromJSON(((github.event_name != 'push' || vars.RUN_MACOS_CI == 'true') && vars.RUN_MACOS_CI != 'false') && '[{"name":"linux-arm64","runner":"ubuntu-24.04-arm","rust_target":"aarch64-unknown-linux-gnu","run_go_tests":true,"build_only_note":""},{"name":"darwin-arm64","runner":"macos-15","rust_target":"aarch64-apple-darwin","run_go_tests":true,"build_only_note":""}]' || '[{"name":"linux-arm64","runner":"ubuntu-24.04-arm","rust_target":"aarch64-unknown-linux-gnu","run_go_tests":true,"build_only_note":""}]') }}
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -394,17 +441,61 @@ jobs:
           CGO_ENABLED=0 go test -c -tags musl -ldflags "-I /lib/ld-musl-aarch64.so.1" -o .musl-smoke.test .
           docker run --rm -v "$PWD:/work" -w /work rust:1.98-alpine /work/.musl-smoke.test -test.v -test.run '^TestPlatformSmoke$'
 
-  report-scheduled-failure:
-    name: report scheduled failure
+  verify:
+    name: verify
     runs-on: ubuntu-latest
     needs:
+      - changes
       - go-pure
       - check-proto
       - platform-verify
       - verify-windows-amd64
       - verify-musl-amd64
       - verify-musl-arm64
-    if: ${{ always() && github.event_name == 'schedule' && contains(needs.*.result, 'failure') }}
+    if: ${{ always() }}
+    permissions: {}
+    steps:
+      - name: Verify selected jobs succeeded
+        env:
+          RESULT_CHANGES: ${{ needs.changes.result }}
+          RESULT_GO_PURE: ${{ needs.go-pure.result }}
+          RESULT_CHECK_PROTO: ${{ needs.check-proto.result }}
+          RESULT_PLATFORM_VERIFY: ${{ needs.platform-verify.result }}
+          RESULT_WINDOWS_AMD64: ${{ needs.verify-windows-amd64.result }}
+          RESULT_MUSL_AMD64: ${{ needs.verify-musl-amd64.result }}
+          RESULT_MUSL_ARM64: ${{ needs.verify-musl-arm64.result }}
+        shell: bash
+        run: |
+          if [ "$RESULT_CHANGES" != "success" ]; then
+            echo "changes job did not succeed: $RESULT_CHANGES" >&2
+            exit 1
+          fi
+          for pair in \
+            "go-pure:$RESULT_GO_PURE" \
+            "check-proto:$RESULT_CHECK_PROTO" \
+            "platform-verify:$RESULT_PLATFORM_VERIFY" \
+            "verify-windows-amd64:$RESULT_WINDOWS_AMD64" \
+            "verify-musl-amd64:$RESULT_MUSL_AMD64" \
+            "verify-musl-arm64:$RESULT_MUSL_ARM64"
+          do
+            job="${pair%%:*}"
+            res="${pair#*:}"
+            echo "$job: $res"
+            case "$res" in
+              success|skipped) ;;
+              *)
+                echo "$job failed with result: $res" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+  report-scheduled-failure:
+    name: report scheduled failure
+    runs-on: ubuntu-latest
+    needs:
+      - verify
+    if: ${{ always() && github.event_name == 'schedule' && needs.verify.result == 'failure' }}
     permissions:
       issues: write
     steps:

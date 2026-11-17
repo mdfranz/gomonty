@@ -24,13 +24,15 @@ Workflow-level permissions are empty (`permissions: {}`). Build and test jobs us
 
 | Job | Runner | What it does |
 | --- | --- | --- |
-| `go-pure` | ubuntu (amd64) | `gofmt -l .`, `cargo fmt --all --check`, and `rust-toolchain.toml` sync check; builds the native library (`MONTY_GO_FFI_PROFILE`); `cargo test -p monty-go-ffi --locked` and `cargo clippy -p monty-go-ffi --tests --locked -- -D warnings` (reusing `--profile "$MONTY_GO_FFI_PROFILE" --target x86_64-unknown-linux-gnu`); `CGO_ENABLED=0 go test ./...` and `go vet ./...` on the root module; runs `examples` tests (`CGO_ENABLED=0 go test ./...`) and smoke-runs `examples/cmd/example` and `examples/cmd/remote`; tests `otelmonty` and builds its example; vets and tests `cmd/shmonty`; fuzzes `FuzzLoadRunner` for 30 seconds. |
-| `check-proto` | ubuntu (amd64) | Verifies `remote/proto` matches the upstream commit pin, checks generated gRPC/protobuf code with `make check-proto`, and runs `go test ./...` in `remote/`. |
-| `platform-verify` (linux-arm64) | `ubuntu-24.04-arm` | Builds the library for `aarch64-unknown-linux-gnu`, then runs the root module's Go tests. |
-| `platform-verify` (darwin-arm64) | `macos-15` | Same for `aarch64-apple-darwin`. Off by default on PRs (`RUN_MACOS_CI`); always runs on weekly `schedule` and manual dispatch. |
+| `changes` | ubuntu (amd64) | Compares `base...head` across the entire PR (`scripts/ci-classify-changes.sh`) and sets `code`, `proto`, and `native` outputs. On `push`, `schedule`, and `workflow_dispatch`, enables all tiers. |
+| `go-pure` | ubuntu (amd64) | Runs when `code=true`. Checks `gofmt -l .`, `cargo fmt --all --check`, and `rust-toolchain.toml` sync; builds the native library (`MONTY_GO_FFI_PROFILE`); runs `cargo test -p monty-go-ffi --locked` and `cargo clippy -p monty-go-ffi --tests --locked -- -D warnings` (reusing `--profile "$MONTY_GO_FFI_PROFILE" --target x86_64-unknown-linux-gnu`); runs `CGO_ENABLED=0 go test ./...` and `go vet ./...` on the root module; runs `examples` tests (`CGO_ENABLED=0 go test ./...`) and smoke-runs `examples/cmd/example` and `examples/cmd/remote`; tests `otelmonty` and builds its example; vets and tests `cmd/shmonty`; fuzzes `FuzzLoadRunner` for 30 seconds. |
+| `check-proto` | ubuntu (amd64) | Runs when `proto=true`. Verifies `remote/proto` matches the upstream commit pin, checks generated gRPC/protobuf code with `make check-proto`, and runs `go test ./...` in `remote/`. |
+| `platform-verify` (linux-arm64) | `ubuntu-24.04-arm` | Runs when `native=true` (or non-PR events). Builds the library for `aarch64-unknown-linux-gnu`, then runs the root module's Go tests. |
+| `platform-verify` (darwin-arm64) | `macos-15` | Same for `aarch64-apple-darwin`. Runs on native-affecting PRs, weekly `schedule`, and manual dispatch (skipped when `RUN_MACOS_CI=false`; skipped on `main` pushes unless `RUN_MACOS_CI=true`). |
 | `verify-windows-amd64` | `windows-latest` | Builds the library for `x86_64-pc-windows-msvc` and runs `TestPlatformSmoke` (`CGO_ENABLED=0`). Off by default on PRs (`RUN_WINDOWS_CI`); always runs on weekly `schedule` and manual dispatch. |
 | `verify-musl-amd64`, `verify-musl-arm64` | ubuntu (amd64, arm64) | Builds the musl library inside a `rust:1.98-alpine` container, compiles the Go test binary with `-tags musl`, and runs `TestPlatformSmoke` inside Alpine. Off by default on PRs (`RUN_MUSL_CI`); always runs on weekly `schedule` and manual dispatch. |
-| `report-scheduled-failure` | ubuntu (amd64) | Runs on `schedule` failures and opens or updates a `ci`-labeled issue linking the failed run. |
+| `verify` | ubuntu (amd64) | Single required aggregator check (`always()`): ensures `changes` succeeded and every downstream job either succeeded or was intentionally skipped. |
+| `report-scheduled-failure` | ubuntu (amd64) | Runs on `schedule` when `verify` fails and opens or updates a `ci`-labeled issue linking the failed run. |
 
 Notes:
 
@@ -44,9 +46,25 @@ Notes:
 - **Single-profile `[profile.ci]`:** `[profile.ci]` inherits `release` optimizations (keeping Go tests and the 30s fuzz pass at optimized runtime speed) while setting `lto = false`, `codegen-units = 16`, and `strip = false`. In `go-pure`, `scripts/build-go-ffi.sh`, `cargo test`, and `cargo clippy` all pass `--profile "$MONTY_GO_FFI_PROFILE" --target x86_64-unknown-linux-gnu` so `cargo test` reuses upstream crates built for the shared library instead of recompiling them in `dev` (`702 MB` target directory; measured locally on Rust `1.98.0`: cold `ci` build `2m 37s`, warm rebuild `4.6s`, `cargo test` `5.5s`, warm `cargo clippy` `1.2s` after an initial `35.4s` check pass). Weekly `schedule` runs and `release-prep` still build and verify the production `release` profile.
 - **Toolchain pin:** `rust-toolchain.toml` pins Rust `1.98.0` (matching `Cargo.toml`'s `rust-version = "1.98"`), and `dtolnay/rust-toolchain` passes `toolchain: "1.98.0"` alongside `rust:1.98-alpine` in the musl container jobs. `go-pure` enforces that `rust-toolchain.toml`, `toolchain:`, and every `rust:<M.N>-alpine` tag stay aligned. To bump the compiler, update `rust-toolchain.toml`, `Cargo.toml` (`rust-version`), and the workflow `toolchain:` / `rust:*-alpine` entries together.
 
+### Change-scoped job selection and required status check
+
+On pull requests, `changes` inspects `git diff --name-only "$BASE_SHA...$HEAD_SHA"` (the full PR diff rather than only the latest commit) using [`scripts/ci-classify-changes.sh`](../scripts/ci-classify-changes.sh):
+
+- **Documentation-only** (`*.md`, `docs/**`, `.agents/**`, `.claude/**`, `LICENSE*`, `.gitignore`): sets `code=false`, `proto=false`, `native=false`. All build/test jobs are skipped and `verify` passes in ~10 seconds.
+- **Go / non-native code** (`remote/**`, `otelmonty/**`, `cmd/shmonty/**`, `examples/**`, `vfs/**`, `python-scripts/**`, `testdata/**`, and top-level `*.go` files without `//go:build` constraints, OS/arch suffixes, or FFI/wire roles): sets `code=true`, `proto=true`, `native=false`. Runs `go-pure` (`verify linux-amd64`) and `check-proto`, skipping `linux-arm64` and `darwin-arm64`.
+- **Native-affecting or uncertain paths** (`crates/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `internal/ffi/**`, `wire.go`, `wire_test.go`, `wire_negzero_test.go`, `smoke_test.go`, `scripts/**`, `go.mod`, `go.sum`, `.github/**`, `Makefile`, any `.go` file with an OS/arch suffix or `//go:build` tag, empty diffs, or any unrecognized path): sets `code=true`, `proto=true`, `native=true`. Runs `go-pure`, `check-proto`, and `platform-verify` (`linux-arm64` and `darwin-arm64`).
+
+| PR change scope | Jobs run | Typical wall-clock cost |
+| --- | --- | --- |
+| Docs-only | `changes`, `verify` | ~10s |
+| Go-only (`runner.go`, `remote/`, `examples/`, etc.) | `changes`, `go-pure`, `check-proto`, `verify` | ~1–6m (warm/cold `ci` `linux-amd64` only) |
+| Native-affecting / uncertain (`crates/`, `wire.go`, workflows) | `changes`, `go-pure`, `check-proto`, `platform-verify` (`linux-arm64`, `darwin-arm64`), `verify` | ~6–10m + macOS runner |
+
+Branch protection should require only the single `verify` status check (`verify / verify`): it succeeds only when `changes` succeeded and every downstream job either succeeded or was intentionally skipped.
+
 ### Enabling optional platform checks on PRs
 
-`darwin-arm64`, `windows-amd64`, and the `musl` jobs run automatically on the weekly `schedule` and manual `workflow_dispatch`, and are skipped by default on PRs so routine PR runs stay fast. Enable any of them temporarily with repository variables:
+`windows-amd64` and the `musl` jobs run automatically on the weekly `schedule` and manual `workflow_dispatch`, and are skipped by default on PRs so routine PR runs stay fast. `darwin-arm64` runs on native-affecting PRs, weekly `schedule`, and manual `workflow_dispatch` (set `RUN_MACOS_CI=false` to suppress it on PRs, or `RUN_MACOS_CI=true` to force it). Enable any optional check on PRs with repository variables:
 
 ```bash
 gh variable set RUN_MACOS_CI --body true --repo mdfranz/gomonty
@@ -119,4 +137,4 @@ The workflows follow these rules:
 
 ## Known gaps
 
-Open issues: [#23](https://github.com/mdfranz/gomonty/issues/23) (release builds are not reproducible across runs) and [#53](https://github.com/mdfranz/gomonty/issues/53) Phase 2 (change-scoped job selection and single required status check; Phase 1 platform smoke checks and release artifact tests are implemented).
+Open issue: [#23](https://github.com/mdfranz/gomonty/issues/23) (release builds are not reproducible across runs).

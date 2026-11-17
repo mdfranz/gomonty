@@ -35,7 +35,7 @@ On first use, the loader extracts the embedded shared library to `os.UserCacheDi
 
 Default Linux builds target the GNU/glibc shared libraries. Alpine and other musl-based Linux builds must opt into the musl family with the `musl` Go build tag.
 
-On PRs, the `verify` workflow runs `CGO_ENABLED=0` Go tests on native Linux (amd64 and arm64), plus the Rust FFI crate's unit tests, `clippy`, and `gofmt`/`cargo fmt` checks. Weekly scheduled runs and manual `workflow_dispatch` runs cover all platforms, including `darwin-arm64`, Windows (`TestPlatformSmoke`), and Alpine musl (`TestPlatformSmoke` in a container); those extra platform checks can also be enabled on PRs with `RUN_MACOS_CI`, `RUN_WINDOWS_CI`, or `RUN_MUSL_CI`. `release-prep` smoke-tests all six built platform artifacts with `TestPlatformSmoke` before opening a release PR.
+On PRs, the `verify` workflow scopes jobs over the full PR diff via [`scripts/ci-classify-changes.sh`](../scripts/ci-classify-changes.sh): docs-only PRs skip builds and pass via the `verify` aggregator check; Go-only PRs run `verify linux-amd64` and `check generated proto`; native-affecting or uncertain PRs also run `linux-arm64` and `darwin-arm64`. Weekly scheduled runs and manual `workflow_dispatch` runs cover all platforms, including `darwin-arm64`, Windows (`TestPlatformSmoke`), and Alpine musl (`TestPlatformSmoke` in a container); optional PR checks can also be controlled with `RUN_MACOS_CI`, `RUN_WINDOWS_CI`, or `RUN_MUSL_CI`. `release-prep` smoke-tests all six built platform artifacts with `TestPlatformSmoke` before opening a release PR.
 
 To build or refresh the shared library for the current host:
 
