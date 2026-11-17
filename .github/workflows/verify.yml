@@ -3,14 +3,16 @@ name: verify
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  schedule:
+    # Weekly full-platform run (Mondays 06:00 UTC) so Windows, macOS, and musl stay tested.
+    - cron: "0 6 * * 1"
   workflow_dispatch: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   # The full linux-amd64 (x86-64) check: builds the native library for
@@ -20,6 +22,8 @@ jobs:
   go-pure:
     name: verify linux-amd64
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -126,6 +130,8 @@ jobs:
   check-proto:
     name: check generated proto
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -149,14 +155,16 @@ jobs:
   platform-verify:
     name: verify ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
-        # macOS is the slowest job on a PR, so it is off by default.
-        # Enable it with:
+        # macOS is the slowest job on a PR, so it is off by default on PRs.
+        # It always runs on weekly schedule and manual dispatch, or when enabled with:
         #   gh variable set RUN_MACOS_CI --body true --repo mdfranz/gomonty
         # release-prep.yml still builds the macOS library for every release.
-        include: ${{ fromJSON(vars.RUN_MACOS_CI == 'true' && '[{"name":"linux-arm64","runner":"ubuntu-24.04-arm","rust_target":"aarch64-unknown-linux-gnu","run_go_tests":true,"build_only_note":""},{"name":"darwin-arm64","runner":"macos-15","rust_target":"aarch64-apple-darwin","run_go_tests":true,"build_only_note":""}]' || '[{"name":"linux-arm64","runner":"ubuntu-24.04-arm","rust_target":"aarch64-unknown-linux-gnu","run_go_tests":true,"build_only_note":""}]') }}
+        include: ${{ fromJSON((vars.RUN_MACOS_CI == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '[{"name":"linux-arm64","runner":"ubuntu-24.04-arm","rust_target":"aarch64-unknown-linux-gnu","run_go_tests":true,"build_only_note":""},{"name":"darwin-arm64","runner":"macos-15","rust_target":"aarch64-apple-darwin","run_go_tests":true,"build_only_note":""}]' || '[{"name":"linux-arm64","runner":"ubuntu-24.04-arm","rust_target":"aarch64-unknown-linux-gnu","run_go_tests":true,"build_only_note":""}]') }}
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -186,10 +194,12 @@ jobs:
           cache-on-failure: true
 
       - name: Build native shared library
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
         shell: bash
         run: |
           export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
-          MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
+          MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh "$RUST_TARGET"
 
       - name: Run Go tests
         if: matrix.run_go_tests
@@ -199,20 +209,74 @@ jobs:
 
       - name: Build-only verification note
         if: ${{ !matrix.run_go_tests }}
-        run: echo "${{ matrix.build_only_note }}"
+        env:
+          BUILD_ONLY_NOTE: ${{ matrix.build_only_note }}
+        shell: bash
+        run: echo "$BUILD_ONLY_NOTE"
 
-  verify-musl-amd64:
-    name: verify linux-musl-amd64
-    runs-on: ubuntu-latest
-    # Off by default: gomonty's only known consumer (sparktea) doesn't
-    # target musl/Alpine, and this build-only check (no Go tests) adds
-    # several minutes to every PR. Enable temporarily with:
-    #   gh variable set RUN_MUSL_CI --body true --repo mdfranz/gomonty
-    if: vars.RUN_MUSL_CI == 'true'
+  verify-windows-amd64:
+    name: verify windows-amd64
+    runs-on: windows-latest
+    # Off by default on PRs to keep routine PR costs low; always runs on weekly
+    # schedule and manual dispatch, or when enabled with RUN_WINDOWS_CI=true.
+    if: vars.RUN_WINDOWS_CI == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: true
+
+      - name: Build native shared library
+        shell: bash
+        run: |
+          export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+          MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh x86_64-pc-windows-msvc
+
+      - name: Run Windows smoke test
+        env:
+          CGO_ENABLED: "0"
+        shell: bash
+        run: go test -v -run '^TestPlatformSmoke$' .
+
+  verify-musl-amd64:
+    name: verify linux-musl-amd64
+    runs-on: ubuntu-latest
+    # Off by default on PRs: adds several minutes to every PR. Always runs on
+    # weekly schedule and manual dispatch, or when enabled with RUN_MUSL_CI=true.
+    if: vars.RUN_MUSL_CI == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -240,18 +304,30 @@ jobs:
               chmod -R a+rwX /usr/local/cargo/registry /usr/local/cargo/git
             '
 
-      - name: Build-only verification note
-        run: echo "Musl/Alpine shared libraries are build-verified in a musl-native container; native Go tests are not run on this workflow."
+      - name: Run musl smoke test in container
+        shell: bash
+        run: |
+          trap 'rm -f .musl-smoke.test' EXIT
+          CGO_ENABLED=0 go test -c -tags musl -ldflags "-I /lib/ld-musl-x86_64.so.1" -o .musl-smoke.test .
+          docker run --rm -v "$PWD:/work" -w /work rust:1.98-alpine /work/.musl-smoke.test -test.v -test.run '^TestPlatformSmoke$'
 
   verify-musl-arm64:
     name: verify linux-musl-arm64
     runs-on: ubuntu-24.04-arm
-    # See verify-musl-amd64's comment: off by default, same toggle.
-    if: vars.RUN_MUSL_CI == 'true'
+    # See verify-musl-amd64's comment: off by default on PRs, runs on schedule/dispatch.
+    if: vars.RUN_MUSL_CI == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -279,5 +355,66 @@ jobs:
               chmod -R a+rwX /usr/local/cargo/registry /usr/local/cargo/git
             '
 
-      - name: Build-only verification note
-        run: echo "Musl/Alpine shared libraries are build-verified in a musl-native container; native Go tests are not run on this workflow."
+      - name: Run musl smoke test in container
+        shell: bash
+        run: |
+          trap 'rm -f .musl-smoke.test' EXIT
+          CGO_ENABLED=0 go test -c -tags musl -ldflags "-I /lib/ld-musl-aarch64.so.1" -o .musl-smoke.test .
+          docker run --rm -v "$PWD:/work" -w /work rust:1.98-alpine /work/.musl-smoke.test -test.v -test.run '^TestPlatformSmoke$'
+
+  report-scheduled-failure:
+    name: report scheduled failure
+    runs-on: ubuntu-latest
+    needs:
+      - go-pure
+      - check-proto
+      - platform-verify
+      - verify-windows-amd64
+      - verify-musl-amd64
+      - verify-musl-arm64
+    if: ${{ always() && github.event_name == 'schedule' && contains(needs.*.result, 'failure') }}
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update scheduled failure issue
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const title = "CI: scheduled full-platform verify failed";
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const body = [
+              `A scheduled \`${context.workflow}\` run failed: ${runUrl}`,
+              "",
+              "Check the run logs for details across Linux (amd64/arm64), macOS, Windows, and musl.",
+            ].join("\n");
+
+            const openIssues = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: "open",
+              labels: "ci",
+              per_page: 100,
+            });
+
+            const existing = openIssues.data.find((issue) => !issue.pull_request && issue.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: existing.number,
+                body,
+              });
+              core.info(`Commented on existing issue #${existing.number}`);
+              return;
+            }
+
+            const created = await github.rest.issues.create({
+              owner,
+              repo,
+              title,
+              body,
+              labels: ["ci"],
+            });
+            core.info(`Created issue #${created.data.number}`);

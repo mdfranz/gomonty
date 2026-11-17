@@ -18,34 +18,38 @@ The Go package embeds a prebuilt native library per platform, and Go consumers r
 
 ## `verify`
 
-**Triggers:** a PR being *opened*, *updated* (`synchronize`), or *reopened*, plus manual dispatch (`gh workflow run verify.yml --ref <branch>`). A concurrency group keyed by PR / ref cancels superseded in-progress runs when new commits are pushed.
+**Triggers:** a PR being *opened*, *updated* (`synchronize`), or *reopened*, a weekly `schedule` (`0 6 * * 1` UTC), and manual dispatch (`gh workflow run verify.yml --ref <branch>`). A concurrency group keyed by PR / ref cancels superseded in-progress runs when new commits are pushed.
 
-Permissions are read-only (`contents: read`).
+Workflow-level permissions are empty (`permissions: {}`). Build and test jobs use read-only permissions (`contents: read`); `report-scheduled-failure` grants `issues: write` only on scheduled runs when a job fails.
 
 | Job | Runner | What it does |
 | --- | --- | --- |
 | `go-pure` | ubuntu (amd64) | `gofmt -l .` and `cargo fmt --all --check`; builds the native library; `cargo test -p monty-go-ffi --locked` and `cargo clippy -p monty-go-ffi --tests --locked -- -D warnings`; `CGO_ENABLED=0 go test ./...` and `go vet ./...` on the root module; runs `examples` tests (`CGO_ENABLED=0 go test ./...`) and smoke-runs `examples/cmd/example` and `examples/cmd/remote`; tests `otelmonty` and builds its example; vets and tests `cmd/shmonty`; fuzzes `FuzzLoadRunner` for 30 seconds. |
+| `check-proto` | ubuntu (amd64) | Verifies `remote/proto` matches the upstream commit pin, checks generated gRPC/protobuf code with `make check-proto`, and runs `go test ./...` in `remote/`. |
 | `platform-verify` (linux-arm64) | `ubuntu-24.04-arm` | Builds the library for `aarch64-unknown-linux-gnu`, then runs the root module's Go tests. |
-| `platform-verify` (darwin-arm64) | `macos-14` | Same for `aarch64-apple-darwin`. |
-| `verify-musl-amd64`, `verify-musl-arm64` | ubuntu (amd64, arm64) | Builds the musl library inside a `rust:1.96-alpine3.21` container. **Build only**: no Go tests. **Off by default**; see below. |
+| `platform-verify` (darwin-arm64) | `macos-15` | Same for `aarch64-apple-darwin`. Off by default on PRs (`RUN_MACOS_CI`); always runs on weekly `schedule` and manual dispatch. |
+| `verify-windows-amd64` | `windows-latest` | Builds the library for `x86_64-pc-windows-msvc` and runs `TestPlatformSmoke` (`CGO_ENABLED=0`). Off by default on PRs (`RUN_WINDOWS_CI`); always runs on weekly `schedule` and manual dispatch. |
+| `verify-musl-amd64`, `verify-musl-arm64` | ubuntu (amd64, arm64) | Builds the musl library inside a `rust:1.98-alpine` container, compiles the Go test binary with `-tags musl`, and runs `TestPlatformSmoke` inside Alpine. Off by default on PRs (`RUN_MUSL_CI`); always runs on weekly `schedule` and manual dispatch. |
+| `report-scheduled-failure` | ubuntu (amd64) | Runs on `schedule` failures and opens or updates a `ci`-labeled issue linking the failed run. |
 
 Notes:
 
-- Windows is not verified here. The Windows library is built only during `release-prep`.
-- The `platform-verify` jobs run only the root module's tests. The `examples`, `otelmonty` and `cmd/shmonty` modules are tested only in `go-pure` on linux/amd64.
+- The `platform-verify` jobs run only the root module's tests, while `verify-windows-amd64` and the musl jobs run `TestPlatformSmoke` (eval, `bytes` round-trip, host callback, `time.sleep`, REPL). The `examples`, `otelmonty` and `cmd/shmonty` modules are tested in `go-pure` on linux/amd64, and `remote/` is tested in `check-proto`.
 - Only `FuzzLoadRunner` is fuzzed in CI, and only briefly. Benchmarks are not run in CI.
 - Every job builds the Rust crate from scratch or from the `Swatinem/rust-cache` cache, so the first run after a dependency change is slow (upstream Monty is compiled).
 
-### Enabling the musl checks
+### Enabling optional platform checks on PRs
 
-The musl jobs are skipped unless the repository variable `RUN_MUSL_CI` is `true`, because they add several minutes to each PR and no known consumer targets Alpine:
+`darwin-arm64`, `windows-amd64`, and the `musl` jobs run automatically on the weekly `schedule` and manual `workflow_dispatch`, and are skipped by default on PRs so routine PR runs stay fast. Enable any of them temporarily with repository variables:
 
 ```bash
+gh variable set RUN_MACOS_CI --body true --repo mdfranz/gomonty
+gh variable set RUN_WINDOWS_CI --body true --repo mdfranz/gomonty
 gh variable set RUN_MUSL_CI --body true --repo mdfranz/gomonty
 gh variable delete RUN_MUSL_CI --repo mdfranz/gomonty   # turn it off again
 ```
 
-Turn it on when a change touches the build script, the FFI crate's dependencies or the musl loader files.
+Turn the relevant variable on when a change touches the build script, FFI loader, platform-specific files, or dependencies.
 
 ## `release-prep`
 
@@ -55,7 +59,8 @@ Jobs:
 
 1. `validate` verifies the workflow ran on `main` and that `version` matches `vN.N.N` with an optional suffix.
 2. `header-and-linux-amd64` (installing prebuilt `cbindgen` via `taiki-e/install-action`), `shared-libraries` (matrix: linux-arm64, darwin-arm64, windows-amd64), and the two musl jobs all depend on `validate` and build the C header, `Cargo.lock`, and all six native libraries in parallel, each uploading its outputs as artifacts.
-3. `open-pr` depends on `validate` and all four build jobs, downloads every artifact, then:
+3. `test-libraries` (matrix: linux-amd64, linux-arm64, darwin-arm64, windows-amd64) and `test-musl-libraries` (matrix: linux-amd64-musl, linux-arm64-musl, running inside Alpine containers) download each exact built library artifact and run `TestPlatformSmoke` (`CGO_ENABLED=0`) against it. Any failure blocks opening the release PR.
+4. `open-pr` depends on `validate`, all four build jobs, and both smoke-test jobs, downloads every artifact, then:
    - fails if the tag already exists;
    - bumps the version in `Cargo.toml` and in `Cargo.lock`'s own `monty-go-ffi` entry (the lockfile was generated before the bump, so without this, later `--locked` builds fail);
    - pins the `github.com/mdfranz/gomonty` requirement in `otelmonty/go.mod` and `cmd/shmonty/go.mod` to the release version (shmonty requires otelmonty through a `replace`, so without its own bump `go build` there fails with "updates to go.mod needed");
@@ -108,4 +113,4 @@ The workflows follow these rules:
 
 ## Known gaps
 
-Open issues: [#23](https://github.com/mdfranz/gomonty/issues/23) (release builds are not reproducible across runs), [#52](https://github.com/mdfranz/gomonty/issues/52) (CI build speed), and [#53](https://github.com/mdfranz/gomonty/issues/53) (platform scope).
+Open issues: [#23](https://github.com/mdfranz/gomonty/issues/23) (release builds are not reproducible across runs), [#52](https://github.com/mdfranz/gomonty/issues/52) (CI build speed), and [#53](https://github.com/mdfranz/gomonty/issues/53) Phase 2 (change-scoped job selection and single required status check; Phase 1 platform smoke checks and release artifact tests are implemented).
