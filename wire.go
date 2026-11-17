@@ -176,6 +176,7 @@ type wireProgressPayload struct {
 	IsRepl         bool        `msgpack:"is_repl,omitempty"`
 	IsOSFunction   bool        `msgpack:"is_os_function,omitempty"`
 	IsMethodCall   bool        `msgpack:"is_method_call,omitempty"`
+	ObjectID       *string     `msgpack:"object_id,omitempty"`
 	FunctionName   string      `msgpack:"function_name,omitempty"`
 	Args           []wireValue `msgpack:"args,omitempty"`
 	Kwargs         []wirePair  `msgpack:"kwargs,omitempty"`

@@ -169,6 +169,18 @@ func (p *ffiProgress) ResumeFutures(_ context.Context, results map[uint32]Result
 	return stepFromOp(p.h.ResumeFutures(payload))
 }
 
+func (p *ffiProgress) Abort(_ context.Context, exception Exception) Step {
+	wireResult, err := newWireCallResult(Raise(exception))
+	if err != nil {
+		return Step{Err: err, Retained: true}
+	}
+	payload, err := marshalWire(wireResult)
+	if err != nil {
+		return Step{Err: err, Retained: true}
+	}
+	return stepFromOp(p.h.Abort(payload))
+}
+
 // stepFromOp converts a native operation result into a Step, decoding the
 // progress description so nothing above the backend sees a wire payload.
 func stepFromOp(result ffi.OpResult) Step {
@@ -223,9 +235,15 @@ func decodeProgressDesc(payload []byte) (ProgressDesc, error) {
 		desc.CallID = wire.CallID
 		desc.IsOSFunction = wire.IsOSFunction
 		desc.IsMethodCall = wire.IsMethodCall
+		if wire.ObjectID != nil {
+			desc.ObjectID = *wire.ObjectID
+		}
 	case wireProgressNameLookup:
 		desc.Kind = ProgressNameLookup
 		desc.VariableName = wire.VariableName
+		if wire.ObjectID != nil {
+			desc.ObjectID = *wire.ObjectID
+		}
 	case wireProgressFuture:
 		desc.Kind = ProgressFuture
 		desc.PendingCallIDs = append([]uint32(nil), wire.PendingCallIDs...)

@@ -247,6 +247,7 @@ type Call struct {
 	Kwargs       Dict
 	CallID       uint32
 	IsMethodCall bool
+	ObjectID     string
 }
 
 // OSFunction names a host OS callback that Monty requested.
@@ -417,12 +418,12 @@ type ResourceLimits struct {
 	MaxMemory         int
 	GCInterval        int
 	MaxRecursionDepth int
-	// MaxSuspensions caps how many external/OS calls a session may suspend on
-	// while waiting for the host — a backstop against sandboxed code looping on
-	// host calls while MaxDuration is paused. gomonty forwards this value over
-	// the wire and gRPC (defaulting to 1000 when 0), where backends that track
-	// suspension budgets enforce it; gomonty's in-process host dispatch loop
-	// does not yet enforce MaxSuspensions directly.
+	// MaxSuspensions caps how many external/OS/lookup/future suspensions a session
+	// may perform (defaulting to 1000 when 0) — a backstop against sandboxed code
+	// looping on host calls while MaxDuration is paused. Both the in-process FFI
+	// backend and out-of-process remote workers abort execution with an uncatchable
+	// RuntimeError("suspension limit N exceeded") when this budget is exceeded,
+	// and preserve the suspension count across Dump/Load.
 	MaxSuspensions int
 }
 

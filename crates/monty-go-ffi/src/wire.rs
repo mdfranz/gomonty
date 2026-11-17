@@ -707,6 +707,8 @@ pub struct WireProgressPayload {
     pub is_os_function: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_method_call: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_id: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub function_name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
